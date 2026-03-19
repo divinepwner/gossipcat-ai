@@ -60,13 +60,16 @@ export class ToolServer {
       responsePayload = { error: (err as Error).message };
     }
 
-    // Send RPC_RESPONSE back to the requester
+    // Send RPC_RESPONSE back to the requester.
+    // Use envelope.rid_req (the caller's correlation ID) so the caller can
+    // match the response to its pending promise.
     try {
       const body = Buffer.from(msgpackEncode(responsePayload)) as unknown as Uint8Array;
+      const correlationId = (envelope.rid_req || envelope.id) as string;
       const response = Message.createRpcResponse(
         this.agent.agentId,
         envelope.sid,       // respond to the sender
-        envelope.id,        // correlate using the request message ID
+        correlationId,      // echo caller's correlation ID
         body
       );
       await this.agent.sendEnvelope(response.toEnvelope());

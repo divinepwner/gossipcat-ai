@@ -8,6 +8,7 @@
 import { randomUUID } from 'crypto';
 import { GossipAgent } from '@gossip/client';
 import { MessageType, MessageEnvelope, Message, ToolDefinition, LLMMessage } from '@gossip/types';
+import { encode as msgpackEncode } from '@msgpack/msgpack';
 import { ILLMProvider } from './llm-client';
 
 const MAX_TOOL_TURNS = 10;
@@ -98,7 +99,7 @@ export class WorkerAgent {
       this.agentId,
       'tool-server',
       requestId,
-      new TextEncoder().encode(JSON.stringify({ tool: name, args }))
+      Buffer.from(msgpackEncode({ tool: name, args })) as unknown as Uint8Array
     );
     await this.agent.sendEnvelope(msg.envelope);
 
@@ -106,21 +107,33 @@ export class WorkerAgent {
   }
 
   /** Handle incoming messages — resolve pending RPC tool calls */
-  private handleMessage(_data: unknown, envelope: MessageEnvelope): void {
+  private handleMessage(data: unknown, envelope: MessageEnvelope): void {
     if (envelope.t === MessageType.RPC_RESPONSE && envelope.rid_req) {
       const pending = this.pendingToolCalls.get(envelope.rid_req);
       if (pending) {
         this.pendingToolCalls.delete(envelope.rid_req);
-        const body = new TextDecoder().decode(envelope.body);
-        try {
-          const parsed = JSON.parse(body);
-          if (parsed.error) {
-            pending.reject(new Error(parsed.error));
+        // `data` is the msgpack-decoded payload object emitted by GossipAgent.
+        // Prefer it over raw `envelope.body` to avoid double-decoding issues.
+        const payload = data as Record<string, unknown> | null;
+        if (payload && typeof payload === 'object') {
+          if (payload.error) {
+            pending.reject(new Error(payload.error as string));
           } else {
-            pending.resolve(parsed.result || '');
+            pending.resolve((payload.result as string) || '');
           }
-        } catch {
-          pending.resolve(body);
+        } else {
+          // Fallback: decode body bytes as text (legacy path)
+          const body = new TextDecoder().decode(envelope.body);
+          try {
+            const parsed = JSON.parse(body);
+            if (parsed.error) {
+              pending.reject(new Error(parsed.error));
+            } else {
+              pending.resolve(parsed.result || '');
+            }
+          } catch {
+            pending.resolve(body);
+          }
         }
       }
     }
