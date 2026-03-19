@@ -4,5 +4,6 @@ dist/
 .env
 .env.local
 gossip.agents.yaml
+gossip.agents.json
 coverage/
 .full-review/
