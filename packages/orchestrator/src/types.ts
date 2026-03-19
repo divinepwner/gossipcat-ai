@@ -38,6 +38,30 @@ export interface DispatchPlan {
   strategy: 'single' | 'parallel' | 'sequential';
 }
 
+/** A choice option presented to the developer in the chat */
+export interface ChatChoice {
+  value: string;
+  label: string;
+  hint?: string;
+}
+
+/** Structured chat response — text + optional interactive elements */
+export interface ChatResponse {
+  /** Main text content */
+  text: string;
+  /** Optional choices for the developer to pick from */
+  choices?: {
+    message: string;
+    options: ChatChoice[];
+    allowCustom?: boolean;  // show "Let me explain..." option
+    type?: 'select' | 'confirm' | 'multiselect';
+  };
+  /** Optional progress indicator */
+  status?: 'thinking' | 'working' | 'done' | 'error';
+  /** Which agents contributed */
+  agents?: string[];
+}
+
 /** Normalized LLM response from any provider */
 export interface LLMResponse {
   text: string;
