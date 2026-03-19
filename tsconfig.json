@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@gossip/types": ["packages/types/src"],
+      "@gossip/types/*": ["packages/types/src/*"],
+      "@gossip/relay": ["packages/relay/src"],
+      "@gossip/relay/*": ["packages/relay/src/*"],
+      "@gossip/client": ["packages/client/src"],
+      "@gossip/client/*": ["packages/client/src/*"],
+      "@gossip/tools": ["packages/tools/src"],
+      "@gossip/tools/*": ["packages/tools/src/*"],
+      "@gossip/orchestrator": ["packages/orchestrator/src"],
+      "@gossip/orchestrator/*": ["packages/orchestrator/src/*"]
+    }
+  },
+  "include": ["packages/*/src/**/*", "tests/**/*"]
+}
