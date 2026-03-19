@@ -2,14 +2,35 @@
 import { findConfigPath, loadConfig } from './config';
 import { runSetupWizard } from './setup-wizard';
 import { startChat } from './chat';
+import { createAgent, listAgents, removeAgent } from './create-agent';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  const command = args[0];
 
-  // gossip setup — re-run wizard
-  if (args[0] === 'setup') {
-    await runSetupWizard();
-    return;
+  switch (command) {
+    case 'setup':
+      await runSetupWizard();
+      return;
+
+    case 'create-agent':
+      await createAgent();
+      return;
+
+    case 'list-agents':
+    case 'agents':
+      await listAgents();
+      return;
+
+    case 'remove-agent':
+      await removeAgent(args[1]);
+      return;
+
+    case 'help':
+    case '--help':
+    case '-h':
+      printHelp();
+      return;
   }
 
   // Check for config
@@ -20,10 +41,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Load and validate config (fail fast)
   const config = loadConfig(configPath);
 
-  // gossip "one-shot task" — run and exit
+  // One-shot task
   if (args.length > 0) {
     const task = args.join(' ');
     console.log(`One-shot mode not yet implemented. Task: "${task}"`);
@@ -31,8 +51,30 @@ async function main(): Promise<void> {
     return;
   }
 
-  // gossip — interactive chat
+  // Interactive chat
   await startChat(config);
+}
+
+function printHelp(): void {
+  console.log(`
+  gossipcat — Multi-Agent Orchestration CLI
+
+  Usage:
+    gossipcat                  Interactive chat with your agent team
+    gossipcat setup            Run the setup wizard
+    gossipcat create-agent     Add a new agent to your team
+    gossipcat list-agents      Show your current agent team
+    gossipcat remove-agent     Remove an agent from your team
+    gossipcat help             Show this help
+
+  Agent files:
+    .gossip/agents/<id>/
+      instructions.md          Agent system prompt and rules
+      memory/MEMORY.md         Persistent memory index
+      memory/*.md              Individual memory files
+      context/                 Context files injected into prompts
+      config.json              Agent-specific overrides
+`);
 }
 
 main().catch(err => {
