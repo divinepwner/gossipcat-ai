@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.js.map
+.env
+.env.local
+gossip.agents.yaml
+coverage/
+.full-review/
