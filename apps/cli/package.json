@@ -1,7 +1,7 @@
 {
   "name": "@gossip/cli",
   "version": "0.1.0",
-  "bin": { "gossip": "dist/index.js" },
+  "bin": { "gossipcat": "dist/index.js" },
   "scripts": { "build": "tsc", "start": "ts-node src/index.ts" },
   "dependencies": {
     "@gossip/types": "*",

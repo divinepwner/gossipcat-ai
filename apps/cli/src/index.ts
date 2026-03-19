@@ -27,7 +27,7 @@ async function main(): Promise<void> {
   if (args.length > 0) {
     const task = args.join(' ');
     console.log(`One-shot mode not yet implemented. Task: "${task}"`);
-    console.log("Run 'gossip' for interactive chat.");
+    console.log("Run 'gossipcat' for interactive chat.");
     return;
   }
 
