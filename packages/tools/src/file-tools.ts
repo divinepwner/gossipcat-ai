@@ -27,7 +27,7 @@ export class FileTools {
 
   async fileSearch(args: { pattern: string }): Promise<string> {
     const results: string[] = [];
-    await this.walkDir(this.sandbox.projectRoot, args.pattern, results);
+    await this.walkDir(this.sandbox.projectRoot, args.pattern, results, 0, 10);
     return results.join('\n') || 'No files found';
   }
 
@@ -35,9 +35,14 @@ export class FileTools {
     const searchRoot = args.path
       ? this.sandbox.validatePath(args.path)
       : this.sandbox.projectRoot;
-    const regex = new RegExp(args.pattern);
+    let regex: RegExp;
+    try {
+      regex = new RegExp(args.pattern);
+    } catch (error) {
+      return `Invalid regex pattern: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    }
     const results: string[] = [];
-    await this.grepDir(searchRoot, regex, results);
+    await this.grepDir(searchRoot, regex, results, 0, 10);
     return results.join('\n') || 'No matches found';
   }
 
@@ -53,7 +58,8 @@ export class FileTools {
 
   // ─── Private helpers ──────────────────────────────────────────────────────
 
-  private async walkDir(dir: string, pattern: string, results: string[]): Promise<void> {
+  private async walkDir(dir: string, pattern: string, results: string[], depth: number = 0, maxDepth: number = 10): Promise<void> {
+    if (depth >= maxDepth) return;
     let entries: string[];
     try {
       entries = await readdir(dir);
@@ -72,7 +78,7 @@ export class FileTools {
       }
 
       if (info.isDirectory()) {
-        await this.walkDir(fullPath, pattern, results);
+        await this.walkDir(fullPath, pattern, results, depth + 1, maxDepth);
       } else {
         // Match glob-style pattern: convert * and ? to regex
         const regexStr = pattern
@@ -88,7 +94,8 @@ export class FileTools {
     }
   }
 
-  private async grepDir(dir: string, regex: RegExp, results: string[]): Promise<void> {
+  private async grepDir(dir: string, regex: RegExp, results: string[], depth: number = 0, maxDepth: number = 10): Promise<void> {
+    if (depth >= maxDepth) return;
     let entries: string[];
     try {
       entries = await readdir(dir);
@@ -107,7 +114,7 @@ export class FileTools {
       }
 
       if (info.isDirectory()) {
-        await this.grepDir(fullPath, regex, results);
+        await this.grepDir(fullPath, regex, results, depth + 1, maxDepth);
       } else {
         try {
           const content = await readFile(fullPath, 'utf-8');

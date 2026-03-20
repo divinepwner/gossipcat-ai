@@ -91,7 +91,7 @@ export class GossipAgent extends EventEmitter {
 
       ws.once('open', () => {
         // Send auth frame
-        ws.send(JSON.stringify({ type: 'auth', agentId: this.config.agentId }));
+        ws.send(JSON.stringify({ type: 'auth', agentId: this.config.agentId, apiKey: this.config.apiKey || 'default' }));
       });
 
       ws.once('error', (err: Error) => {

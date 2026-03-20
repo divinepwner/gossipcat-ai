@@ -2831,6 +2831,10 @@ var init_server = __esm({
             if (!authenticated) {
               const authMsg = JSON.parse(data.toString());
               if (authMsg.type === "auth" && authMsg.agentId) {
+                if (!authMsg.apiKey) {
+                  ws.close(1008, "API key required");
+                  return;
+                }
                 clearTimeout(authTimer);
                 const sessionId = (0, import_crypto3.randomUUID)();
                 connection = new AgentConnection(sessionId, authMsg.agentId, ws);
@@ -2971,7 +2975,7 @@ var init_gossip_agent = __esm({
             reject(new Error("Connection timeout"));
           }, 1e4);
           ws.once("open", () => {
-            ws.send(JSON.stringify({ type: "auth", agentId: this.config.agentId }));
+            ws.send(JSON.stringify({ type: "auth", agentId: this.config.agentId, apiKey: this.config.apiKey || "default" }));
           });
           ws.once("error", (err) => {
             clearTimeout(timeout);
@@ -3187,14 +3191,19 @@ var init_file_tools = __esm({
       }
       async fileSearch(args) {
         const results = [];
-        await this.walkDir(this.sandbox.projectRoot, args.pattern, results);
+        await this.walkDir(this.sandbox.projectRoot, args.pattern, results, 0, 10);
         return results.join("\n") || "No files found";
       }
       async fileGrep(args) {
         const searchRoot = args.path ? this.sandbox.validatePath(args.path) : this.sandbox.projectRoot;
-        const regex = new RegExp(args.pattern);
+        let regex;
+        try {
+          regex = new RegExp(args.pattern);
+        } catch (error48) {
+          return `Invalid regex pattern: ${error48 instanceof Error ? error48.message : "Unknown error"}`;
+        }
         const results = [];
-        await this.grepDir(searchRoot, regex, results);
+        await this.grepDir(searchRoot, regex, results, 0, 10);
         return results.join("\n") || "No matches found";
       }
       async fileTree(args) {
@@ -3205,7 +3214,8 @@ var init_file_tools = __esm({
         return lines.join("\n");
       }
       // ─── Private helpers ──────────────────────────────────────────────────────
-      async walkDir(dir, pattern, results) {
+      async walkDir(dir, pattern, results, depth = 0, maxDepth = 10) {
+        if (depth >= maxDepth) return;
         let entries;
         try {
           entries = await (0, import_promises.readdir)(dir);
@@ -3222,7 +3232,7 @@ var init_file_tools = __esm({
             continue;
           }
           if (info.isDirectory()) {
-            await this.walkDir(fullPath, pattern, results);
+            await this.walkDir(fullPath, pattern, results, depth + 1, maxDepth);
           } else {
             const regexStr = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
             const regex = new RegExp(regexStr);
@@ -3233,7 +3243,8 @@ var init_file_tools = __esm({
           }
         }
       }
-      async grepDir(dir, regex, results) {
+      async grepDir(dir, regex, results, depth = 0, maxDepth = 10) {
+        if (depth >= maxDepth) return;
         let entries;
         try {
           entries = await (0, import_promises.readdir)(dir);
@@ -3250,7 +3261,7 @@ var init_file_tools = __esm({
             continue;
           }
           if (info.isDirectory()) {
-            await this.grepDir(fullPath, regex, results);
+            await this.grepDir(fullPath, regex, results, depth + 1, maxDepth);
           } else {
             try {
               const content = await (0, import_promises.readFile)(fullPath, "utf-8");
@@ -3298,7 +3309,7 @@ var init_file_tools = __esm({
 });
 
 // packages/tools/src/shell-tools.ts
-var import_child_process, import_util3, execFileAsync, DEFAULT_ALLOWED_COMMANDS, BLOCKED_PATTERNS, ShellTools;
+var import_child_process, import_util3, execFileAsync, DEFAULT_ALLOWED_COMMANDS, BLOCKED_PATTERNS, BLOCKED_ARG_PATTERNS, ShellTools;
 var init_shell_tools = __esm({
   "packages/tools/src/shell-tools.ts"() {
     "use strict";
@@ -3317,7 +3328,6 @@ var init_shell_tools = __esm({
       "head",
       "tail",
       "wc",
-      "find",
       "grep",
       "echo",
       "pwd",
@@ -3334,6 +3344,13 @@ var init_shell_tools = __esm({
       /:\(\)\s*\{.*\|.*&.*\}/
       // fork bomb
     ];
+    BLOCKED_ARG_PATTERNS = [
+      /^-exec$/,
+      /^-delete$/,
+      /^--force$/,
+      /^-rf$/,
+      /^-fr$/
+    ];
     ShellTools = class {
       allowedCommands;
       maxOutputSize;
@@ -3342,15 +3359,30 @@ var init_shell_tools = __esm({
         this.maxOutputSize = options?.maxOutputSize || 1024 * 1024;
       }
       async shellExec(args) {
-        const parts = args.command.trim().split(/\s+/);
-        const cmd = parts[0];
-        const cmdArgs = parts.slice(1);
+        let cmd;
+        let cmdArgs;
+        if (args.args) {
+          const parts = args.command.trim().split(/\s+/);
+          cmd = parts[0];
+          cmdArgs = args.args;
+        } else {
+          const parts = args.command.trim().split(/\s+/);
+          cmd = parts[0];
+          cmdArgs = parts.slice(1);
+        }
         if (!this.allowedCommands.includes(cmd)) {
           throw new Error(`Command "${cmd}" is not in the allowed commands list`);
         }
         for (const pattern of BLOCKED_PATTERNS) {
           if (pattern.test(args.command)) {
             throw new Error(`Command blocked by safety rules: ${args.command}`);
+          }
+        }
+        for (const arg of cmdArgs) {
+          for (const pattern of BLOCKED_ARG_PATTERNS) {
+            if (pattern.test(arg)) {
+              throw new Error(`Argument "${arg}" is blocked by safety rules`);
+            }
           }
         }
         try {
@@ -3787,7 +3819,10 @@ var init_llm_client = __esm({
           },
           body: JSON.stringify(body)
         });
-        if (!res.ok) throw new Error(`Anthropic API error (${res.status}): ${await res.text()}`);
+        if (!res.ok) {
+          const body2 = (await res.text()).slice(0, 200);
+          throw new Error(`Anthropic API error (${res.status}): ${body2}`);
+        }
         const data = await res.json();
         return this.parseAnthropicResponse(data);
       }
@@ -3853,7 +3888,10 @@ var init_llm_client = __esm({
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
           body: JSON.stringify(body)
         });
-        if (!res.ok) throw new Error(`OpenAI API error (${res.status}): ${await res.text()}`);
+        if (!res.ok) {
+          const body2 = (await res.text()).slice(0, 200);
+          throw new Error(`OpenAI API error (${res.status}): ${body2}`);
+        }
         const data = await res.json();
         return this.parseOpenAIResponse(data);
       }
@@ -3914,7 +3952,10 @@ var init_llm_client = __esm({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
-        if (!res.ok) throw new Error(`Gemini API error (${res.status}): ${await res.text()}`);
+        if (!res.ok) {
+          const body2 = (await res.text()).slice(0, 200);
+          throw new Error(`Gemini API error (${res.status}): ${body2}`);
+        }
         const data = await res.json();
         const candidates = data.candidates;
         const parts = candidates[0].content.parts;
@@ -3938,7 +3979,10 @@ var init_llm_client = __esm({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
-        if (!res.ok) throw new Error(`Ollama API error (${res.status}): ${await res.text()}`);
+        if (!res.ok) {
+          const body2 = (await res.text()).slice(0, 200);
+          throw new Error(`Ollama API error (${res.status}): ${body2}`);
+        }
         const data = await res.json();
         const msg = data.message;
         return { text: msg.content };
@@ -4417,12 +4461,20 @@ function loadSkills(agentId, skills, projectRoot) {
   return sections.length > 0 ? "\n\n--- SKILLS ---\n\n" + sections.join("\n\n---\n\n") + "\n\n--- END SKILLS ---\n\n" : "";
 }
 function resolveSkill(agentId, skill, projectRoot) {
-  const filename = `${skill}.md`;
-  const agentPath = (0, import_path3.resolve)(projectRoot, ".gossip", "agents", agentId, "skills", filename);
+  const sanitized = skill.replace(/[^a-z0-9_-]/gi, "");
+  if (!sanitized) return null;
+  const filename = `${sanitized}.md`;
+  const agentBase = (0, import_path3.resolve)(projectRoot, ".gossip", "agents", agentId, "skills");
+  const agentPath = (0, import_path3.resolve)(agentBase, filename);
+  if (!agentPath.startsWith(agentBase + "/")) return null;
   if ((0, import_fs2.existsSync)(agentPath)) return (0, import_fs2.readFileSync)(agentPath, "utf-8");
-  const projectPath = (0, import_path3.resolve)(projectRoot, ".gossip", "skills", filename);
+  const projectBase = (0, import_path3.resolve)(projectRoot, ".gossip", "skills");
+  const projectPath = (0, import_path3.resolve)(projectBase, filename);
+  if (!projectPath.startsWith(projectBase + "/")) return null;
   if ((0, import_fs2.existsSync)(projectPath)) return (0, import_fs2.readFileSync)(projectPath, "utf-8");
-  const defaultPath = (0, import_path3.resolve)(__dirname, "default-skills", filename);
+  const defaultBase = (0, import_path3.resolve)(__dirname, "default-skills");
+  const defaultPath = (0, import_path3.resolve)(defaultBase, filename);
+  if (!defaultPath.startsWith(defaultBase + "/")) return null;
   if ((0, import_fs2.existsSync)(defaultPath)) return (0, import_fs2.readFileSync)(defaultPath, "utf-8");
   return null;
 }
@@ -4703,18 +4755,22 @@ function loadSkills2(agentId, projectRoot) {
   return sections.length > 0 ? "\n\n--- SKILLS ---\n\n" + sections.join("\n\n---\n\n") + "\n\n--- END SKILLS ---\n\n" : "";
 }
 function resolveSkill2(agentId, skill, projectRoot) {
-  const filename = `${skill}.md`;
-  const filenameHyphen = `${skill.replace(/_/g, "-")}.md`;
-  const candidates = [
-    (0, import_path5.resolve)(projectRoot, ".gossip", "agents", agentId, "skills", filename),
-    (0, import_path5.resolve)(projectRoot, ".gossip", "agents", agentId, "skills", filenameHyphen),
-    (0, import_path5.resolve)(projectRoot, ".gossip", "skills", filename),
-    (0, import_path5.resolve)(projectRoot, ".gossip", "skills", filenameHyphen),
-    (0, import_path5.resolve)(projectRoot, "packages", "orchestrator", "src", "default-skills", filename),
-    (0, import_path5.resolve)(projectRoot, "packages", "orchestrator", "src", "default-skills", filenameHyphen)
+  const sanitized = skill.replace(/[^a-z0-9_-]/gi, "");
+  if (!sanitized) return null;
+  const filename = `${sanitized}.md`;
+  const filenameHyphen = `${sanitized.replace(/_/g, "-")}.md`;
+  const basesAndFiles = [
+    [(0, import_path5.resolve)(projectRoot, ".gossip", "agents", agentId, "skills"), filename],
+    [(0, import_path5.resolve)(projectRoot, ".gossip", "agents", agentId, "skills"), filenameHyphen],
+    [(0, import_path5.resolve)(projectRoot, ".gossip", "skills"), filename],
+    [(0, import_path5.resolve)(projectRoot, ".gossip", "skills"), filenameHyphen],
+    [(0, import_path5.resolve)(projectRoot, "packages", "orchestrator", "src", "default-skills"), filename],
+    [(0, import_path5.resolve)(projectRoot, "packages", "orchestrator", "src", "default-skills"), filenameHyphen]
   ];
-  for (const path of candidates) {
-    if ((0, import_fs4.existsSync)(path)) return (0, import_fs4.readFileSync)(path, "utf-8");
+  for (const [base, file2] of basesAndFiles) {
+    const candidate = (0, import_path5.resolve)(base, file2);
+    if (!candidate.startsWith(base + "/")) continue;
+    if ((0, import_fs4.existsSync)(candidate)) return (0, import_fs4.readFileSync)(candidate, "utf-8");
   }
   return null;
 }

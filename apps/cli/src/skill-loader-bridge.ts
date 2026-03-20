@@ -26,21 +26,25 @@ export function loadSkills(agentId: string, projectRoot: string): string {
 }
 
 function resolveSkill(agentId: string, skill: string, projectRoot: string): string | null {
-  const filename = `${skill}.md`;
+  const sanitized = skill.replace(/[^a-z0-9_-]/gi, '');
+  if (!sanitized) return null;
+  const filename = `${sanitized}.md`;
   // Normalize underscores to hyphens for file lookup
-  const filenameHyphen = `${skill.replace(/_/g, '-')}.md`;
+  const filenameHyphen = `${sanitized.replace(/_/g, '-')}.md`;
 
-  const candidates = [
-    resolve(projectRoot, '.gossip', 'agents', agentId, 'skills', filename),
-    resolve(projectRoot, '.gossip', 'agents', agentId, 'skills', filenameHyphen),
-    resolve(projectRoot, '.gossip', 'skills', filename),
-    resolve(projectRoot, '.gossip', 'skills', filenameHyphen),
-    resolve(projectRoot, 'packages', 'orchestrator', 'src', 'default-skills', filename),
-    resolve(projectRoot, 'packages', 'orchestrator', 'src', 'default-skills', filenameHyphen),
+  const basesAndFiles: Array<[string, string]> = [
+    [resolve(projectRoot, '.gossip', 'agents', agentId, 'skills'), filename],
+    [resolve(projectRoot, '.gossip', 'agents', agentId, 'skills'), filenameHyphen],
+    [resolve(projectRoot, '.gossip', 'skills'), filename],
+    [resolve(projectRoot, '.gossip', 'skills'), filenameHyphen],
+    [resolve(projectRoot, 'packages', 'orchestrator', 'src', 'default-skills'), filename],
+    [resolve(projectRoot, 'packages', 'orchestrator', 'src', 'default-skills'), filenameHyphen],
   ];
 
-  for (const path of candidates) {
-    if (existsSync(path)) return readFileSync(path, 'utf-8');
+  for (const [base, file] of basesAndFiles) {
+    const candidate = resolve(base, file);
+    if (!candidate.startsWith(base + '/')) continue;
+    if (existsSync(candidate)) return readFileSync(candidate, 'utf-8');
   }
   return null;
 }

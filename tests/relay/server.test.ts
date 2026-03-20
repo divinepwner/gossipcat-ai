@@ -19,7 +19,7 @@ describe('RelayServer', () => {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(server.url);
       ws.on('open', () => {
-        ws.send(JSON.stringify({ type: 'auth', agentId }));
+        ws.send(JSON.stringify({ type: 'auth', agentId, apiKey: 'test-key' }));
       });
       ws.on('message', (data) => {
         try {

@@ -5,7 +5,7 @@ const execFileAsync = promisify(execFile);
 
 const DEFAULT_ALLOWED_COMMANDS = [
   'npm', 'npx', 'node', 'git', 'tsc', 'jest',
-  'ls', 'cat', 'head', 'tail', 'wc', 'find', 'grep',
+  'ls', 'cat', 'head', 'tail', 'wc', 'grep',
   'echo', 'pwd', 'which', 'env', 'sleep'
 ];
 
@@ -16,6 +16,14 @@ const BLOCKED_PATTERNS = [
   /dd\s+if=/,
   /mkfs/,
   /:\(\)\s*\{.*\|.*&.*\}/, // fork bomb
+];
+
+const BLOCKED_ARG_PATTERNS = [
+  /^-exec$/,
+  /^-delete$/,
+  /^--force$/,
+  /^-rf$/,
+  /^-fr$/,
 ];
 
 export interface ShellToolsOptions {
@@ -32,10 +40,21 @@ export class ShellTools {
     this.maxOutputSize = options?.maxOutputSize || 1024 * 1024; // 1MB
   }
 
-  async shellExec(args: { command: string; timeout?: number; cwd?: string }): Promise<string> {
-    const parts = args.command.trim().split(/\s+/);
-    const cmd = parts[0];
-    const cmdArgs = parts.slice(1);
+  async shellExec(args: { command: string; args?: string[]; timeout?: number; cwd?: string }): Promise<string> {
+    let cmd: string;
+    let cmdArgs: string[];
+
+    if (args.args) {
+      // When args[] is provided, use directly (no string splitting)
+      const parts = args.command.trim().split(/\s+/);
+      cmd = parts[0];
+      cmdArgs = args.args;
+    } else {
+      // Backwards compat: split command string
+      const parts = args.command.trim().split(/\s+/);
+      cmd = parts[0];
+      cmdArgs = parts.slice(1);
+    }
 
     // Check allowlist
     if (!this.allowedCommands.includes(cmd)) {
@@ -46,6 +65,15 @@ export class ShellTools {
     for (const pattern of BLOCKED_PATTERNS) {
       if (pattern.test(args.command)) {
         throw new Error(`Command blocked by safety rules: ${args.command}`);
+      }
+    }
+
+    // Check each argument against blocked arg patterns
+    for (const arg of cmdArgs) {
+      for (const pattern of BLOCKED_ARG_PATTERNS) {
+        if (pattern.test(arg)) {
+          throw new Error(`Argument "${arg}" is blocked by safety rules`);
+        }
       }
     }
 

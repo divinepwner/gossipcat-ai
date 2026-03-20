@@ -53,7 +53,10 @@ export class AnthropicProvider implements ILLMProvider {
       body: JSON.stringify(body),
     });
 
-    if (!res.ok) throw new Error(`Anthropic API error (${res.status}): ${await res.text()}`);
+    if (!res.ok) {
+      const body = (await res.text()).slice(0, 200);
+      throw new Error(`Anthropic API error (${res.status}): ${body}`);
+    }
     const data = await res.json() as Record<string, unknown>;
     return this.parseAnthropicResponse(data);
   }
@@ -124,7 +127,10 @@ export class OpenAIProvider implements ILLMProvider {
       body: JSON.stringify(body),
     });
 
-    if (!res.ok) throw new Error(`OpenAI API error (${res.status}): ${await res.text()}`);
+    if (!res.ok) {
+      const body = (await res.text()).slice(0, 200);
+      throw new Error(`OpenAI API error (${res.status}): ${body}`);
+    }
     const data = await res.json() as Record<string, unknown>;
     return this.parseOpenAIResponse(data);
   }
@@ -188,7 +194,10 @@ export class GeminiProvider implements ILLMProvider {
       body: JSON.stringify(body),
     });
 
-    if (!res.ok) throw new Error(`Gemini API error (${res.status}): ${await res.text()}`);
+    if (!res.ok) {
+      const body = (await res.text()).slice(0, 200);
+      throw new Error(`Gemini API error (${res.status}): ${body}`);
+    }
     const data = await res.json() as Record<string, unknown>;
     const candidates = data.candidates as Array<Record<string, unknown>>;
     const parts = (candidates[0].content as Record<string, unknown>).parts as Array<Record<string, string>>;
@@ -215,7 +224,10 @@ export class OllamaProvider implements ILLMProvider {
       body: JSON.stringify(body),
     });
 
-    if (!res.ok) throw new Error(`Ollama API error (${res.status}): ${await res.text()}`);
+    if (!res.ok) {
+      const body = (await res.text()).slice(0, 200);
+      throw new Error(`Ollama API error (${res.status}): ${body}`);
+    }
     const data = await res.json() as Record<string, unknown>;
     const msg = data.message as Record<string, string>;
     return { text: msg.content };

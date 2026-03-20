@@ -77,6 +77,10 @@ export class RelayServer {
         if (!authenticated) {
           const authMsg = JSON.parse(data.toString());
           if (authMsg.type === 'auth' && authMsg.agentId) {
+            if (!authMsg.apiKey) {
+              ws.close(1008, 'API key required');
+              return;
+            }
             clearTimeout(authTimer);
             const sessionId = randomUUID();
             connection = new AgentConnection(sessionId, authMsg.agentId, ws);

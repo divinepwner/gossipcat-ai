@@ -26,18 +26,27 @@ export function loadSkills(agentId: string, skills: string[], projectRoot: strin
 }
 
 function resolveSkill(agentId: string, skill: string, projectRoot: string): string | null {
-  const filename = `${skill}.md`;
+  // Sanitize: only allow alphanumeric, hyphens, underscores
+  const sanitized = skill.replace(/[^a-z0-9_-]/gi, '');
+  if (!sanitized) return null;
+  const filename = `${sanitized}.md`;
 
   // 1. Agent's local skills
-  const agentPath = resolve(projectRoot, '.gossip', 'agents', agentId, 'skills', filename);
+  const agentBase = resolve(projectRoot, '.gossip', 'agents', agentId, 'skills');
+  const agentPath = resolve(agentBase, filename);
+  if (!agentPath.startsWith(agentBase + '/')) return null;
   if (existsSync(agentPath)) return readFileSync(agentPath, 'utf-8');
 
   // 2. Project-wide skills
-  const projectPath = resolve(projectRoot, '.gossip', 'skills', filename);
+  const projectBase = resolve(projectRoot, '.gossip', 'skills');
+  const projectPath = resolve(projectBase, filename);
+  if (!projectPath.startsWith(projectBase + '/')) return null;
   if (existsSync(projectPath)) return readFileSync(projectPath, 'utf-8');
 
   // 3. Default skills (bundled)
-  const defaultPath = resolve(__dirname, 'default-skills', filename);
+  const defaultBase = resolve(__dirname, 'default-skills');
+  const defaultPath = resolve(defaultBase, filename);
+  if (!defaultPath.startsWith(defaultBase + '/')) return null;
   if (existsSync(defaultPath)) return readFileSync(defaultPath, 'utf-8');
 
   return null;
