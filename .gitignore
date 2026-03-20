@@ -7,3 +7,4 @@ gossip.agents.yaml
 gossip.agents.json
 coverage/
 .full-review/
+.gossip/
