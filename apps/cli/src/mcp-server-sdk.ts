@@ -85,22 +85,25 @@ server.tool(
 // ── Low-level: dispatch to specific agent ─────────────────────────────────
 server.tool(
   'gossip_dispatch',
-  'Send a task to a specific agent. Returns task ID for collecting results.',
+  'Send a task to a specific agent. Returns task ID for collecting results. Skills are auto-injected from the agent config — no need to pass them. The agent can read files itself via the Tool Server — pass file paths in the task, not file contents.',
   {
     agent_id: z.string().describe('Agent ID (e.g. "gemini-reviewer")'),
-    task: z.string().describe('Task for this agent'),
-    context: z.string().optional().describe('Optional context'),
+    task: z.string().describe('Task description. Reference file paths — the agent will read them via Tool Server.'),
   },
-  async ({ agent_id, task, context }) => {
+  async ({ agent_id, task }) => {
     await boot();
     const worker = workers.get(agent_id);
     if (!worker) {
       return { content: [{ type: 'text' as const, text: `Agent "${agent_id}" not found. Available: ${Array.from(workers.keys()).join(', ')}` }] };
     }
 
+    // Auto-inject skills from agent config
+    const { loadSkills } = await import('./skill-loader-bridge');
+    const skillsContent = loadSkills(agent_id, process.cwd());
+
     const taskId = randomUUID().slice(0, 8);
     const entry: any = { id: taskId, agentId: agent_id, task, status: 'running', startedAt: Date.now() };
-    entry.promise = worker.executeTask(task, context)
+    entry.promise = worker.executeTask(task, undefined, skillsContent)
       .then((result: string) => { entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now(); })
       .catch((err: Error) => { entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now(); });
     tasks.set(taskId, entry);
@@ -112,16 +115,16 @@ server.tool(
 // ── Low-level: parallel dispatch ──────────────────────────────────────────
 server.tool(
   'gossip_dispatch_parallel',
-  'Fan out tasks to multiple agents simultaneously',
+  'Fan out tasks to multiple agents simultaneously. Skills are auto-injected. Agents read files via Tool Server.',
   {
     tasks: z.array(z.object({
       agent_id: z.string(),
       task: z.string(),
-      context: z.string().optional(),
-    })).describe('Array of { agent_id, task, context? }'),
+    })).describe('Array of { agent_id, task }'),
   },
   async ({ tasks: taskDefs }) => {
     await boot();
+    const { loadSkills } = await import('./skill-loader-bridge');
     const taskIds: string[] = [];
     const errors: string[] = [];
 
@@ -129,9 +132,10 @@ server.tool(
       const worker = workers.get(def.agent_id);
       if (!worker) { errors.push(`Agent "${def.agent_id}" not found`); continue; }
 
+      const skillsContent = loadSkills(def.agent_id, process.cwd());
       const taskId = randomUUID().slice(0, 8);
       const entry: any = { id: taskId, agentId: def.agent_id, task: def.task, status: 'running', startedAt: Date.now() };
-      entry.promise = worker.executeTask(def.task, def.context)
+      entry.promise = worker.executeTask(def.task, undefined, skillsContent)
         .then((result: string) => { entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now(); })
         .catch((err: Error) => { entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now(); });
       tasks.set(taskId, entry);

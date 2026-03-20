@@ -2797,14 +2797,14 @@ var init_server = __esm({
         return `ws://localhost:${this._port}`;
       }
       async start() {
-        return new Promise((resolve4) => {
+        return new Promise((resolve6) => {
           this.httpServer = (0, import_http.createServer)(this.handleHttp.bind(this));
           this.wss = new import_ws2.WebSocketServer({ server: this.httpServer });
           this.wss.on("connection", this.handleConnection.bind(this));
           this.httpServer.listen(this.config.port, this.config.host || "0.0.0.0", () => {
             const addr = this.httpServer.address();
             this._port = addr.port;
-            resolve4();
+            resolve6();
           });
         });
       }
@@ -2812,9 +2812,9 @@ var init_server = __esm({
         for (const client of this.wss.clients) {
           client.close(1001, "Server shutting down");
         }
-        return new Promise((resolve4) => {
+        return new Promise((resolve6) => {
           this.wss.close(() => {
-            this.httpServer.close(() => resolve4());
+            this.httpServer.close(() => resolve6());
           });
         });
       }
@@ -2961,7 +2961,7 @@ var init_gossip_agent = __esm({
       }
       // ─── Public API ─────────────────────────────────────────────────────────────
       connect() {
-        return new Promise((resolve4, reject) => {
+        return new Promise((resolve6, reject) => {
           const ws = new import_ws3.default(this.config.relayUrl);
           const timeout = setTimeout(() => {
             ws.removeAllListeners();
@@ -2993,7 +2993,7 @@ var init_gossip_agent = __esm({
                   ws.on("close", (code, reason) => this.handleClose(code, reason));
                   this.startKeepAlive();
                   this.emit("connect", msg.sessionId);
-                  resolve4();
+                  resolve6();
                 } else if (msg.type === "error") {
                   clearTimeout(timeout);
                   ws.removeAllListeners();
@@ -3019,7 +3019,7 @@ var init_gossip_agent = __esm({
           this.reconnectTimer = null;
         }
         if (!this.ws) return;
-        return new Promise((resolve4) => {
+        return new Promise((resolve6) => {
           this.intentionalDisconnect = true;
           this._connected = false;
           const ws = this.ws;
@@ -3030,7 +3030,7 @@ var init_gossip_agent = __esm({
             settled = true;
             this.intentionalDisconnect = false;
             this.emit("disconnect", code);
-            resolve4();
+            resolve6();
           };
           const timer = setTimeout(() => done(1e3), 2e3);
           ws.once("close", (code) => {
@@ -3067,8 +3067,8 @@ var init_gossip_agent = __esm({
           throw new Error("Not connected to relay");
         }
         const encoded = Buffer.from(this.codec.encode(envelope));
-        return new Promise((resolve4, reject) => {
-          this.ws.send(encoded, (err) => err ? reject(err) : resolve4());
+        return new Promise((resolve6, reject) => {
+          this.ws.send(encoded, (err) => err ? reject(err) : resolve6());
         });
       }
       // ─── Internal ────────────────────────────────────────────────────────────────
@@ -4114,11 +4114,11 @@ var init_worker_agent = __esm({
        * Execute a task with the LLM, using multi-turn tool calling.
        * Returns the final text response.
        */
-      async executeTask(task, context) {
+      async executeTask(task, context, skillsContent) {
         const messages = [
           {
             role: "system",
-            content: `You are a skilled developer agent. Complete the assigned task using the available tools. Be concise and focused.${context ? `
+            content: `You are a skilled developer agent. Complete the assigned task using the available tools. Be concise and focused.${skillsContent || ""}${context ? `
 
 Context:
 ${context}` : ""}`
@@ -4150,8 +4150,8 @@ ${context}` : ""}`
       /** Send RPC_REQUEST to tool-server via relay */
       async callTool(name, args) {
         const requestId = (0, import_crypto5.randomUUID)();
-        const resultPromise = new Promise((resolve4, reject) => {
-          this.pendingToolCalls.set(requestId, { resolve: resolve4, reject });
+        const resultPromise = new Promise((resolve6, reject) => {
+          this.pendingToolCalls.set(requestId, { resolve: resolve6, reject });
           setTimeout(() => {
             if (this.pendingToolCalls.has(requestId)) {
               this.pendingToolCalls.delete(requestId);
@@ -4386,6 +4386,58 @@ ${summaryPrompt}` }
   }
 });
 
+// packages/orchestrator/src/skill-loader.ts
+function loadSkills(agentId, skills, projectRoot) {
+  const sections = [];
+  for (const skill of skills) {
+    const content = resolveSkill(agentId, skill, projectRoot);
+    if (content) {
+      sections.push(content);
+    }
+  }
+  return sections.length > 0 ? "\n\n--- SKILLS ---\n\n" + sections.join("\n\n---\n\n") + "\n\n--- END SKILLS ---\n\n" : "";
+}
+function resolveSkill(agentId, skill, projectRoot) {
+  const filename = `${skill}.md`;
+  const agentPath = (0, import_path3.resolve)(projectRoot, ".gossip", "agents", agentId, "skills", filename);
+  if ((0, import_fs2.existsSync)(agentPath)) return (0, import_fs2.readFileSync)(agentPath, "utf-8");
+  const projectPath = (0, import_path3.resolve)(projectRoot, ".gossip", "skills", filename);
+  if ((0, import_fs2.existsSync)(projectPath)) return (0, import_fs2.readFileSync)(projectPath, "utf-8");
+  const defaultPath = (0, import_path3.resolve)(__dirname, "default-skills", filename);
+  if ((0, import_fs2.existsSync)(defaultPath)) return (0, import_fs2.readFileSync)(defaultPath, "utf-8");
+  return null;
+}
+function listAvailableSkills(agentId, projectRoot) {
+  const skills = /* @__PURE__ */ new Set();
+  const defaultDir = (0, import_path3.resolve)(__dirname, "default-skills");
+  if ((0, import_fs2.existsSync)(defaultDir)) {
+    for (const f of (0, import_fs2.readdirSync)(defaultDir)) {
+      if (f.endsWith(".md")) skills.add(f.replace(".md", ""));
+    }
+  }
+  const projectDir = (0, import_path3.resolve)(projectRoot, ".gossip", "skills");
+  if ((0, import_fs2.existsSync)(projectDir)) {
+    for (const f of (0, import_fs2.readdirSync)(projectDir)) {
+      if (f.endsWith(".md")) skills.add(f.replace(".md", ""));
+    }
+  }
+  const agentDir = (0, import_path3.resolve)(projectRoot, ".gossip", "agents", agentId, "skills");
+  if ((0, import_fs2.existsSync)(agentDir)) {
+    for (const f of (0, import_fs2.readdirSync)(agentDir)) {
+      if (f.endsWith(".md")) skills.add(f.replace(".md", ""));
+    }
+  }
+  return Array.from(skills).sort();
+}
+var import_fs2, import_path3;
+var init_skill_loader = __esm({
+  "packages/orchestrator/src/skill-loader.ts"() {
+    "use strict";
+    import_fs2 = require("fs");
+    import_path3 = require("path");
+  }
+});
+
 // packages/orchestrator/src/types.ts
 var init_types = __esm({
   "packages/orchestrator/src/types.ts"() {
@@ -4404,12 +4456,15 @@ __export(src_exports3, {
   OpenAIProvider: () => OpenAIProvider,
   TaskDispatcher: () => TaskDispatcher,
   WorkerAgent: () => WorkerAgent,
-  createProvider: () => createProvider
+  createProvider: () => createProvider,
+  listAvailableSkills: () => listAvailableSkills,
+  loadSkills: () => loadSkills
 });
 var init_src5 = __esm({
   "packages/orchestrator/src/index.ts"() {
     "use strict";
     init_main_agent();
+    init_skill_loader();
     init_worker_agent();
     init_agent_registry();
     init_task_dispatcher();
@@ -4428,17 +4483,17 @@ __export(config_exports, {
 });
 function findConfigPath() {
   const candidates = [
-    (0, import_path3.resolve)(process.cwd(), "gossip.agents.json"),
-    (0, import_path3.resolve)(process.cwd(), "gossip.agents.yaml"),
-    (0, import_path3.resolve)(process.cwd(), "gossip.agents.yml")
+    (0, import_path4.resolve)(process.cwd(), "gossip.agents.json"),
+    (0, import_path4.resolve)(process.cwd(), "gossip.agents.yaml"),
+    (0, import_path4.resolve)(process.cwd(), "gossip.agents.yml")
   ];
   for (const path of candidates) {
-    if ((0, import_fs2.existsSync)(path)) return path;
+    if ((0, import_fs3.existsSync)(path)) return path;
   }
   return null;
 }
 function loadConfig(configPath) {
-  const raw = (0, import_fs2.readFileSync)(configPath, "utf-8");
+  const raw = (0, import_fs3.readFileSync)(configPath, "utf-8");
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -4478,12 +4533,12 @@ function configToAgentConfigs(config2) {
     skills: agent.skills
   }));
 }
-var import_fs2, import_path3, VALID_PROVIDERS;
+var import_fs3, import_path4, VALID_PROVIDERS;
 var init_config = __esm({
   "apps/cli/src/config.ts"() {
     "use strict";
-    import_fs2 = require("fs");
-    import_path3 = require("path");
+    import_fs3 = require("fs");
+    import_path4 = require("path");
     VALID_PROVIDERS = ["anthropic", "openai", "google", "local"];
   }
 });
@@ -4607,6 +4662,49 @@ var init_keychain = __esm({
         }
       }
     };
+  }
+});
+
+// apps/cli/src/skill-loader-bridge.ts
+var skill_loader_bridge_exports = {};
+__export(skill_loader_bridge_exports, {
+  loadSkills: () => loadSkills2
+});
+function loadSkills2(agentId, projectRoot) {
+  const configPath = (0, import_path5.resolve)(projectRoot, "gossip.agents.json");
+  if (!(0, import_fs4.existsSync)(configPath)) return "";
+  const config2 = JSON.parse((0, import_fs4.readFileSync)(configPath, "utf-8"));
+  const agentConfig = config2.agents?.[agentId];
+  if (!agentConfig?.skills?.length) return "";
+  const sections = [];
+  for (const skill of agentConfig.skills) {
+    const content = resolveSkill2(agentId, skill, projectRoot);
+    if (content) sections.push(content);
+  }
+  return sections.length > 0 ? "\n\n--- SKILLS ---\n\n" + sections.join("\n\n---\n\n") + "\n\n--- END SKILLS ---\n\n" : "";
+}
+function resolveSkill2(agentId, skill, projectRoot) {
+  const filename = `${skill}.md`;
+  const filenameHyphen = `${skill.replace(/_/g, "-")}.md`;
+  const candidates = [
+    (0, import_path5.resolve)(projectRoot, ".gossip", "agents", agentId, "skills", filename),
+    (0, import_path5.resolve)(projectRoot, ".gossip", "agents", agentId, "skills", filenameHyphen),
+    (0, import_path5.resolve)(projectRoot, ".gossip", "skills", filename),
+    (0, import_path5.resolve)(projectRoot, ".gossip", "skills", filenameHyphen),
+    (0, import_path5.resolve)(projectRoot, "packages", "orchestrator", "src", "default-skills", filename),
+    (0, import_path5.resolve)(projectRoot, "packages", "orchestrator", "src", "default-skills", filenameHyphen)
+  ];
+  for (const path of candidates) {
+    if ((0, import_fs4.existsSync)(path)) return (0, import_fs4.readFileSync)(path, "utf-8");
+  }
+  return null;
+}
+var import_fs4, import_path5;
+var init_skill_loader_bridge = __esm({
+  "apps/cli/src/skill-loader-bridge.ts"() {
+    "use strict";
+    import_fs4 = require("fs");
+    import_path5 = require("path");
   }
 });
 
@@ -18449,21 +18547,22 @@ server.tool(
 );
 server.tool(
   "gossip_dispatch",
-  "Send a task to a specific agent. Returns task ID for collecting results.",
+  "Send a task to a specific agent. Returns task ID for collecting results. Skills are auto-injected from the agent config \u2014 no need to pass them. The agent can read files itself via the Tool Server \u2014 pass file paths in the task, not file contents.",
   {
     agent_id: external_exports.string().describe('Agent ID (e.g. "gemini-reviewer")'),
-    task: external_exports.string().describe("Task for this agent"),
-    context: external_exports.string().optional().describe("Optional context")
+    task: external_exports.string().describe("Task description. Reference file paths \u2014 the agent will read them via Tool Server.")
   },
-  async ({ agent_id, task, context }) => {
+  async ({ agent_id, task }) => {
     await boot();
     const worker = workers.get(agent_id);
     if (!worker) {
       return { content: [{ type: "text", text: `Agent "${agent_id}" not found. Available: ${Array.from(workers.keys()).join(", ")}` }] };
     }
+    const { loadSkills: loadSkills3 } = await Promise.resolve().then(() => (init_skill_loader_bridge(), skill_loader_bridge_exports));
+    const skillsContent = loadSkills3(agent_id, process.cwd());
     const taskId = (0, import_crypto6.randomUUID)().slice(0, 8);
     const entry = { id: taskId, agentId: agent_id, task, status: "running", startedAt: Date.now() };
-    entry.promise = worker.executeTask(task, context).then((result) => {
+    entry.promise = worker.executeTask(task, void 0, skillsContent).then((result) => {
       entry.status = "completed";
       entry.result = result;
       entry.completedAt = Date.now();
@@ -18478,16 +18577,16 @@ server.tool(
 );
 server.tool(
   "gossip_dispatch_parallel",
-  "Fan out tasks to multiple agents simultaneously",
+  "Fan out tasks to multiple agents simultaneously. Skills are auto-injected. Agents read files via Tool Server.",
   {
     tasks: external_exports.array(external_exports.object({
       agent_id: external_exports.string(),
-      task: external_exports.string(),
-      context: external_exports.string().optional()
-    })).describe("Array of { agent_id, task, context? }")
+      task: external_exports.string()
+    })).describe("Array of { agent_id, task }")
   },
   async ({ tasks: taskDefs }) => {
     await boot();
+    const { loadSkills: loadSkills3 } = await Promise.resolve().then(() => (init_skill_loader_bridge(), skill_loader_bridge_exports));
     const taskIds = [];
     const errors = [];
     for (const def of taskDefs) {
@@ -18496,9 +18595,10 @@ server.tool(
         errors.push(`Agent "${def.agent_id}" not found`);
         continue;
       }
+      const skillsContent = loadSkills3(def.agent_id, process.cwd());
       const taskId = (0, import_crypto6.randomUUID)().slice(0, 8);
       const entry = { id: taskId, agentId: def.agent_id, task: def.task, status: "running", startedAt: Date.now() };
-      entry.promise = worker.executeTask(def.task, def.context).then((result) => {
+      entry.promise = worker.executeTask(def.task, void 0, skillsContent).then((result) => {
         entry.status = "completed";
         entry.result = result;
         entry.completedAt = Date.now();
