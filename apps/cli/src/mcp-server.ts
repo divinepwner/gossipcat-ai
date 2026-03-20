@@ -447,8 +447,17 @@ async function main(): Promise<void> {
     }
   });
 
-  process.on('SIGINT', async () => { await server.shutdown(); process.exit(0); });
-  process.on('SIGTERM', async () => { await server.shutdown(); process.exit(0); });
+  // Keep process alive — setInterval prevents Node from exiting when stdin is a pipe
+  const keepAlive = setInterval(() => {}, 60_000);
+
+  process.stdin.on('end', async () => {
+    clearInterval(keepAlive);
+    await server.shutdown();
+    process.exit(0);
+  });
+
+  process.on('SIGINT', async () => { clearInterval(keepAlive); await server.shutdown(); process.exit(0); });
+  process.on('SIGTERM', async () => { clearInterval(keepAlive); await server.shutdown(); process.exit(0); });
   process.stdin.resume();
 }
 
