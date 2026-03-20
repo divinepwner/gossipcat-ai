@@ -250,36 +250,51 @@ export async function runSetupWizard(): Promise<void> {
     .map(([id, a]: [string, any]) => `- ${id}: ${a.provider}/${a.model} (${a.preset})`)
     .join('\n');
 
-  writeFileSync(resolve(rulesDir, 'gossipcat.md'), `# Gossipcat — Multi-Agent Dispatch
+  writeFileSync(resolve(rulesDir, 'gossipcat.md'), `# Gossipcat — Multi-Agent Dispatch Rules
 
-This project uses gossipcat for multi-agent orchestration. You have two dispatch mechanisms:
+This project uses gossipcat for multi-agent orchestration via MCP.
 
-## Non-Claude agents (Gemini, GPT, local models) — use gossipcat MCP tools:
+## Dispatch Rules
+
+### READ tasks (review, research, analysis) — no file changes needed:
+
+**Non-Claude agents** — gossipcat MCP tools:
 \`\`\`
-gossip_dispatch(agent_id: "<id>", task: "description")
+gossip_dispatch(agent_id: "<id>", task: "Review file X for security issues")
 gossip_dispatch_parallel(tasks: [{agent_id: "<id>", task: "..."}, ...])
 gossip_collect(task_ids: ["..."])
-gossip_agents()   — list available agents
 \`\`\`
 
-## Claude agents (Sonnet, Haiku) — use Claude Code's built-in Agent tool (free):
+**Claude agents** — Claude Code Agent tool (free):
 \`\`\`
-Agent(model: "sonnet", prompt: "...", run_in_background: true)
-Agent(model: "haiku", prompt: "...", run_in_background: true)
+Agent(model: "sonnet", prompt: "Review this file...", run_in_background: true)
 \`\`\`
 
-## Parallel multi-provider dispatch — combine both in one message:
-Send gossip_dispatch for non-Claude agents AND Agent tool for Claude agents simultaneously.
-Then synthesize all results.
+### WRITE tasks (implementation, bug fixes) — file changes needed:
+
+**Non-Claude agents** — gossipcat MCP (workers have full tool access):
+\`\`\`
+gossip_dispatch(agent_id: "<id>", task: "Fix the bug in X")
+\`\`\`
+
+**Claude agents** — use isolation: "worktree" for full write access:
+\`\`\`
+Agent(model: "sonnet", prompt: "Fix X. Read, fix, run tests.", isolation: "worktree")
+\`\`\`
+Worktree gives the agent its own branch with unrestricted file access.
+Review changes and merge after completion.
+
+### Parallel multi-provider — combine in one message:
+\`\`\`
+gossip_dispatch(agent_id: "<id>", task: "Security review")
+Agent(model: "sonnet", prompt: "Performance review", isolation: "worktree", run_in_background: true)
+\`\`\`
 
 ## Available agents
 ${agentList}
 
-## Skills
-Skills auto-inject from agent config. No need to pass them manually.
-
-## Adding agents
-Edit gossip.agents.json — new agents hot-reload on next dispatch.
+## Skills & agents
+Skills auto-inject from agent config. Edit gossip.agents.json to add agents (hot-reloads).
 `);
 
   p.log.success('Claude Code rules saved to .claude/rules/gossipcat.md');
