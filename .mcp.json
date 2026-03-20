@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "gossipcat": {
+      "command": "npx",
+      "args": [
+        "ts-node",
+        "-r", "tsconfig-paths/register",
+        "-P", "/Users/goku/Desktop/gossip/tsconfig.json",
+        "/Users/goku/Desktop/gossip/apps/cli/src/mcp-server.ts"
+      ],
+      "cwd": "/Users/goku/Desktop/gossip"
+    }
+  }
+}
