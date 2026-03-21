@@ -510,7 +510,7 @@ If Supabase MCP is not available: prompt for URL + key manually.
 
 - **No PII in Supabase** — user identity is sha256 hash, salt stays local
 - **API keys in keychain** — Supabase anon key stored via Keychain, not in config files
-- **Task results truncated** — 2000 char limit prevents storing large LLM outputs in JSONL/Supabase
+- **Task results truncated** — 4000 char limit prevents storing large LLM outputs in JSONL/Supabase
 - **Sync is non-blocking** — failures logged, never block dispatch/collect
 - **JSONL is source of truth** — Supabase can be deleted/recreated without data loss
 - **`.gossip/supabase.json` is gitignored** — connection config never committed
