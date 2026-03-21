@@ -18,3 +18,4 @@ export type { CatalogEntry } from './skill-catalog';
 export { SkillGapTracker } from './skill-gap-tracker';
 export type { GapSuggestion, GapResolution, GapEntry } from './skill-gap-tracker';
 export { assemblePrompt } from './prompt-assembler';
+export { AgentMemoryReader } from './agent-memory';
