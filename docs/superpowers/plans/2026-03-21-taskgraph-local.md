@@ -596,7 +596,7 @@ Read `apps/cli/src/mcp-server-sdk.ts` to understand the full structure.
 
 - [ ] **Step 2: Add event recording to gossip_dispatch**
 
-After `tasks.set(taskId, entry)` (around line 183), add:
+INSERT (do not replace) AFTER `tasks.set(taskId, entry)` (around line 183), BEFORE the `return` statement. All existing code above (loadSkills, AgentMemoryReader, assemblePrompt, checkSkillCoverage) stays untouched:
 
 ```typescript
 // Record task creation in TaskGraph
@@ -609,11 +609,20 @@ try {
 
 - [ ] **Step 3: Add event recording to gossip_dispatch_parallel**
 
-Same pattern — one `recordCreated` per agent in the loop.
+Same pattern inside the dispatch loop — one `recordCreated` per agent. **IMPORTANT:** In the parallel handler, the skills variable is named `agentSkillsP` (not `agentSkills`):
+
+```typescript
+// Inside the for loop, after tasks.set():
+try {
+  const { TaskGraph: TaskGraphP } = await import('@gossip/orchestrator');
+  const graphP = new TaskGraphP(process.cwd());
+  graphP.recordCreated(taskId, def.agent_id, def.task, agentSkillsP);
+} catch { /* non-blocking */ }
+```
 
 - [ ] **Step 4: Add completion/failure recording to gossip_collect**
 
-In the collect handler, after building result strings and before the existing skill gap tracker block, add:
+In the collect handler, INSERT AFTER building result strings (line ~279) and BEFORE the existing SkillGapTracker block (line ~282). The existing memory writing block (line ~309) comes AFTER both — don't touch it. The pipeline order is: results → **TaskGraph** → skill gap tracker → memory writer → compactor:
 
 ```typescript
 // Record task completion/failure/cancellation in TaskGraph
