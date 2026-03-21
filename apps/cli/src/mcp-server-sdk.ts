@@ -324,7 +324,10 @@ server.tool(
 
     batches.set(batchId, batchTaskIds);
 
-    let msg = `Dispatched ${taskIds.length} tasks:\n${taskIds.map((tid, i) => `  ${tid} → ${taskDefs[i].agent_id}`).join('\n')}`;
+    let msg = `Dispatched ${taskIds.length} tasks:\n${taskIds.map((tid) => {
+      const t = tasks.get(tid);
+      return `  ${tid} → ${t?.agentId || 'unknown'}`;
+    }).join('\n')}`;
     if (errors.length) msg += `\nErrors: ${errors.join(', ')}`;
     return { content: [{ type: 'text' as const, text: msg }] };
   }
