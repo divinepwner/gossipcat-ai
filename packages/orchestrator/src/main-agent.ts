@@ -11,6 +11,7 @@ import { TaskDispatcher } from './task-dispatcher';
 import { WorkerAgent } from './worker-agent';
 import { AgentConfig, TaskResult, ChatResponse } from './types';
 import { ALL_TOOLS } from '@gossip/tools';
+import { ContentBlock, TextContent } from '@gossip/types';
 
 const CHAT_SYSTEM_PROMPT = `You are a developer assistant powering Gossip Mesh. Be concise and direct.
 
@@ -87,8 +88,13 @@ export class MainAgent {
   }
 
   /** Handle a user message: decompose, dispatch, synthesize. Returns structured ChatResponse. */
-  async handleMessage(userMessage: string): Promise<ChatResponse> {
-    const plan = await this.dispatcher.decompose(userMessage);
+  async handleMessage(userMessage: string | ContentBlock[]): Promise<ChatResponse> {
+    // Extract text for task decomposition (dispatcher needs text only)
+    const textForDispatch = typeof userMessage === 'string'
+      ? userMessage
+      : userMessage.filter(b => b.type === 'text').map(b => (b as TextContent).text).join(' ') || 'Describe this image.';
+
+    const plan = await this.dispatcher.decompose(textForDispatch);
     this.dispatcher.assignAgents(plan);
 
     // Handle unassigned tasks directly with main LLM
@@ -126,7 +132,7 @@ export class MainAgent {
       }
     }
 
-    const text = await this.synthesize(userMessage, results);
+    const text = await this.synthesize(textForDispatch, results);
     return {
       text,
       status: 'done',
