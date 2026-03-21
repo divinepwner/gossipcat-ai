@@ -153,8 +153,15 @@ server.tool(
     const { loadSkills } = await import('./skill-loader-bridge');
     const skillsContent = loadSkills(agent_id, process.cwd());
 
+    const { checkSkillCoverage } = await import('./skill-catalog-check');
+    const cfgPath2 = (await import('./config')).findConfigPath();
+    const agentSkills = cfgPath2
+      ? (await import('./config')).configToAgentConfigs((await import('./config')).loadConfig(cfgPath2)).find((a: any) => a.id === agent_id)?.skills || []
+      : [];
+    const skillWarnings = checkSkillCoverage(agent_id, agentSkills, task, process.cwd());
+
     const taskId = randomUUID().slice(0, 8);
-    const entry: any = { id: taskId, agentId: agent_id, task, status: 'running', startedAt: Date.now() };
+    const entry: any = { id: taskId, agentId: agent_id, task, status: 'running', startedAt: Date.now(), skillWarnings };
     entry.promise = worker.executeTask(task, undefined, skillsContent)
       .then((result: string) => { entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now(); })
       .catch((err: Error) => { entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now(); });
@@ -181,13 +188,21 @@ server.tool(
     const taskIds: string[] = [];
     const errors: string[] = [];
 
+    const { checkSkillCoverage } = await import('./skill-catalog-check');
+    const cfgPathP = (await import('./config')).findConfigPath();
+    const allAgentConfigs = cfgPathP
+      ? (await import('./config')).configToAgentConfigs((await import('./config')).loadConfig(cfgPathP))
+      : [];
+
     for (const def of taskDefs) {
       const worker = workers.get(def.agent_id);
       if (!worker) { errors.push(`Agent "${def.agent_id}" not found`); continue; }
 
       const skillsContent = loadSkills(def.agent_id, process.cwd());
+      const agentSkillsP = allAgentConfigs.find((a: any) => a.id === def.agent_id)?.skills || [];
+      const skillWarnings = checkSkillCoverage(def.agent_id, agentSkillsP, def.task, process.cwd());
       const taskId = randomUUID().slice(0, 8);
-      const entry: any = { id: taskId, agentId: def.agent_id, task: def.task, status: 'running', startedAt: Date.now() };
+      const entry: any = { id: taskId, agentId: def.agent_id, task: def.task, status: 'running', startedAt: Date.now(), skillWarnings };
       entry.promise = worker.executeTask(def.task, undefined, skillsContent)
         .then((result: string) => { entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now(); })
         .catch((err: Error) => { entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now(); });
@@ -225,10 +240,45 @@ server.tool(
 
     const results = targets.map((t: any) => {
       const dur = t.completedAt ? `${t.completedAt - t.startedAt}ms` : 'running';
-      if (t.status === 'completed') return `[${t.id}] ${t.agentId} (${dur}):\n${t.result}`;
-      if (t.status === 'failed') return `[${t.id}] ${t.agentId} (${dur}): ERROR: ${t.error}`;
-      return `[${t.id}] ${t.agentId}: still running...`;
+      let text: string;
+      if (t.status === 'completed') text = `[${t.id}] ${t.agentId} (${dur}):\n${t.result}`;
+      else if (t.status === 'failed') text = `[${t.id}] ${t.agentId} (${dur}): ERROR: ${t.error}`;
+      else text = `[${t.id}] ${t.agentId}: still running...`;
+
+      // Append skill coverage warnings
+      if (t.skillWarnings?.length) {
+        text += `\n\n⚠️ Skill coverage gaps:\n${t.skillWarnings.map((w: string) => `  - ${w}`).join('\n')}`;
+      }
+
+      return text;
     });
+
+    // Check for skill suggestions and skeleton generation
+    try {
+      const { SkillGapTracker } = await import('@gossip/orchestrator');
+      const tracker = new SkillGapTracker(process.cwd());
+
+      // Surface suggestions from completed tasks
+      for (const t of targets) {
+        if (t.status !== 'running') {
+          const suggestions = tracker.getSuggestionsSince(t.agentId, t.startedAt);
+          if (suggestions.length) {
+            // Find the matching result and append
+            const idx = targets.indexOf(t);
+            if (idx >= 0 && results[idx]) {
+              results[idx] += `\n\n💡 Skills suggested by ${t.agentId}:\n` +
+                suggestions.map((s: any) => `  - ${s.skill}: ${s.reason}`).join('\n');
+            }
+          }
+        }
+      }
+
+      // Check for skeleton generation
+      const skeletonMessages = tracker.checkAndGenerate();
+      if (skeletonMessages.length) {
+        results.push('📝 ' + skeletonMessages.join('\n📝 '));
+      }
+    } catch { /* orchestrator not available — skip */ }
 
     for (const t of targets) { if (t.status !== 'running') tasks.delete(t.id); }
     return { content: [{ type: 'text' as const, text: results.join('\n\n---\n\n') }] };
