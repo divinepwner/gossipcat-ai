@@ -11,7 +11,7 @@ import { MessageType, MessageEnvelope, Message, ToolDefinition, LLMMessage } fro
 import { encode as msgpackEncode } from '@msgpack/msgpack';
 import { ILLMProvider } from './llm-client';
 
-const MAX_TOOL_TURNS = 10;
+const MAX_TOOL_TURNS = 25;
 const TOOL_CALL_TIMEOUT_MS = 30_000;
 
 export class WorkerAgent {
