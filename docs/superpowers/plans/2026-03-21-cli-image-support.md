@@ -565,7 +565,8 @@ private toAnthropicMessage(m: LLMMessage): Record<string, unknown> {
   }
   if (m.role === 'assistant' && m.toolCalls?.length) {
     const content: unknown[] = [];
-    if (m.content) content.push({ type: 'text', text: m.content });
+    // Cast to string — this branch only reached when typeof check above passed (content is string)
+    if (m.content) content.push({ type: 'text', text: m.content as string });
     for (const tc of m.toolCalls) {
       content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
     }
@@ -595,7 +596,7 @@ private toOpenAIMessage(m: LLMMessage): Record<string, unknown> {
   }
   if (m.role === 'assistant' && m.toolCalls?.length) {
     return {
-      role: 'assistant', content: m.content || null,
+      role: 'assistant', content: (m.content as string) || null,
       tool_calls: m.toolCalls.map(tc => ({
         id: tc.id, type: 'function',
         function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
