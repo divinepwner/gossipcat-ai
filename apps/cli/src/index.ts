@@ -36,6 +36,12 @@ async function main(): Promise<void> {
       await import('./mcp-server-sdk');
       return;
 
+    case 'tasks': {
+      const { runTasksCommand } = await import('./tasks-command');
+      runTasksCommand(process.argv.slice(3));
+      return;
+    }
+
     case 'help':
     case '--help':
     case '-h':
@@ -76,6 +82,9 @@ function printHelp(): void {
     gossipcat create-team      Create a full team from a description (AI-powered)
     gossipcat list-agents      Show your current agent team
     gossipcat remove-agent     Remove an agent from your team
+    gossipcat tasks            Show recent task history
+    gossipcat tasks <id>       Show detail for a specific task
+    gossipcat tasks --agent <id>  Filter tasks by agent
     gossipcat mcp-serve        Start MCP server (for Claude Code / Cursor)
     gossipcat help             Show this help
 
