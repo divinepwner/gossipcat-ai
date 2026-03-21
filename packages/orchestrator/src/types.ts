@@ -110,3 +110,85 @@ export interface ArchivedTaskEntry {
   warmth: number;
   entry: TaskMemoryEntry;
 }
+
+// ── TaskGraph Event Types ────────────────────────────────────────────────
+
+export interface TaskCreatedEvent {
+  type: 'task.created';
+  taskId: string;
+  agentId: string;
+  task: string;
+  skills: string[];
+  parentId?: string;
+  timestamp: string;
+}
+
+export interface TaskCompletedEvent {
+  type: 'task.completed';
+  taskId: string;
+  result: string;
+  duration: number;
+  timestamp: string;
+}
+
+export interface TaskFailedEvent {
+  type: 'task.failed';
+  taskId: string;
+  error: string;
+  duration: number;
+  timestamp: string;
+}
+
+export interface TaskCancelledEvent {
+  type: 'task.cancelled';
+  taskId: string;
+  reason: string;
+  duration: number;
+  timestamp: string;
+}
+
+export interface TaskDecomposedEvent {
+  type: 'task.decomposed';
+  parentId: string;
+  strategy: 'single' | 'parallel' | 'sequential';
+  subTaskIds: string[];
+  timestamp: string;
+}
+
+export interface TaskReferenceEvent {
+  type: 'task.reference';
+  fromTaskId: string;
+  toTaskId: string;
+  relationship: 'triggered_by' | 'fixes' | 'follows_up' | 'related_to';
+  evidence?: string;
+  timestamp: string;
+}
+
+export type TaskGraphEvent =
+  | TaskCreatedEvent
+  | TaskCompletedEvent
+  | TaskFailedEvent
+  | TaskCancelledEvent
+  | TaskDecomposedEvent
+  | TaskReferenceEvent;
+
+export interface ReconstructedTask {
+  taskId: string;
+  agentId: string;
+  task: string;
+  skills: string[];
+  parentId?: string;
+  status: 'created' | 'completed' | 'failed' | 'cancelled';
+  result?: string;
+  error?: string;
+  duration?: number;
+  children?: string[];
+  references?: TaskReferenceEvent[];
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface SyncMeta {
+  lastSync: string;
+  lastSyncEventCount: number;
+}
