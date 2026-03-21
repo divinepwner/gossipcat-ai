@@ -35,7 +35,10 @@ async function getModules() {
 
 async function boot() {
   if (bootPromise) return bootPromise;
-  bootPromise = doBoot();
+  bootPromise = doBoot().catch((err) => {
+    bootPromise = null; // Reset so next call retries instead of permanently failing
+    throw err;
+  });
   return bootPromise;
 }
 
@@ -108,9 +111,16 @@ async function doBoot() {
 
 /**
  * Hot-reload: re-read gossip.agents.json and spawn any new workers.
+ * Serialized — concurrent calls wait for the first to finish.
  */
+let syncPromise: Promise<void> | null = null;
 async function syncWorkersViaKeychain() {
   if (!booted) return;
+  if (syncPromise) return syncPromise;
+  syncPromise = doSyncWorkers().finally(() => { syncPromise = null; });
+  return syncPromise;
+}
+async function doSyncWorkers() {
   try {
     const m = await getModules();
 

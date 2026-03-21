@@ -59,7 +59,12 @@ export class DispatchPipeline {
     catch (err) { this.catalog = null; log(`SkillCatalog unavailable: ${(err as Error).message}`); }
   }
 
+  private static readonly MAX_TASKS = 500;
+
   dispatch(agentId: string, task: string): { taskId: string; promise: Promise<string> } {
+    if (this.tasks.size >= DispatchPipeline.MAX_TASKS) {
+      throw new Error(`Too many active tasks (${this.tasks.size}). Collect results before dispatching more.`);
+    }
     const worker = this.workers.get(agentId);
     if (!worker) throw new Error(`Agent "${agentId}" not found`);
 
@@ -130,11 +135,12 @@ export class DispatchPipeline {
 
     if (targets.length === 0) return [];
 
-    // Wait with timeout
+    // Wait with timeout (clean up timer to avoid pinning event loop)
+    let timer: ReturnType<typeof setTimeout>;
     await Promise.race([
       Promise.all(targets.map(t => t.promise.catch(() => {}))),
-      new Promise(r => setTimeout(r, timeoutMs)),
-    ]);
+      new Promise(r => { timer = setTimeout(r, timeoutMs); timer.unref(); }),
+    ]).finally(() => clearTimeout(timer!));
 
     // Post-collect pipeline
     for (const t of targets) {
