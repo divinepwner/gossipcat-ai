@@ -37,7 +37,8 @@ Enforcement is defense-in-depth: DispatchPipeline prevents conflicts at dispatch
 ```typescript
 export interface DispatchOptions {
   writeMode?: 'sequential' | 'scoped' | 'worktree';
-  scope?: string;  // Required for 'scoped' mode — directory path relative to project root
+  scope?: string;       // Required for 'scoped' mode — directory path relative to project root
+  timeoutMs?: number;   // Write task timeout (default 300000 = 5 minutes). Auto-fails task on expiry.
 }
 ```
 
@@ -131,9 +132,11 @@ private drainWriteQueue(): void {
 
 Without draining on failure, a failed sequential task blocks the queue indefinitely.
 
-### Constraint
+### Constraints
 
-Sequential mode writes to the **main working tree**. The agent writes directly to project files. Safe because only one write task runs at a time.
+- Sequential mode writes to the **main working tree**. Safe because only one write task runs at a time.
+- **Queue depth cap:** Maximum 20 sequential tasks in the queue. Reject with error if exceeded: `"Sequential write queue full (20 tasks). Collect results before dispatching more."`
+- **Task timeout:** Write tasks have a default timeout of 300 seconds (5 minutes). If a write task exceeds the timeout, it is auto-failed and the queue drains. Configurable via `DispatchOptions.timeoutMs`.
 
 ---
 
@@ -268,13 +271,35 @@ if (this.agentScopes.has(callerId)) {
 }
 ```
 
-On `shell_exec` for scoped agents — set `cwd` to the scope directory:
+On `shell_exec` for write-mode agents — set `cwd` AND block dangerous patterns:
 ```typescript
+// For scoped agents: set cwd to scope directory
 if (this.agentScopes.has(callerId)) {
   const scopeDir = join(this.sandbox.projectRoot, this.agentScopes.get(callerId)!);
-  args.cwd = scopeDir; // Override cwd to scope directory
+  args.cwd = scopeDir;
+}
+// For worktree agents: cwd is already set to worktree root via agentRoots
+
+// CRITICAL: Block filesystem escape patterns in shell commands for ALL write-mode agents.
+// cwd alone is NOT a sandbox — agents can cd, use absolute paths, or traverse with ..
+if (this.writeAgents.has(callerId)) {
+  const fullCmd = [args.command, ...(args.args || [])].join(' ');
+  const blockedShellPatterns = [
+    /\.git\/hooks/i,          // Git hook injection
+    /\.git\/config/i,         // Git config manipulation
+    /core\.hookspath/i,       // Hook path override
+    /\.\.\//,                 // Parent directory traversal
+    /^\/[^\/]/,               // Absolute paths (first arg)
+  ];
+  for (const pattern of blockedShellPatterns) {
+    if (pattern.test(fullCmd)) {
+      throw new Error(`Shell command blocked for write-mode agent: matches ${pattern}`);
+    }
+  }
 }
 ```
+
+**Limitation:** `cwd` override + pattern blocking is defense-in-depth but NOT a true sandbox. A determined attacker could find bypasses (e.g., encoded paths, `eval`, indirect commands). For production multi-tenant deployments, `shell_exec` should be disabled entirely for write-mode agents or run inside process isolation (chroot/container). For the current single-user, local-only deployment, the pattern blocking significantly raises the bar.
 
 On `git_commit` for scoped agents — validate files are within scope:
 ```typescript
@@ -286,7 +311,36 @@ if (this.agentScopes.has(callerId) && args.files) {
 }
 ```
 
-This is defense-in-depth: even if DispatchPipeline has a bug, ToolServer blocks unauthorized writes and constrains shell execution to the scope directory.
+**CRITICAL: Fail-closed enforcement.** The scope check MUST be inverted for safety:
+
+```typescript
+// Fail-closed: if agent has active write task but scope is missing (e.g., after ToolServer restart),
+// REJECT rather than allow unrestricted access.
+// ToolServer tracks which agents were dispatched with writeMode via a separate set:
+private writeAgents: Set<string> = new Set(); // populated by scope_assign/root_assign
+
+// On file_write:
+if (this.writeAgents.has(callerId) && !this.agentScopes.has(callerId)) {
+  throw new Error(`Agent ${callerId} has active write task but no scope registered — rejecting (fail-closed)`);
+}
+```
+
+This prevents the crash-recovery window where `agentScopes` is empty but agents are still running. The ToolServer refuses writes from known write-agents until their scope is re-registered.
+
+**Global error handler** — ToolServer must wrap ALL RPC dispatch in try/catch to prevent crash loops from malformed input:
+```typescript
+private async handleToolRequest(data: unknown, envelope: MessageEnvelope): Promise<void> {
+  try {
+    // ... existing dispatch logic ...
+  } catch (err) {
+    // Log and return error — NEVER crash the process
+    const responsePayload = { error: (err as Error).message };
+    // ... send error RPC response ...
+  }
+}
+```
+
+This is defense-in-depth: even if DispatchPipeline has a bug, ToolServer blocks unauthorized writes, constrains shell execution, and cannot be crashed by malformed input.
 
 ---
 
@@ -339,7 +393,9 @@ async merge(taskId: string): Promise<{ merged: boolean; conflicts?: string[] }> 
   }
 
   try {
-    await execFile('git', ['merge', branch, '--no-edit'], { cwd: this.projectRoot });
+    // CRITICAL: Disable git hooks at merge time to prevent hook injection attacks.
+    // A worktree agent could write to .git/hooks/ via shell_exec and inject arbitrary code.
+    await execFile('git', ['-c', 'core.hooksPath=/dev/null', 'merge', branch, '--no-edit'], { cwd: this.projectRoot });
     return { merged: true };
   } catch {
     // Merge conflict — abort and report
@@ -607,7 +663,7 @@ Worktree merge: CONFLICT
 - Tool Server enforces scopes at the file operation level (defense in depth)
 - Worktree paths use `os.tmpdir()` — not inside the project directory
 - Worktree branches use `gossip-<taskId>` prefix — won't collide with user branches
-- Scope validation is strict: paths must be relative, no `..` traversal
+- Scope validation is strict: paths must be relative, no `..` traversal. Paths are resolved via `Sandbox.validatePath` which calls `realpathSync` for symlink resolution (already implemented — returns `fullReal` post-symlink path, blocks symlink escape attacks)
 - `scope_assign` / `root_assign` RPCs require `orchestratorId` match — not just general `allowedCallers`. Worker agents cannot assign their own scopes.
 - Sequential mode limits: only one write task at a time, enforced by the pipeline, not bypassable by MCP callers
 - **Multi-orchestrator limitation:** Only one orchestrator process should run against a project at a time. ScopeTracker is in-memory with no cross-process coordination. Running multiple orchestrators could cause scope conflicts and data corruption. This is documented, not enforced — future work for distributed locking.
