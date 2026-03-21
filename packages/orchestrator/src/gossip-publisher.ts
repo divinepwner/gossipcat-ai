@@ -60,8 +60,16 @@ Return JSON: { "<agentId>": "<summary>", ... }`,
       const summaries = JSON.parse(jsonMatch[0]) as Record<string, string>;
 
       for (const sibling of params.remainingSiblings) {
-        const summary = (summaries[sibling.agentId] || '').slice(0, 500);
+        let summary = (summaries[sibling.agentId] || '').slice(0, 500);
         if (!summary) continue;
+
+        // Sanitize LLM output — strip obvious injection patterns from gossip summaries
+        // Only filter multi-word instruction sequences, not partial word matches
+        summary = summary
+          .replace(/ignore\s+all\s+previous\s+instructions/gi, '[filtered]')
+          .replace(/ignore\s+previous\s+instructions/gi, '[filtered]')
+          .replace(/disregard\s+(all\s+)?prior\s+instructions/gi, '[filtered]')
+          .replace(/override\s+(system\s+)?prompt/gi, '[filtered]');
 
         const gossipMsg: GossipMessage = {
           type: 'gossip',
