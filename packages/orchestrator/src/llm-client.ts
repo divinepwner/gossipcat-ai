@@ -199,25 +199,23 @@ export class GeminiProvider implements ILLMProvider {
   constructor(private apiKey: string, private model: string) {}
 
   async generate(messages: LLMMessage[], options?: LLMGenerateOptions): Promise<LLMResponse> {
-    const contents = messages.filter(m => m.role !== 'system').map(m => {
-      const role = m.role === 'assistant' ? 'model' : 'user';
-      if (typeof m.content !== 'string') {
-        return {
-          role,
-          parts: m.content.map(block =>
-            block.type === 'image'
-              ? { inlineData: { mimeType: block.mediaType, data: block.data } }
-              : { text: block.text }
-          ),
-        };
-      }
-      return { role, parts: [{ text: m.content }] };
-    });
+    const contents = messages.filter(m => m.role !== 'system').map(m => this.toGeminiMessage(m));
     const systemMsg = messages.find(m => m.role === 'system');
     const body: Record<string, unknown> = { contents };
     if (systemMsg) body.systemInstruction = { parts: [{ text: typeof systemMsg.content === 'string' ? systemMsg.content : '' }] };
     if (options?.temperature !== undefined) {
-      body.generationConfig = { temperature: options.temperature, maxOutputTokens: options?.maxTokens ?? 4096 };
+      body.generationConfig = { temperature: options.temperature, maxOutputTokens: options?.maxTokens ?? 8192 };
+    }
+
+    // Pass tools as functionDeclarations
+    if (options?.tools?.length) {
+      body.tools = [{
+        functionDeclarations: options.tools.map(t => ({
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters,
+        })),
+      }];
     }
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
@@ -228,13 +226,73 @@ export class GeminiProvider implements ILLMProvider {
     });
 
     if (!res.ok) {
-      const body = (await res.text()).slice(0, 200);
-      throw new Error(`Gemini API error (${res.status}): ${body}`);
+      const errBody = (await res.text()).slice(0, 200);
+      throw new Error(`Gemini API error (${res.status}): ${errBody}`);
     }
-    const data = await res.json() as Record<string, unknown>;
+    return this.parseGeminiResponse(await res.json() as Record<string, unknown>);
+  }
+
+  private toGeminiMessage(m: LLMMessage): Record<string, unknown> {
+    // Tool result → functionResponse part
+    if (m.role === 'tool') {
+      return {
+        role: 'user',
+        parts: [{ functionResponse: { name: m.name || 'unknown', response: { result: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) } } }],
+      };
+    }
+    // Assistant with tool calls → model with functionCall parts
+    if (m.role === 'assistant' && m.toolCalls?.length) {
+      const parts: Record<string, unknown>[] = [];
+      if (m.content && typeof m.content === 'string' && m.content.trim()) {
+        parts.push({ text: m.content });
+      }
+      for (const tc of m.toolCalls) {
+        parts.push({ functionCall: { name: tc.name, args: tc.arguments } });
+      }
+      return { role: 'model', parts };
+    }
+    // Multimodal content
+    if (typeof m.content !== 'string') {
+      return {
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: m.content.map(block =>
+          block.type === 'image'
+            ? { inlineData: { mimeType: block.mediaType, data: block.data } }
+            : { text: block.text }
+        ),
+      };
+    }
+    return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] };
+  }
+
+  private parseGeminiResponse(data: Record<string, unknown>): LLMResponse {
     const candidates = data.candidates as Array<Record<string, unknown>>;
-    const parts = (candidates[0].content as Record<string, unknown>).parts as Array<Record<string, string>>;
-    return { text: parts.map(p => p.text).join('') };
+    if (!candidates?.length) return { text: '[No response from Gemini]' };
+    const parts = (candidates[0].content as Record<string, unknown>).parts as Array<Record<string, unknown>>;
+    if (!parts?.length) return { text: '' };
+
+    const textParts: string[] = [];
+    const toolCalls: LLMResponse['toolCalls'] = [];
+    let callIndex = 0;
+
+    for (const part of parts) {
+      if (part.text) {
+        textParts.push(part.text as string);
+      }
+      if (part.functionCall) {
+        const fc = part.functionCall as { name: string; args: Record<string, unknown> };
+        toolCalls.push({
+          id: `gemini-call-${callIndex++}`,
+          name: fc.name,
+          arguments: fc.args || {},
+        });
+      }
+    }
+
+    return {
+      text: textParts.join(''),
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    };
   }
 }
 
