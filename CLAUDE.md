@@ -11,9 +11,13 @@ This project has a gossipcat MCP server that dispatches tasks to worker agents (
 gossip_dispatch(agent_id: "gemini-reviewer", task: "Review packages/relay/src/server.ts for security issues")
 gossip_dispatch_parallel(tasks: [{agent_id: "gemini-reviewer", task: "..."}, {agent_id: "gemini-tester", task: "..."}])
 gossip_collect(task_ids: ["abc123"])
-gossip_agents()   — list available agents
-gossip_status()   — check system status
+gossip_agents()                    — list available agents
+gossip_status()                    — check system status
+gossip_update_instructions(agent_ids: "gemini-reviewer" | ["id1","id2"], instruction_update: "...", mode: "append"|"replace")
+gossip_tools()                     — list all available gossipcat tools (call after /mcp reconnect)
 ```
+
+**After every `/mcp` reconnect**, call `gossip_tools()` to discover all available tools — new tools may have been added.
 
 **Claude agents (Sonnet/Haiku)** — use Claude Code's built-in Agent tool (free, no API key needed):
 ```
