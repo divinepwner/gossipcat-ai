@@ -11,6 +11,14 @@ async function withMemoryLock(agentId: string, fn: () => Promise<void>): Promise
   await next;
 }
 
+/** Truncate text at a word boundary, appending "..." if truncated */
+function truncateAtWord(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  const truncated = text.slice(0, maxLen);
+  const lastSpace = truncated.lastIndexOf(' ');
+  return (lastSpace > maxLen * 0.8 ? truncated.slice(0, lastSpace) : truncated) + '...';
+}
+
 export class MemoryWriter {
   constructor(private projectRoot: string) {}
 
@@ -37,7 +45,7 @@ export class MemoryWriter {
     const entry: TaskMemoryEntry = {
       version: 1,
       taskId: data.taskId,
-      task: data.task.slice(0, 200),
+      task: truncateAtWord(data.task, 500),
       skills: data.skills,
       lens: data.lens,
       findings: data.findings ?? 0,
