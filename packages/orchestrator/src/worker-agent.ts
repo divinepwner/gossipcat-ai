@@ -47,7 +47,16 @@ export class WorkerAgent {
     const messages: LLMMessage[] = [
       {
         role: 'system',
-        content: `You are a skilled developer agent. Complete the assigned task using the available tools. Be concise and focused.${skillsContent || ''}${context ? `\n\nContext:\n${context}` : ''}`,
+        content: `You are a skilled developer agent. Complete the assigned task using the available tools. Be concise and focused.
+
+If you encounter patterns or domains that your current skills don't cover adequately, call suggest_skill with the skill name and why you need it. This won't give you the skill now — it helps the system learn what skills are missing for future tasks.
+
+Examples of when to suggest:
+- You see WebSocket code but have no DoS/resilience checklist
+- You see database queries but have no SQL optimization skill
+- You see CI/CD config but have no deployment skill
+
+Do not stop working to suggest skills. Note the gap, call suggest_skill, keep going with your best judgment.${skillsContent || ''}${context ? `\n\nContext:\n${context}` : ''}`,
       },
       { role: 'user', content: task },
     ];
