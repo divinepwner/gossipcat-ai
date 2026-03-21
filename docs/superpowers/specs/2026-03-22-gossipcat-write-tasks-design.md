@@ -63,7 +63,12 @@ dispatch(agentId: string, task: string, options?: DispatchOptions): { taskId: st
 
 No write mode = current behavior (read-only, no coordination). Write mode triggers the appropriate coordination layer before executing.
 
-**Validation:** When `writeMode === 'scoped'` and `scope` is undefined/empty, throw: `"scope is required for scoped write mode"`. Validate early at dispatch time, not silently downstream.
+**Validation at dispatch time:**
+- `writeMode === 'scoped'` and `scope` is undefined/empty → throw: `"scope is required for scoped write mode"`
+- `writeMode === 'worktree'` and agent already has an active worktree task → throw: `"agent already has an active worktree task"` (prevents `agentRoots` collision)
+- `writeMode === 'sequential'` and another sequential task is queued/active → queue (not reject — sequential tasks wait)
+
+**file_read in scoped mode:** Intentionally unrestricted. Scoped agents can read any file — the scope only restricts writes. This allows review + edit workflows where an agent reads broadly but writes narrowly.
 
 ---
 
@@ -82,7 +87,23 @@ private activeWriteTaskId: string | null = null;
 ### Dispatch flow
 
 1. If `activeWriteTaskId === null` — start immediately, set `activeWriteTaskId = taskId`
-2. If a write task IS running — add to `writeQueue`, return a promise that resolves when the task reaches the front of the queue and completes
+2. If a write task IS running — create a **deferred promise** and add to queue:
+```typescript
+// Deferred promise pattern — task doesn't start until execute() is called
+let deferResolve: (v: string) => void;
+let deferReject: (e: Error) => void;
+entry.promise = new Promise<string>((res, rej) => { deferResolve = res; deferReject = rej; });
+this.writeQueue.push({
+  taskId,
+  execute: () => {
+    this.activeWriteTaskId = taskId;
+    worker.executeTask(task, undefined, promptContent)
+      .then((result) => { entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now(); deferResolve(result); })
+      .catch((err) => { entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now(); deferReject(err); });
+  },
+});
+```
+This guarantees `entry.promise` only settles after the task actually runs, not when it's queued.
 3. Read-only tasks (no writeMode) run in parallel with write tasks — they are never blocked
 
 ### Completion flow
@@ -91,20 +112,24 @@ When a sequential write task completes (via `collect()` or `writeMemoryForTask()
 1. Set `activeWriteTaskId = null`
 2. If `writeQueue` is not empty — dequeue next task, set it as active, call its `execute()` callback
 
-Both `collect()` and `writeMemoryForTask()` must call the same `drainWriteQueue()` method after task cleanup:
+Both `collect()` and `writeMemoryForTask()` must call the same `drainWriteQueue()` method after task cleanup. **This method MUST be synchronous** — it runs after all async work settles and must not be interleaved:
 
 ```typescript
 private drainWriteQueue(): void {
-  if (this.activeWriteTaskId !== null) return; // another task already active
+  if (this.activeWriteTaskId !== null) return;
   const next = this.writeQueue.shift();
   if (next) {
-    this.activeWriteTaskId = next.taskId;
-    next.execute();
+    next.execute(); // execute() sets activeWriteTaskId internally
   }
 }
 ```
 
-This is called at the end of both `collect()` (for MCP path) and `writeMemoryForTask()` (for handleMessage path). Without this, sequential tasks that complete via handleMessage would block the queue indefinitely.
+**Drain triggers — ALL completion paths must drain:**
+- `collect()` — after post-collect pipeline, for each completed/failed write task: set `activeWriteTaskId = null`, then call `drainWriteQueue()`
+- `writeMemoryForTask()` — same: set `activeWriteTaskId = null`, then `drainWriteQueue()`
+- **Failed tasks:** `writeMemoryForTask()` currently returns early for non-completed tasks. For sequential write tasks, the queue MUST still drain on failure. Add: if the task had `writeMode === 'sequential'` and status is `'failed'`, still set `activeWriteTaskId = null` and call `drainWriteQueue()`.
+
+Without draining on failure, a failed sequential task blocks the queue indefinitely.
 
 ### Constraint
 
@@ -185,20 +210,52 @@ hasOverlap(scope: string): { overlaps: boolean; conflictTaskId?: string; conflic
 
 ### Tool Server enforcement (defense in depth)
 
-ToolServer tracks per-agent scopes:
+ToolServer tracks per-agent scopes and roots:
 
 ```typescript
 // In ToolServer
 private agentScopes: Map<string, string> = new Map(); // agentId → scope path
+private orchestratorId: string;  // Only this agent can assign scopes/roots
 
-// New RPC handlers:
+// In ToolServerConfig:
+orchestratorId?: string;  // If set, only this agent can send scope_assign/root_assign RPCs
+
+// New RPC handlers — MUST verify sender is orchestrator:
 case 'scope_assign':
+  if (this.orchestratorId && envelope.sid !== this.orchestratorId) {
+    throw new Error('Unauthorized: only orchestrator can assign scopes');
+  }
   this.agentScopes.set(args.agentId, args.scope);
   return 'OK';
 case 'scope_release':
+  if (this.orchestratorId && envelope.sid !== this.orchestratorId) {
+    throw new Error('Unauthorized');
+  }
   this.agentScopes.delete(args.agentId);
   return 'OK';
 ```
+
+### Tool Server state recovery
+
+`agentScopes` and `agentRoots` are in-memory. If the ToolServer crashes and reconnects, all scope/root assignments are lost — silently disabling enforcement.
+
+**Recovery mechanism:** When DispatchPipeline detects a ToolServer reconnect (via relay presence events or a heartbeat check), it re-sends all active `scope_assign` and `root_assign` RPCs for currently-running write tasks:
+
+```typescript
+// In DispatchPipeline — called when ToolServer reconnects:
+private async reRegisterWriteTaskState(): Promise<void> {
+  for (const [taskId, entry] of this.tasks) {
+    if (entry.writeMode === 'scoped' && entry.scope) {
+      await this.sendRpc('tool-server', 'scope_assign', { agentId: entry.agentId, scope: entry.scope });
+    }
+    if (entry.writeMode === 'worktree' && entry.worktreeInfo) {
+      await this.sendRpc('tool-server', 'root_assign', { agentId: entry.agentId, root: entry.worktreeInfo.path });
+    }
+  }
+}
+```
+
+This ensures scope enforcement is restored after any ToolServer restart.
 
 On every `file_write` call:
 ```typescript
@@ -211,7 +268,25 @@ if (this.agentScopes.has(callerId)) {
 }
 ```
 
-This is defense-in-depth: even if DispatchPipeline has a bug, ToolServer blocks unauthorized writes.
+On `shell_exec` for scoped agents — set `cwd` to the scope directory:
+```typescript
+if (this.agentScopes.has(callerId)) {
+  const scopeDir = join(this.sandbox.projectRoot, this.agentScopes.get(callerId)!);
+  args.cwd = scopeDir; // Override cwd to scope directory
+}
+```
+
+On `git_commit` for scoped agents — validate files are within scope:
+```typescript
+if (this.agentScopes.has(callerId) && args.files) {
+  const allowed = this.agentScopes.get(callerId)!;
+  for (const f of args.files) {
+    if (!f.startsWith(allowed)) throw new Error(`Cannot commit file outside scope: ${f}`);
+  }
+}
+```
+
+This is defense-in-depth: even if DispatchPipeline has a bug, ToolServer blocks unauthorized writes and constrains shell execution to the scope directory.
 
 ---
 
@@ -241,7 +316,8 @@ export class WorktreeManager {
 ```typescript
 async create(taskId: string): Promise<{ path: string; branch: string }> {
   const branch = `gossip-${taskId}`;
-  const wtPath = join(tmpdir(), `gossip-wt-${taskId}`);
+  // Use mkdtemp for unpredictable paths (prevents TOCTOU pre-creation attacks)
+  const wtPath = await mkdtemp(join(tmpdir(), 'gossip-wt-'));
 
   await execFile('git', ['branch', branch, 'HEAD'], { cwd: this.projectRoot });
   await execFile('git', ['worktree', 'add', wtPath, branch], { cwd: this.projectRoot });
@@ -277,12 +353,31 @@ async merge(taskId: string): Promise<{ merged: boolean; conflicts?: string[] }> 
 ### Cleanup flow
 
 ```typescript
-async cleanup(taskId: string): Promise<void> {
-  const wtPath = join(tmpdir(), `gossip-wt-${taskId}`);
+async cleanup(taskId: string, wtPath: string): Promise<void> {
   const branch = `gossip-${taskId}`;
 
   try { await execFile('git', ['worktree', 'remove', wtPath, '--force'], { cwd: this.projectRoot }); } catch { /* already removed */ }
   try { await execFile('git', ['branch', '-d', branch], { cwd: this.projectRoot }); } catch { /* branch in use or doesn't exist */ }
+}
+```
+
+Note: `wtPath` is passed from the stored `worktreeInfo.path` on the TaskEntry (since mkdtemp generates a random suffix, we can't reconstruct the path from the taskId alone).
+
+**Orphan cleanup on startup:**
+
+```typescript
+async pruneOrphans(): Promise<void> {
+  // Find stale gossip worktrees that survived a crash
+  const result = await execFile('git', ['worktree', 'list', '--porcelain'], { cwd: this.projectRoot });
+  const orphans = result.stdout.split('\n\n')
+    .filter(block => block.includes('gossip-wt-'))
+    .map(block => block.match(/worktree (.+)/)?.[1])
+    .filter(Boolean);
+  for (const wtPath of orphans) {
+    try { await execFile('git', ['worktree', 'remove', wtPath!, '--force'], { cwd: this.projectRoot }); } catch {}
+  }
+  // Prune gossip branches with no worktree
+  await execFile('git', ['worktree', 'prune'], { cwd: this.projectRoot }).catch(() => {});
 }
 ```
 
@@ -376,13 +471,23 @@ gossip_dispatch_parallel(tasks: [
 | Multiple sequential | No — error |
 | Multiple scoped (non-overlapping) | Yes |
 | Multiple scoped (overlapping) | No — error |
-| Multiple worktree | Yes |
+| Multiple worktree (different agents) | Yes |
+| Multiple worktree (same agent) | No — `agentRoots` keyed on agentId, would collide |
 | Scoped + worktree + read-only | Yes |
 | Sequential + any other write mode | No — error |
 
-### Batch scope check
+### Batch pre-validation (true all-or-nothing)
 
-All scoped tasks in a batch are validated as a group before any are dispatched:
+ALL validation runs BEFORE any task is dispatched. If any check fails, the entire batch is rejected with zero side effects:
+
+1. **Agent existence:** verify all agents exist in the workers map
+2. **Write mode rules:** check the combination table above
+3. **Scope overlap:** check inter-batch and against active scopes
+4. **Worktree agent collision:** verify no agent has two worktree tasks
+
+Only after all checks pass does dispatching begin. This prevents the partial-dispatch problem where task 1 is running but task 2 fails validation.
+
+All scoped tasks in a batch are validated as a group:
 
 ```typescript
 // Check all scoped tasks for inter-batch overlap
@@ -503,5 +608,9 @@ Worktree merge: CONFLICT
 - Worktree paths use `os.tmpdir()` — not inside the project directory
 - Worktree branches use `gossip-<taskId>` prefix — won't collide with user branches
 - Scope validation is strict: paths must be relative, no `..` traversal
-- `scope_assign` / `root_assign` RPCs are only accepted from the orchestrator (validated by relay sid stamping — only authenticated agents can send RPCs)
+- `scope_assign` / `root_assign` RPCs require `orchestratorId` match — not just general `allowedCallers`. Worker agents cannot assign their own scopes.
 - Sequential mode limits: only one write task at a time, enforced by the pipeline, not bypassable by MCP callers
+- **Multi-orchestrator limitation:** Only one orchestrator process should run against a project at a time. ScopeTracker is in-memory with no cross-process coordination. Running multiple orchestrators could cause scope conflicts and data corruption. This is documented, not enforced — future work for distributed locking.
+- **Worktree paths** use `mkdtemp` for unpredictable random suffixes — prevents TOCTOU pre-creation attacks
+- **ToolServer state recovery:** On ToolServer reconnect, DispatchPipeline re-sends all active scope/root assignments. See "Tool Server state recovery" section.
+- **Orphan cleanup:** WorktreeManager.pruneOrphans() runs at startup to clean stale worktrees from prior crashes
