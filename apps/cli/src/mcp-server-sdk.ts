@@ -402,12 +402,9 @@ server.tool(
         provider: z.string(),
         model: z.string(),
       }),
-      agents: z.record(z.object({
-        provider: z.string(),
-        model: z.string(),
-        preset: z.string().optional(),
-        skills: z.array(z.string()).min(1),
-      })).optional(),
+      // z.record() is incompatible with MCP SDK's JSON Schema converter in zod v4
+      // Using z.any() for the schema; actual validation done by validateConfig() below
+      agents: z.any().optional().describe('Record of agent_id → { provider, model, preset?, skills[] }'),
     }),
   },
   async ({ config }) => {
