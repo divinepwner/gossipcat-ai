@@ -63,6 +63,8 @@ dispatch(agentId: string, task: string, options?: DispatchOptions): { taskId: st
 
 No write mode = current behavior (read-only, no coordination). Write mode triggers the appropriate coordination layer before executing.
 
+**Validation:** When `writeMode === 'scoped'` and `scope` is undefined/empty, throw: `"scope is required for scoped write mode"`. Validate early at dispatch time, not silently downstream.
+
 ---
 
 ## Component 2: Sequential Write Queue
@@ -88,6 +90,21 @@ private activeWriteTaskId: string | null = null;
 When a sequential write task completes (via `collect()` or `writeMemoryForTask()`):
 1. Set `activeWriteTaskId = null`
 2. If `writeQueue` is not empty — dequeue next task, set it as active, call its `execute()` callback
+
+Both `collect()` and `writeMemoryForTask()` must call the same `drainWriteQueue()` method after task cleanup:
+
+```typescript
+private drainWriteQueue(): void {
+  if (this.activeWriteTaskId !== null) return; // another task already active
+  const next = this.writeQueue.shift();
+  if (next) {
+    this.activeWriteTaskId = next.taskId;
+    next.execute();
+  }
+}
+```
+
+This is called at the end of both `collect()` (for MCP path) and `writeMemoryForTask()` (for handleMessage path). Without this, sequential tasks that complete via handleMessage would block the queue indefinitely.
 
 ### Constraint
 
@@ -126,6 +143,19 @@ Two scopes overlap if either is a prefix of the other:
 - `packages/relay/src/` overlaps with `packages/relay/` (child within parent)
 - `packages/relay/` does NOT overlap with `packages/tools/` (siblings)
 - `packages/` overlaps with everything under `packages/` (too broad — warn but allow)
+
+Scopes MUST be normalized before registration and comparison to prevent path traversal:
+
+```typescript
+import { resolve, relative } from 'path';
+
+private normalizeScope(scope: string, projectRoot: string): string {
+  const abs = resolve(projectRoot, scope);
+  const rel = relative(projectRoot, abs);
+  if (rel.startsWith('..')) throw new Error(`Scope "${scope}" resolves outside project root`);
+  return rel.endsWith('/') ? rel : rel + '/';
+}
+```
 
 Implementation:
 ```typescript
@@ -276,7 +306,35 @@ clearAgentRoot(agentId: string): void {
 const root = this.agentRoots.get(callerId) || this.sandbox.projectRoot;
 ```
 
-File tools, git tools, and shell tools all use this overridden root. The agent doesn't know it's in a worktree — it just works.
+**Threading the root to all tool classes:**
+
+The overridden root must be used by ALL tool classes, not just file tools:
+
+```typescript
+// In executeTool:
+const root = this.agentRoots.get(callerId) || this.sandbox.projectRoot;
+
+// File tools — pass root to Sandbox for path validation:
+case 'file_read':
+  const sandbox = new Sandbox(root);
+  return new FileTools(sandbox).fileRead(args);
+
+// Shell tools — pass root as cwd:
+case 'shell_exec':
+  return this.shellTools.shellExec({ ...args, cwd: root });
+
+// Git tools — construct with dynamic root:
+case 'git_status':
+case 'git_diff':
+case 'git_log':
+case 'git_commit':
+case 'git_branch':
+  return new GitTools(root).gitStatus(); // (dispatch to correct method)
+```
+
+`GitTools` and `FileTools` are lightweight — constructing per-call is acceptable. Alternatively, cache per root path. The key requirement: `cwd` for shell commands and `projectRoot` for file/git operations MUST use the per-agent root, not the ToolServer's original root.
+
+The agent doesn't know it's in a worktree — it just works.
 
 ### Dispatch flow (worktree mode)
 
@@ -287,10 +345,13 @@ File tools, git tools, and shell tools all use this overridden root. The agent d
 
 ### Collect flow (worktree mode)
 
-1. Try merge: `worktreeManager.merge(taskId)`
-2. If merged — cleanup worktree + branch, clear ToolServer root
-3. If conflicts — DON'T cleanup (user needs to resolve), include conflict details in result
-4. Clear ToolServer root either way
+1. Clear ToolServer root: send `root_release` RPC
+2. If task **failed** — cleanup worktree + branch (no useful changes), skip merge
+3. If task **completed** — try merge: `worktreeManager.merge(taskId)`
+   - If merged successfully — cleanup worktree + branch
+   - If conflicts — DON'T cleanup (user needs to resolve), include conflict details in result
+
+Failed tasks always clean up (the branch has incomplete/broken changes). Successful tasks with merge conflicts preserve the branch so the user can resolve manually.
 
 ---
 
