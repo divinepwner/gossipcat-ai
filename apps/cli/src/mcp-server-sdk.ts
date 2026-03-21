@@ -56,6 +56,9 @@ async function doBoot() {
   toolServer = new m.ToolServer({ relayUrl: relay.url, projectRoot: process.cwd() });
   await toolServer.start();
 
+  // Create workers at the MCP level for low-level dispatch (gossip_dispatch).
+  // MainAgent.start() is NOT called — it would create duplicate workers
+  // with the same agent IDs, causing "already connected" errors on the relay.
   for (const ac of agentConfigs) {
     const key = await keychain.getKey(ac.provider);
     const llm = m.createProvider(ac.provider, ac.model, key ?? undefined);
@@ -72,6 +75,9 @@ async function doBoot() {
     relayUrl: relay.url,
     agents: agentConfigs,
   });
+  // Pass existing workers to MainAgent so it doesn't create duplicates
+  mainAgent.setWorkers(workers);
+  // start() will skip workers already set via setWorkers()
   await mainAgent.start();
 
   booted = true;

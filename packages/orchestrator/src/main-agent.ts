@@ -63,10 +63,18 @@ export class MainAgent {
   /** Start all worker agents (connect to relay) */
   async start(): Promise<void> {
     for (const config of this.registry.getAll()) {
+      if (this.workers.has(config.id)) continue; // skip if already set externally
       const llm = createProvider(config.provider, config.model, this.apiKeys[config.provider]);
       const worker = new WorkerAgent(config.id, llm, this.relayUrl, ALL_TOOLS);
       await worker.start();
       this.workers.set(config.id, worker);
+    }
+  }
+
+  /** Set externally-created workers (used by MCP server to avoid duplicate connections) */
+  setWorkers(externalWorkers: Map<string, WorkerAgent>): void {
+    for (const [id, worker] of externalWorkers) {
+      this.workers.set(id, worker);
     }
   }
 
