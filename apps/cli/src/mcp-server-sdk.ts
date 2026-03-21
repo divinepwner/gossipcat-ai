@@ -15,6 +15,9 @@ let toolServer: any = null;
 let workers: Map<string, any> = new Map();
 let mainAgent: any = null;
 const tasks: Map<string, any> = new Map();
+const batches = new Map<string, Set<string>>();
+let gossipPublisher: any = null;
+let agentConfigsCache: any[] = [];
 
 // Cache modules after first import
 let _modules: any = null;
@@ -62,7 +65,14 @@ async function doBoot() {
   for (const ac of agentConfigs) {
     const key = await keychain.getKey(ac.provider);
     const llm = m.createProvider(ac.provider, ac.model, key ?? undefined);
-    const worker = new m.WorkerAgent(ac.id, llm, relay.url, m.ALL_TOOLS);
+    const { existsSync: existsSyncBoot, readFileSync: readFileSyncBoot } = require('fs');
+    const { join: joinBoot } = require('path');
+    const instructionsPath = joinBoot(process.cwd(), '.gossip', 'agents', ac.id, 'instructions.md');
+    const instructions = existsSyncBoot(instructionsPath)
+      ? readFileSyncBoot(instructionsPath, 'utf-8')
+      : undefined;
+
+    const worker = new m.WorkerAgent(ac.id, llm, relay.url, m.ALL_TOOLS, instructions);
     await worker.start();
     workers.set(ac.id, worker);
   }
@@ -79,6 +89,27 @@ async function doBoot() {
   mainAgent.setWorkers(workers);
   // start() will skip workers already set via setWorkers()
   await mainAgent.start();
+
+  // Create gossip publisher for batch updates
+  try {
+    const { GossipAgent: GossipAgentPub } = await import('@gossip/client');
+    const publisherAgent = new GossipAgentPub({
+      agentId: 'gossip-publisher',
+      relayUrl: relay.url,
+      reconnect: true,
+    });
+    await publisherAgent.connect();
+
+    const { GossipPublisher: GossipPub } = await import('@gossip/orchestrator');
+    gossipPublisher = new GossipPub(
+      m.createProvider(config.main_agent.provider, config.main_agent.model, mainKey ?? undefined),
+      { publishToChannel: (channel: string, data: unknown) => publisherAgent.publishToChannel(channel, data) }
+    );
+    agentConfigsCache = agentConfigs;
+    process.stderr.write(`[gossipcat] Gossip publisher ready\n`);
+  } catch (err) {
+    process.stderr.write(`[gossipcat] Gossip publisher failed: ${(err as Error).message}\n`);
+  }
 
   booted = true;
   process.stderr.write(`[gossipcat] Booted: relay :${relay.port}, ${workers.size} workers\n`);
@@ -104,7 +135,14 @@ async function syncWorkers() {
     if (workers.has(ac.id)) continue; // already running
     const key = await keychain.getKey(ac.provider);
     const llm = m.createProvider(ac.provider, ac.model, key ?? undefined);
-    const worker = new m.WorkerAgent(ac.id, llm, relay.url, m.ALL_TOOLS);
+    const { existsSync: existsSyncBoot, readFileSync: readFileSyncBoot } = require('fs');
+    const { join: joinBoot } = require('path');
+    const instructionsPath = joinBoot(process.cwd(), '.gossip', 'agents', ac.id, 'instructions.md');
+    const instructions = existsSyncBoot(instructionsPath)
+      ? readFileSyncBoot(instructionsPath, 'utf-8')
+      : undefined;
+
+    const worker = new m.WorkerAgent(ac.id, llm, relay.url, m.ALL_TOOLS, instructions);
     await worker.start();
     workers.set(ac.id, worker);
     added++;
@@ -219,6 +257,18 @@ server.tool(
     const { AgentMemoryReader: AgentMemoryReaderP, assemblePrompt: assemblePromptP } = await import('@gossip/orchestrator');
     const memoryReaderP = new AgentMemoryReaderP(process.cwd());
 
+    // Create batch for gossip
+    const batchId = randomUUID().slice(0, 8);
+    const batchTaskIds = new Set<string>();
+
+    // Subscribe workers to batch channel
+    for (const def of taskDefs) {
+      const w = workers.get(def.agent_id);
+      if (w?.subscribeToBatch) {
+        w.subscribeToBatch(batchId).catch(() => {});
+      }
+    }
+
     for (const def of taskDefs) {
       const worker = workers.get(def.agent_id);
       if (!worker) { errors.push(`Agent "${def.agent_id}" not found`); continue; }
@@ -237,9 +287,30 @@ server.tool(
       const taskId = randomUUID().slice(0, 8);
       const entry: any = { id: taskId, agentId: def.agent_id, task: def.task, status: 'running', startedAt: Date.now(), skillWarnings };
       entry.promise = worker.executeTask(def.task, undefined, promptContentP)
-        .then((result: string) => { entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now(); })
+        .then(async (result: string) => {
+          entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now();
+
+          // Publish gossip to still-running batch siblings
+          if (gossipPublisher && batchId) {
+            const remaining = Array.from(batchTaskIds)
+              .map(tid => tasks.get(tid))
+              .filter((t: any) => t && t.status === 'running' && t.agentId !== def.agent_id)
+              .map((t: any) => agentConfigsCache.find((ac: any) => ac.id === t.agentId))
+              .filter((ac: any) => ac !== undefined);
+
+            if (remaining.length > 0) {
+              gossipPublisher.publishGossip({
+                batchId,
+                completedAgentId: def.agent_id,
+                completedResult: result,
+                remainingSiblings: remaining,
+              }).catch((err: Error) => process.stderr.write(`[gossipcat] Gossip: ${err.message}\n`));
+            }
+          }
+        })
         .catch((err: Error) => { entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now(); });
       tasks.set(taskId, entry);
+      batchTaskIds.add(taskId);
 
       try {
         const { TaskGraph: TaskGraphP } = await import('@gossip/orchestrator');
@@ -250,6 +321,8 @@ server.tool(
 
       taskIds.push(taskId);
     }
+
+    batches.set(batchId, batchTaskIds);
 
     let msg = `Dispatched ${taskIds.length} tasks:\n${taskIds.map((tid, i) => `  ${tid} → ${taskDefs[i].agent_id}`).join('\n')}`;
     if (errors.length) msg += `\nErrors: ${errors.join(', ')}`;
@@ -370,6 +443,26 @@ server.tool(
     } catch (err) {
       process.stderr.write(`[gossipcat] Memory write error: ${(err as Error).message}\n`);
     }
+
+    // Batch cleanup — unsubscribe completed batches
+    try {
+      for (const [bid, taskIdSet] of batches) {
+        const allDone = Array.from(taskIdSet).every(tid => {
+          const t = tasks.get(tid);
+          return !t || t.status !== 'running';
+        });
+        if (allDone) {
+          for (const tid of taskIdSet) {
+            const t = tasks.get(tid);
+            if (t) {
+              const w = workers.get(t.agentId);
+              if (w?.unsubscribeFromBatch) w.unsubscribeFromBatch(bid).catch(() => {});
+            }
+          }
+          batches.delete(bid);
+        }
+      }
+    } catch { /* non-blocking */ }
 
     for (const t of targets) { if (t.status !== 'running') tasks.delete(t.id); }
     return { content: [{ type: 'text' as const, text: results.join('\n\n---\n\n') }] };
