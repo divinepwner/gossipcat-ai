@@ -100,7 +100,9 @@ export class MemoryWriter {
           try {
             const entry = JSON.parse(line) as TaskMemoryEntry;
             const date = entry.timestamp.split('T')[0];
-            parts.push(`- ${date}: ${entry.task}`);
+            // Single-line summary for index — collapse newlines, limit to 120 chars
+            const summary = entry.task.replace(/\n/g, ' ').replace(/\s+/g, ' ').slice(0, 120);
+            parts.push(`- ${date}: ${summary}`);
           } catch { /* skip malformed */ }
         }
         parts.push('');
