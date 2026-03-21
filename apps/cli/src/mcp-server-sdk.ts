@@ -111,29 +111,33 @@ async function doBoot() {
  */
 async function syncWorkersViaKeychain() {
   if (!booted) return;
-  const m = await getModules();
+  try {
+    const m = await getModules();
 
-  const configPath = m.findConfigPath();
-  if (!configPath) return;
+    const configPath = m.findConfigPath();
+    if (!configPath) return;
 
-  const config = m.loadConfig(configPath);
-  const agentConfigs = m.configToAgentConfigs(config);
+    const config = m.loadConfig(configPath);
+    const agentConfigs = m.configToAgentConfigs(config);
 
-  // Register any new agent configs
-  for (const ac of agentConfigs) {
-    mainAgent.registerAgent(ac);
-  }
-
-  const added = await mainAgent.syncWorkers((provider: string) => keychain.getKey(provider));
-  if (added > 0) {
-    // Sync new workers into the module-level map for gossip_status visibility
+    // Register any new agent configs
     for (const ac of agentConfigs) {
-      if (!workers.has(ac.id)) {
-        const w = mainAgent.getWorker(ac.id);
-        if (w) workers.set(ac.id, w);
-      }
+      mainAgent.registerAgent(ac);
     }
-    process.stderr.write(`[gossipcat] Synced: ${workers.size} workers total\n`);
+
+    const added = await mainAgent.syncWorkers((provider: string) => keychain.getKey(provider));
+    if (added > 0) {
+      // Sync new workers into the module-level map for gossip_status visibility
+      for (const ac of agentConfigs) {
+        if (!workers.has(ac.id)) {
+          const w = mainAgent.getWorker(ac.id);
+          if (w) workers.set(ac.id, w);
+        }
+      }
+      process.stderr.write(`[gossipcat] Synced: ${workers.size} workers total\n`);
+    }
+  } catch (err) {
+    process.stderr.write(`[gossipcat] syncWorkers failed: ${(err as Error).message}\n`);
   }
 }
 
@@ -180,6 +184,7 @@ server.tool(
       const { taskId } = mainAgent.dispatch(agent_id, task);
       return { content: [{ type: 'text' as const, text: `Dispatched to ${agent_id}. Task ID: ${taskId}` }] };
     } catch (err: any) {
+      process.stderr.write(`[gossipcat] dispatch failed: ${err.message}\n`);
       return { content: [{ type: 'text' as const, text: err.message }] };
     }
   }
@@ -229,7 +234,13 @@ server.tool(
     timeout_ms: z.number().optional().describe('Max wait time. Default 120000.'),
   },
   async ({ task_ids, timeout_ms }) => {
-    const collected = await mainAgent.collect(task_ids, timeout_ms);
+    let collected;
+    try {
+      collected = await mainAgent.collect(task_ids, timeout_ms);
+    } catch (err) {
+      process.stderr.write(`[gossipcat] collect failed: ${(err as Error).message}\n`);
+      return { content: [{ type: 'text' as const, text: `Collect error: ${(err as Error).message}` }] };
+    }
 
     if (collected.length === 0) {
       return { content: [{ type: 'text' as const, text: task_ids ? 'No matching tasks.' : 'No pending tasks.' }] };

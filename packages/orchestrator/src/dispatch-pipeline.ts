@@ -10,6 +10,8 @@ import { SkillCatalog } from './skill-catalog';
 import { SkillGapTracker } from './skill-gap-tracker';
 import { GossipPublisher } from './gossip-publisher';
 
+const log = (msg: string) => process.stderr.write(`[gossipcat] ${msg}\n`);
+
 interface WorkerLike {
   executeTask(task: string, lens?: string, promptContent?: string): Promise<string>;
   subscribeToBatch?(batchId: string): Promise<void>;
@@ -54,7 +56,7 @@ export class DispatchPipeline {
     this.gapTracker = new SkillGapTracker(config.projectRoot);
 
     try { this.catalog = new SkillCatalog(); }
-    catch { this.catalog = null; }
+    catch (err) { this.catalog = null; log(`SkillCatalog unavailable: ${(err as Error).message}`); }
   }
 
   dispatch(agentId: string, task: string): { taskId: string; promise: Promise<string> } {
@@ -139,29 +141,33 @@ export class DispatchPipeline {
       const duration = t.completedAt ? t.completedAt - t.startedAt : -1;
 
       // 1. TaskGraph
-      if (t.status === 'completed') {
-        this.taskGraph.recordCompleted(t.id, (t.result || '').slice(0, 4000), duration);
-      } else if (t.status === 'failed') {
-        this.taskGraph.recordFailed(t.id, t.error || 'Unknown', duration);
-      } else if (t.status === 'running') {
-        this.taskGraph.recordCancelled(t.id, 'collect timeout', duration);
-      }
+      try {
+        if (t.status === 'completed') {
+          this.taskGraph.recordCompleted(t.id, (t.result || '').slice(0, 4000), duration);
+        } else if (t.status === 'failed') {
+          this.taskGraph.recordFailed(t.id, t.error || 'Unknown', duration);
+        } else if (t.status === 'running') {
+          this.taskGraph.recordCancelled(t.id, 'collect timeout', duration);
+        }
+      } catch (err) { log(`TaskGraph write failed for ${t.id}: ${(err as Error).message}`); }
 
       // 2. Write agent memory
       if (t.status === 'completed') {
-        await this.memWriter.writeTaskEntry(t.agentId, {
-          taskId: t.id, task: t.task,
-          skills: this.registryGet(t.agentId)?.skills || [],
-          scores: { relevance: 3, accuracy: 3, uniqueness: 3 },
-        });
-        this.memWriter.rebuildIndex(t.agentId);
+        try {
+          await this.memWriter.writeTaskEntry(t.agentId, {
+            taskId: t.id, task: t.task,
+            skills: this.registryGet(t.agentId)?.skills || [],
+            scores: { relevance: 3, accuracy: 3, uniqueness: 3 },
+          });
+          this.memWriter.rebuildIndex(t.agentId);
+        } catch (err) { log(`Memory write failed for ${t.agentId}/${t.id}: ${(err as Error).message}`); }
       }
 
       // 3. Compact memory
-      const compactResult = this.memCompactor.compactIfNeeded(t.agentId);
-      if (compactResult.message) {
-        process.stderr.write(`[gossipcat] ${compactResult.message}\n`);
-      }
+      try {
+        const compactResult = this.memCompactor.compactIfNeeded(t.agentId);
+        if (compactResult.message) log(compactResult.message);
+      } catch (err) { log(`Memory compact failed for ${t.agentId}: ${(err as Error).message}`); }
     }
 
     // 4. Skill gap check
@@ -172,7 +178,7 @@ export class DispatchPipeline {
         }
       }
       this.gapTracker.checkAndGenerate();
-    } catch { /* non-blocking */ }
+    } catch (err) { log(`Skill gap check failed: ${(err as Error).message}`); }
 
     // 5. Batch cleanup
     for (const [bid, taskIdSet] of this.batches) {
@@ -269,15 +275,20 @@ export class DispatchPipeline {
     if (!t || t.status !== 'completed') return;
 
     const duration = t.completedAt ? t.completedAt - t.startedAt : -1;
-    this.taskGraph.recordCompleted(t.id, (t.result || '').slice(0, 4000), duration);
+    try {
+      this.taskGraph.recordCompleted(t.id, (t.result || '').slice(0, 4000), duration);
+    } catch (err) { log(`TaskGraph write failed for ${t.id}: ${(err as Error).message}`); }
 
-    await this.memWriter.writeTaskEntry(t.agentId, {
-      taskId: t.id, task: t.task,
-      skills: this.registryGet(t.agentId)?.skills || [],
-      scores: { relevance: 3, accuracy: 3, uniqueness: 3 },
-    });
-    this.memWriter.rebuildIndex(t.agentId);
-    this.memCompactor.compactIfNeeded(t.agentId);
+    try {
+      await this.memWriter.writeTaskEntry(t.agentId, {
+        taskId: t.id, task: t.task,
+        skills: this.registryGet(t.agentId)?.skills || [],
+        scores: { relevance: 3, accuracy: 3, uniqueness: 3 },
+      });
+      this.memWriter.rebuildIndex(t.agentId);
+      this.memCompactor.compactIfNeeded(t.agentId);
+    } catch (err) { log(`Memory write failed for ${t.agentId}/${t.id}: ${(err as Error).message}`); }
+
     this.tasks.delete(t.id);
   }
 
