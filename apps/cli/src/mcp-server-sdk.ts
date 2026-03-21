@@ -505,31 +505,21 @@ server.tool(
   }
 );
 
-// ── Tool: update agent instructions ──────────────────────────────────────
+// ── Tool: update agent instructions (supports batch) ─────────────────────
 server.tool(
   'gossip_update_instructions',
-  'Update a worker agent\'s instructions for subsequent tasks. Use to adjust behavior based on performance.',
+  'Update one or more worker agents\' instructions. Accepts a single agent_id or an array of agent_ids for batch updates.',
   {
-    agent_id: z.string().describe('Agent ID to update'),
+    agent_ids: z.union([z.string(), z.array(z.string())]).describe('Single agent ID or array of agent IDs to update'),
     instruction_update: z.string().describe('New instructions content (max 5000 chars)'),
     mode: z.enum(['append', 'replace']).describe('"append" to add to existing, "replace" to overwrite'),
   },
-  async ({ agent_id, instruction_update, mode }) => {
+  async ({ agent_ids, instruction_update, mode }) => {
     await boot();
-
-    // Validate agent_id format (prevent path traversal)
-    if (!/^[a-zA-Z0-9_-]+$/.test(agent_id)) {
-      return { content: [{ type: 'text' as const, text: 'Invalid agent ID format.' }] };
-    }
 
     // Size limit
     if (instruction_update.length > 5000) {
       return { content: [{ type: 'text' as const, text: 'Instruction update exceeds 5000 char limit.' }] };
-    }
-
-    const worker = workers.get(agent_id);
-    if (!worker) {
-      return { content: [{ type: 'text' as const, text: `Agent "${agent_id}" not found. Available: ${Array.from(workers.keys()).join(', ')}` }] };
     }
 
     // Basic content blocklist
@@ -538,29 +528,65 @@ server.tool(
       return { content: [{ type: 'text' as const, text: 'Instruction update contains blocked content.' }] };
     }
 
-    const { writeFileSync: writeFS } = require('fs');
+    const ids = Array.isArray(agent_ids) ? agent_ids : [agent_ids];
+    const results: string[] = [];
+    const { writeFileSync: writeFS, mkdirSync: mkdirFS } = require('fs');
     const { join: joinPath } = require('path');
 
-    // Backup current instructions before replace
-    if (mode === 'replace') {
-      const { mkdirSync: mkdirFS } = require('fs');
+    for (const agent_id of ids) {
+      if (!/^[a-zA-Z0-9_-]+$/.test(agent_id)) {
+        results.push(`${agent_id}: invalid ID format`);
+        continue;
+      }
+
+      const worker = workers.get(agent_id);
+      if (!worker) {
+        results.push(`${agent_id}: not found`);
+        continue;
+      }
+
+      // Backup before replace
+      if (mode === 'replace') {
+        const agentDir = joinPath(process.cwd(), '.gossip', 'agents', agent_id);
+        mkdirFS(agentDir, { recursive: true });
+        writeFS(joinPath(agentDir, 'instructions-backup.md'), worker.getInstructions());
+      }
+
+      if (mode === 'replace') {
+        worker.setInstructions(instruction_update);
+      } else {
+        worker.setInstructions(worker.getInstructions() + '\n\n' + instruction_update);
+      }
+
+      // Persist
       const agentDir = joinPath(process.cwd(), '.gossip', 'agents', agent_id);
       mkdirFS(agentDir, { recursive: true });
-      const backupPath = joinPath(agentDir, 'instructions-backup.md');
-      writeFS(backupPath, worker.getInstructions());
+      writeFS(joinPath(agentDir, 'instructions.md'), worker.getInstructions());
+      results.push(`${agent_id}: updated (${mode})`);
     }
 
-    if (mode === 'replace') {
-      worker.setInstructions(instruction_update);
-    } else {
-      worker.setInstructions(worker.getInstructions() + '\n\n' + instruction_update);
-    }
+    return { content: [{ type: 'text' as const, text: results.join('\n') }] };
+  }
+);
 
-    // Persist to instructions.md
-    const instructionsPath = joinPath(process.cwd(), '.gossip', 'agents', agent_id, 'instructions.md');
-    writeFS(instructionsPath, worker.getInstructions());
-
-    return { content: [{ type: 'text' as const, text: `Updated instructions for ${agent_id} (${mode}). Takes effect on next task.` }] };
+// ── Tool: list available gossipcat tools ──────────────────────────────────
+server.tool(
+  'gossip_tools',
+  'List all available gossipcat MCP tools with descriptions. Call after /mcp reconnect to discover new tools.',
+  {},
+  async () => {
+    const tools = [
+      { name: 'gossip_dispatch', desc: 'Send task to a specific agent (skills auto-injected)' },
+      { name: 'gossip_dispatch_parallel', desc: 'Fan out tasks to multiple agents simultaneously' },
+      { name: 'gossip_collect', desc: 'Collect results from dispatched tasks' },
+      { name: 'gossip_orchestrate', desc: 'Submit task for multi-agent execution via MainAgent' },
+      { name: 'gossip_agents', desc: 'List configured agents with provider, model, role, skills' },
+      { name: 'gossip_status', desc: 'Check relay, tool-server, workers status' },
+      { name: 'gossip_update_instructions', desc: 'Update agent instructions (single or batch). Modes: append/replace' },
+      { name: 'gossip_tools', desc: 'List available tools (this command)' },
+    ];
+    const list = tools.map(t => `- ${t.name}: ${t.desc}`).join('\n');
+    return { content: [{ type: 'text' as const, text: `Gossipcat Tools (${tools.length}):\n\n${list}` }] };
   }
 );
 
