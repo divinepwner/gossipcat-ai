@@ -375,6 +375,59 @@ server.tool(
   }
 );
 
+// ── Tool: bootstrap — generate team context prompt ────────────────────────
+server.tool(
+  'gossip_bootstrap',
+  'Generate team context prompt with live agent state. Refreshes .gossip/bootstrap.md.',
+  {},
+  async () => {
+    const { BootstrapGenerator } = await import('@gossip/orchestrator');
+    const generator = new BootstrapGenerator(process.cwd());
+    const result = generator.generate();
+    const { writeFileSync, mkdirSync } = require('fs');
+    const { join } = require('path');
+    mkdirSync(join(process.cwd(), '.gossip'), { recursive: true });
+    writeFileSync(join(process.cwd(), '.gossip', 'bootstrap.md'), result.prompt);
+    return { content: [{ type: 'text' as const, text: result.prompt }] };
+  }
+);
+
+// ── Tool: setup — create or update team config ────────────────────────────
+server.tool(
+  'gossip_setup',
+  'Create or update gossipcat team configuration. Writes .gossip/config.json.',
+  {
+    config: z.object({
+      main_agent: z.object({
+        provider: z.string(),
+        model: z.string(),
+      }),
+      agents: z.record(z.object({
+        provider: z.string(),
+        model: z.string(),
+        preset: z.string().optional(),
+        skills: z.array(z.string()).min(1),
+      })).optional(),
+    }),
+  },
+  async ({ config }) => {
+    try {
+      const { validateConfig } = await import('./config');
+      validateConfig(config);
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Invalid config: ${(err as Error).message}` }] };
+    }
+
+    const { writeFileSync, mkdirSync } = require('fs');
+    const { join } = require('path');
+    mkdirSync(join(process.cwd(), '.gossip'), { recursive: true });
+    writeFileSync(join(process.cwd(), '.gossip', 'config.json'), JSON.stringify(config, null, 2));
+
+    const agentCount = Object.keys(config.agents || {}).length;
+    return { content: [{ type: 'text' as const, text: `Config saved. ${agentCount} agents configured. Agents will start on first dispatch — call gossip_dispatch() to begin.` }] };
+  }
+);
+
 // ── Tool: list available gossipcat tools ──────────────────────────────────
 server.tool(
   'gossip_tools',
@@ -390,6 +443,8 @@ server.tool(
       { name: 'gossip_status', desc: 'Check relay, tool-server, workers status' },
       { name: 'gossip_update_instructions', desc: 'Update agent instructions (single or batch). Modes: append/replace' },
       { name: 'gossip_tools', desc: 'List available tools (this command)' },
+      { name: 'gossip_bootstrap', desc: 'Generate team context prompt with live agent state' },
+      { name: 'gossip_setup', desc: 'Create or update team configuration' },
     ];
     const list = tools.map(t => `- ${t.name}: ${t.desc}`).join('\n');
     return { content: [{ type: 'text' as const, text: `Gossipcat Tools (${tools.length}):\n\n${list}` }] };
