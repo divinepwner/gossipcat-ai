@@ -110,6 +110,8 @@ for (const ac of agentConfigs) {
 
 Read once at boot. Reused for every `executeTask()` call. No per-dispatch file read.
 
+**Also update `syncWorkers()`** — when hot-reloading new agents, `syncWorkers()` creates workers with the same pattern. It must also read `instructions.md` and pass it to the new `WorkerAgent`. Same code as `doBoot()` — read file, pass to constructor.
+
 ### System Prompt Assembly
 
 In `executeTask()`, replace the hardcoded generic prompt with the loaded instructions:
@@ -464,6 +466,8 @@ server.tool(
 This is an **MCP tool** (callable by Claude Code orchestrator), not a ToolServer tool (callable by worker agents). Workers shouldn't be able to modify their own instructions — that's the orchestrator's job.
 
 ## Component 6: Cleanup — Batch Channel Lifecycle
+
+**Note:** The `gossip_collect` handler has grown significantly since this spec was drafted. It now contains (in order): result building → TaskGraph recording → SkillGapTracker → MemoryWriter → MemoryCompactor. Batch cleanup goes AFTER all existing blocks, before the final `tasks.delete()` cleanup.
 
 When all tasks in a batch complete (or batch is collected):
 
