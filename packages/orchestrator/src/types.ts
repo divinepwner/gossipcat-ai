@@ -111,6 +111,19 @@ export interface ArchivedTaskEntry {
   entry: TaskMemoryEntry;
 }
 
+/** A tracked dispatch task with status and result */
+export interface TaskEntry {
+  id: string;
+  agentId: string;
+  task: string;
+  status: 'running' | 'completed' | 'failed';
+  result?: string;
+  error?: string;
+  startedAt: number;
+  completedAt?: number;
+  skillWarnings?: string[];
+}
+
 // ── TaskGraph Event Types ────────────────────────────────────────────────
 
 export interface TaskCreatedEvent {
