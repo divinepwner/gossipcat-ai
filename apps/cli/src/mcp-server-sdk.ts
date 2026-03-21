@@ -103,7 +103,7 @@ async function doBoot() {
     const { GossipPublisher: GossipPub } = await import('@gossip/orchestrator');
     gossipPublisher = new GossipPub(
       m.createProvider(config.main_agent.provider, config.main_agent.model, mainKey ?? undefined),
-      { publishToChannel: (channel: string, data: unknown) => publisherAgent.publishToChannel(channel, data) }
+      { publishToChannel: (channel: string, data: unknown) => publisherAgent.sendChannel(channel, data as Record<string, unknown>) }
     );
     agentConfigsCache = agentConfigs;
     process.stderr.write(`[gossipcat] Gossip publisher ready\n`);
