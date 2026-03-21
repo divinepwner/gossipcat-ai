@@ -391,8 +391,8 @@ function getBatchSiblings(batchId: string, excludeAgentId: string): AgentConfig[
   return Array.from(batch)
     .map(tid => tasks.get(tid))
     .filter(t => t && t.status === 'running' && t.agentId !== excludeAgentId)
-    .map(t => agentConfigs.find(ac => ac.id === t.agentId))
-    .filter(Boolean);
+    .map(t => agentConfigsCache.find(ac => ac.id === t.agentId))
+    .filter((ac): ac is AgentConfig => ac !== undefined);
 }
 ```
 
@@ -515,18 +515,28 @@ for (const [batchId, taskIdSet] of batches) {
 
 GossipAgent's `subscribe()` and `unsubscribe()` return `Promise<void>`. The wrapper methods must be async with error handling. **Fixed above in Component 3.**
 
-### Fix 2: GossipPublisher uses existing relay connection
+### Fix 2: GossipPublisher needs a dedicated GossipAgent connection
 
-The `GossipPublisher` does NOT create its own relay connection. It receives a `GossipAgent` instance (the MCP server's own agent or the MainAgent's agent) and publishes CHANNEL messages through it. No new connections.
+The `GossipPublisher` needs its own `GossipAgent` to publish CHANNEL messages. It cannot use the `RelayServer` instance directly (that's the server, not a client) and cannot reuse a worker's `GossipAgent` (would mix RPC_RESPONSE handling with CHANNEL publishing).
+
+Create a dedicated publisher agent in `doBoot()`:
 
 ```typescript
-export class GossipPublisher {
-  constructor(
-    private llm: ILLMProvider,
-    private relayAgent: GossipAgent,  // existing connection, not new
-  );
-}
+// In doBoot(), after creating workers:
+const publisherAgent = new GossipAgent({
+  agentId: 'gossip-publisher',
+  relayUrl: relay.url,
+  reconnect: true,
+});
+await publisherAgent.connect();
+
+const gossipPublisher = new GossipPublisher(
+  mainLlm,             // cheap model for summarization
+  publisherAgent,      // dedicated connection for CHANNEL publishing
+);
 ```
+
+Note: `Channel.broadcast()` in `channels.ts` skips the sender (`if (agentId === senderId) continue`). Since `gossip-publisher` is never subscribed to batch channels, it will correctly broadcast to all subscribed workers without receiving its own messages.
 
 ### Fix 3: suggest_skill prompt text migration
 
