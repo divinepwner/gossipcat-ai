@@ -12,7 +12,7 @@ import { encode as msgpackEncode } from '@msgpack/msgpack';
 import { ILLMProvider } from './llm-client';
 
 const MAX_TOOL_TURNS = 25;
-const TOOL_CALL_TIMEOUT_MS = 30_000;
+const TOOL_CALL_TIMEOUT_MS = 60_000;
 
 export class WorkerAgent {
   private agent: GossipAgent;

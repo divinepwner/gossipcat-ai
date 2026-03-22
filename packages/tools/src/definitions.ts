@@ -151,4 +151,17 @@ export const SKILL_TOOLS: ToolDefinition[] = [
   }
 ];
 
-export const ALL_TOOLS: ToolDefinition[] = [...FILE_TOOLS, ...SHELL_TOOLS, ...GIT_TOOLS, ...SKILL_TOOLS];
+export const VERIFY_TOOLS: ToolDefinition[] = [
+  {
+    name: 'verify_write',
+    description: 'Run tests and get a peer review of your changes. Call this after writing files to verify correctness. Returns test results + reviewer feedback.',
+    parameters: {
+      type: 'object',
+      properties: {
+        test_file: { type: 'string', description: 'Specific test file to run (e.g. "tests/tools/tool-server-scope.test.ts"). If omitted, runs full test suite.' },
+      },
+    },
+  },
+];
+
+export const ALL_TOOLS: ToolDefinition[] = [...FILE_TOOLS, ...SHELL_TOOLS, ...GIT_TOOLS, ...SKILL_TOOLS, ...VERIFY_TOOLS];
