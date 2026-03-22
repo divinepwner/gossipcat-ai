@@ -41,6 +41,20 @@ describe('WorktreeManager', () => {
     await manager.cleanup('test-2', path);
   });
 
+  it('cleanup force-deletes unmerged branches', async () => {
+    const { path } = await manager.create('test-4');
+    // Make a commit on the worktree branch (unmerged)
+    writeFileSync(join(path, 'unmerged.txt'), 'data');
+    execFileSync('git', ['add', '.'], { cwd: path });
+    execFileSync('git', ['commit', '-m', 'unmerged change'], { cwd: path });
+
+    await manager.cleanup('test-4', path);
+
+    // Verify branch is actually deleted
+    const branches = execFileSync('git', ['branch', '--list', 'gossip-test-4'], { cwd: testDir }).toString().trim();
+    expect(branches).toBe('');
+  });
+
   it('detects merge conflicts', async () => {
     const { path } = await manager.create('test-3');
 

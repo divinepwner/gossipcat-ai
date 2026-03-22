@@ -14,7 +14,12 @@ export class WorktreeManager {
     const wtPath = await mkdtemp(join(tmpdir(), 'gossip-wt-'));
 
     await execFileAsync('git', ['branch', branch, 'HEAD'], { cwd: this.projectRoot });
-    await execFileAsync('git', ['worktree', 'add', wtPath, branch], { cwd: this.projectRoot });
+    try {
+      await execFileAsync('git', ['worktree', 'add', wtPath, branch], { cwd: this.projectRoot });
+    } catch (err) {
+      try { await execFileAsync('git', ['branch', '-D', branch], { cwd: this.projectRoot }); } catch {}
+      throw err;
+    }
 
     return { path: wtPath, branch };
   }
@@ -31,14 +36,15 @@ export class WorktreeManager {
     } catch {
       await execFileAsync('git', ['merge', '--abort'], { cwd: this.projectRoot });
       const diff = await execFileAsync('git', ['diff', '--name-only', `HEAD...${branch}`], { cwd: this.projectRoot });
-      return { merged: false, conflicts: diff.stdout.trim().split('\n') };
+      const files = diff.stdout.trim();
+      return { merged: false, conflicts: files ? files.split('\n') : [] };
     }
   }
 
   async cleanup(taskId: string, wtPath: string): Promise<void> {
     const branch = `gossip-${taskId}`;
     try { await execFileAsync('git', ['worktree', 'remove', wtPath, '--force'], { cwd: this.projectRoot }); } catch { /* already removed */ }
-    try { await execFileAsync('git', ['branch', '-d', branch], { cwd: this.projectRoot }); } catch { /* branch in use */ }
+    try { await execFileAsync('git', ['branch', '-D', branch], { cwd: this.projectRoot }); } catch { /* branch in use */ }
   }
 
   async pruneOrphans(): Promise<void> {
@@ -52,6 +58,11 @@ export class WorktreeManager {
         try { await execFileAsync('git', ['worktree', 'remove', wtPath!, '--force'], { cwd: this.projectRoot }); } catch {}
       }
       await execFileAsync('git', ['worktree', 'prune'], { cwd: this.projectRoot });
+      const branchResult = await execFileAsync('git', ['branch', '--list', 'gossip-*'], { cwd: this.projectRoot });
+      const branches = branchResult.stdout.trim().split('\n').map(b => b.trim().replace(/^\*\s*/, '')).filter(Boolean);
+      for (const b of branches) {
+        try { await execFileAsync('git', ['branch', '-D', b], { cwd: this.projectRoot }); } catch {}
+      }
     } catch { /* git not available or no worktrees */ }
   }
 }

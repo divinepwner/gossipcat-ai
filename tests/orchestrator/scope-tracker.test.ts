@@ -27,6 +27,14 @@ describe('ScopeTracker', () => {
     it('rejects path traversal', () => {
       expect(() => tracker.register('../../etc/', 'task-1')).toThrow('resolves outside project root');
     });
+
+    it('rejects empty scope', () => {
+      expect(() => tracker.register('', 'task-1')).toThrow('Scope must not be empty');
+    });
+
+    it('rejects root scope via dot', () => {
+      expect(() => tracker.register('.', 'task-1')).toThrow('resolves to project root');
+    });
   });
 
   describe('lifecycle', () => {

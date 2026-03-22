@@ -7,9 +7,11 @@ export class ScopeTracker {
   constructor(private projectRoot: string) {}
 
   private normalize(scope: string): string {
+    if (!scope || !scope.trim()) throw new Error('Scope must not be empty');
     const abs = resolve(this.projectRoot, scope);
     const rel = relative(this.projectRoot, abs);
     if (rel.startsWith('..')) throw new Error(`Scope "${scope}" resolves outside project root`);
+    if (rel === '') throw new Error(`Scope "${scope}" resolves to project root — too broad`);
     return rel.endsWith('/') ? rel : rel + '/';
   }
 
