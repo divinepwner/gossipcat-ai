@@ -5,6 +5,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { randomUUID } from 'crypto';
 
 // Lazy state — populated during boot()
 let booted = false;
@@ -245,12 +246,31 @@ server.tool(
       const assignedTasks = planned.filter((t: any) => t.agentId);
       const unassignedTasks = planned.filter((t: any) => !t.agentId);
 
+      // Store plan state for chain threading
+      const planId = randomUUID().slice(0, 8);
+      const planState = {
+        id: planId,
+        task,
+        strategy: plan.strategy,
+        steps: assignedTasks.map((t: any, i: number) => ({
+          step: i + 1,
+          agentId: t.agentId,
+          task: t.task,
+          writeMode: t.writeMode,
+          scope: t.scope,
+        })),
+        createdAt: Date.now(),
+      };
+      mainAgent.registerPlan(planState);
+
       const planJson = {
         strategy: plan.strategy,
-        tasks: assignedTasks.map((t: any) => {
-          const entry: Record<string, string> = { agent_id: t.agentId, task: t.task };
+        tasks: assignedTasks.map((t: any, i: number) => {
+          const entry: Record<string, any> = { agent_id: t.agentId, task: t.task };
           if (t.writeMode) entry.write_mode = t.writeMode;
           if (t.scope) entry.scope = t.scope;
+          entry.plan_id = planId;
+          entry.step = i + 1;
           return entry;
         }),
       };
@@ -267,10 +287,11 @@ server.tool(
       let dispatchBlock: string;
       if (plan.strategy === 'sequential' || plan.strategy === 'single') {
         // Sequential: output individual gossip_dispatch calls
-        const steps = planJson.tasks.map((t: Record<string, string>, i: number) => {
+        const steps = planJson.tasks.map((t: Record<string, any>, i: number) => {
           const args = [`agent_id: "${t.agent_id}"`, `task: "${t.task}"`];
           if (t.write_mode) args.push(`write_mode: "${t.write_mode}"`);
           if (t.scope) args.push(`scope: "${t.scope}"`);
+          args.push(`plan_id: "${planId}"`, `step: ${i + 1}`);
           return `Step ${i + 1}: gossip_dispatch(${args.join(', ')})\n         then: gossip_collect()`;
         });
         dispatchBlock = `Execute sequentially:\n${steps.join('\n\n')}`;
@@ -279,7 +300,7 @@ server.tool(
         dispatchBlock = `PLAN_JSON (pass to gossip_dispatch_parallel):\n${JSON.stringify(planJson)}`;
       }
 
-      const text = `Plan: "${task}"\n\nStrategy: ${plan.strategy}\n\nTasks:\n${taskLines}\n${warnings}\n---\n${dispatchBlock}`;
+      const text = `Plan: "${task}"\nPlan ID: ${planId}\n\nStrategy: ${plan.strategy}\n\nTasks:\n${taskLines}\n${warnings}\n---\n${dispatchBlock}`;
 
       return { content: [{ type: 'text' as const, text }] };
     } catch (err: any) {
@@ -298,8 +319,10 @@ server.tool(
     write_mode: z.enum(['sequential', 'scoped', 'worktree']).optional().describe('Write mode: "sequential" (queued), "scoped" (directory-locked), "worktree" (git worktree isolation)'),
     scope: z.string().optional().describe('Directory scope for "scoped" write mode (e.g. "packages/relay/")'),
     timeout_ms: z.number().optional().describe('Write task timeout in ms. Default 300000.'),
+    plan_id: z.string().optional().describe('Plan ID from gossip_plan. Enables chain context from prior steps.'),
+    step: z.number().optional().describe('Step number in the plan (1-indexed).'),
   },
-  async ({ agent_id, task, write_mode, scope, timeout_ms }) => {
+  async ({ agent_id, task, write_mode, scope, timeout_ms, plan_id, step }) => {
     await boot();
     await syncWorkersViaKeychain();
 
@@ -307,10 +330,20 @@ server.tool(
       return { content: [{ type: 'text' as const, text: `Invalid agent ID format: "${agent_id}"` }] };
     }
 
-    const options = write_mode ? { writeMode: write_mode as 'sequential' | 'scoped' | 'worktree', scope, timeoutMs: timeout_ms } : undefined;
+    const options: Record<string, unknown> = {};
+    if (write_mode) {
+      options.writeMode = write_mode as 'sequential' | 'scoped' | 'worktree';
+      if (scope) options.scope = scope;
+      if (timeout_ms) options.timeoutMs = timeout_ms;
+    }
+    if (plan_id) {
+      options.planId = plan_id;
+      options.step = step;
+    }
+    const dispatchOptions = Object.keys(options).length > 0 ? options : undefined;
 
     try {
-      const { taskId } = mainAgent.dispatch(agent_id, task, options);
+      const { taskId } = mainAgent.dispatch(agent_id, task, dispatchOptions as any);
       const modeLabel = write_mode ? ` [${write_mode}${scope ? `:${scope}` : ''}]` : '';
       return { content: [{ type: 'text' as const, text: `Dispatched to ${agent_id}${modeLabel}. Task ID: ${taskId}` }] };
     } catch (err: any) {
