@@ -72,10 +72,25 @@ async function doBoot() {
     workers.set(ac.id, worker);
   }
 
-  const mainKey = await keychain.getKey(config.main_agent.provider);
+  // Try main agent key first, fall back to any available provider key
+  let mainProvider = config.main_agent.provider;
+  let mainModel = config.main_agent.model;
+  let mainKey = await keychain.getKey(config.main_agent.provider);
+  if (!mainKey) {
+    for (const ac of agentConfigs) {
+      const key = await keychain.getKey(ac.provider);
+      if (key) {
+        mainProvider = ac.provider;
+        mainModel = ac.model;
+        mainKey = key;
+        process.stderr.write(`[gossipcat] Main agent key unavailable, using ${ac.provider}/${ac.model} for orchestration\n`);
+        break;
+      }
+    }
+  }
   mainAgent = new m.MainAgent({
-    provider: config.main_agent.provider,
-    model: config.main_agent.model,
+    provider: mainProvider,
+    model: mainModel,
     apiKey: mainKey ?? undefined,
     relayUrl: relay.url,
     agents: agentConfigs,
