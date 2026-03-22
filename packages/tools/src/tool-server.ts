@@ -22,6 +22,9 @@ export class ToolServer {
   private skillTools: SkillTools;
   private sandbox: Sandbox;
   private allowedCallers: Set<string> | null;
+  private agentScopes: Map<string, string> = new Map();   // agentId → scope path
+  private agentRoots: Map<string, string> = new Map();    // agentId → worktree root path
+  private writeAgents: Set<string> = new Set();            // agents with any write mode active
 
   constructor(config: ToolServerConfig) {
     this.allowedCallers = config.allowedCallers ? new Set(config.allowedCallers) : null;
@@ -51,6 +54,22 @@ export class ToolServer {
   }
 
   get agentId(): string { return this.agent.agentId; }
+
+  assignScope(agentId: string, scope: string): void {
+    this.agentScopes.set(agentId, scope);
+    this.writeAgents.add(agentId);
+  }
+
+  assignRoot(agentId: string, root: string): void {
+    this.agentRoots.set(agentId, root);
+    this.writeAgents.add(agentId);
+  }
+
+  releaseAgent(agentId: string): void {
+    this.agentScopes.delete(agentId);
+    this.agentRoots.delete(agentId);
+    this.writeAgents.delete(agentId);
+  }
 
   private async handleToolRequest(data: unknown, envelope: MessageEnvelope): Promise<void> {
     if (envelope.t !== MessageType.RPC_REQUEST) return;
@@ -93,7 +112,46 @@ export class ToolServer {
     }
   }
 
+  private enforceWriteScope(toolName: string, args: Record<string, unknown>, callerId: string): void {
+    const scope = this.agentScopes.get(callerId);
+    const root = this.agentRoots.get(callerId);
+
+    if (toolName === 'file_write') {
+      const filePath = args.path as string;
+      if (scope && !filePath.startsWith(scope)) {
+        throw new Error(`Write blocked: "${filePath}" is outside scope "${scope}"`);
+      }
+      if (root && !filePath.startsWith(root)) {
+        throw new Error(`Write blocked: "${filePath}" is outside worktree root "${root}"`);
+      }
+    }
+
+    if (toolName === 'shell_exec') {
+      // Block shell entirely for scoped agents (can't constrain arbitrary commands)
+      if (scope) {
+        throw new Error('Shell execution blocked for scoped write agents');
+      }
+      // Worktree agents can use shell (it runs in the worktree)
+    }
+
+    if (toolName === 'git_commit') {
+      // Scoped agents: block git commit (they write files, main orchestrator commits)
+      if (scope) {
+        throw new Error('Git commit blocked for scoped write agents');
+      }
+      // Worktree agents: allow (they commit in their worktree)
+    }
+  }
+
   async executeTool(name: string, args: Record<string, unknown>, callerId?: string): Promise<string> {
+    // Fail-closed: write agents can only use write tools within their scope/root
+    if (callerId && this.writeAgents.has(callerId)) {
+      const writableTools = ['file_write', 'shell_exec', 'git_commit'];
+      if (writableTools.includes(name)) {
+        this.enforceWriteScope(name, args, callerId);
+      }
+    }
+
     switch (name) {
       case 'file_read':
         return this.fileTools.fileRead(args as { path: string; startLine?: number; endLine?: number });
