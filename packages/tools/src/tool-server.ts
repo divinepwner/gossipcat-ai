@@ -299,12 +299,21 @@ export class ToolServer {
       });
     });
 
-    const body = Buffer.from(msgpackEncode({
-      tool: 'review_request',
-      args: { callerId, diff: diff.slice(0, 3000), testResult: testResult.slice(0, 1000) },
-    })) as unknown as Uint8Array;
-    const msg = Message.createRpcRequest(this.agent.agentId, 'orchestrator', requestId, body);
-    await this.agent.sendEnvelope(msg.toEnvelope());
+    try {
+      const body = Buffer.from(msgpackEncode({
+        tool: 'review_request',
+        args: { callerId, diff: diff.slice(0, 3000), testResult: testResult.slice(0, 1000) },
+      })) as unknown as Uint8Array;
+      const msg = Message.createRpcRequest(this.agent.agentId, 'orchestrator', requestId, body);
+      await this.agent.sendEnvelope(msg.toEnvelope());
+    } catch (err) {
+      // Clean up pending review if send fails
+      const pending = this.pendingReviews.get(requestId);
+      if (pending) {
+        this.pendingReviews.delete(requestId);
+        pending.reject(err as Error);
+      }
+    }
 
     return reviewPromise;
   }

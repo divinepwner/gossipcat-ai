@@ -117,6 +117,12 @@ export class DispatchPipeline {
         if (priorSteps.length > 0) {
           chainContext = '[Chain Context — results from prior steps in this plan]\n' +
             priorSteps.map(s => `Step ${s.step} (${s.agentId}): ${s.result!.slice(0, 1000)}`).join('\n\n');
+        } else {
+          // Prior steps exist but have no results — caller likely forgot to collect() first
+          const expectedPrior = plan.steps.filter(s => s.step < options.step!);
+          if (expectedPrior.length > 0) {
+            log(`Warning: plan ${options.planId} step ${options.step} dispatched but prior steps have no results. Call gossip_collect() between steps.`);
+          }
         }
       }
     }

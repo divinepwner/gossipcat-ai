@@ -337,6 +337,9 @@ server.tool(
       if (timeout_ms) options.timeoutMs = timeout_ms;
     }
     if (plan_id) {
+      if (!step) {
+        return { content: [{ type: 'text' as const, text: 'plan_id requires step (1-indexed step number in the plan).' }] };
+      }
       options.planId = plan_id;
       options.step = step;
     }
