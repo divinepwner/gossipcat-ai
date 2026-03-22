@@ -268,9 +268,22 @@ export class GeminiProvider implements ILLMProvider {
 
   private parseGeminiResponse(data: Record<string, unknown>): LLMResponse {
     const candidates = data.candidates as Array<Record<string, unknown>>;
-    if (!candidates?.length) return { text: '[No response from Gemini]' };
-    const parts = (candidates[0].content as Record<string, unknown>).parts as Array<Record<string, unknown>>;
-    if (!parts?.length) return { text: '' };
+    if (!candidates?.length) {
+      // Log blocked responses for debugging
+      const blockReason = (data as any).promptFeedback?.blockReason;
+      if (blockReason) process.stderr.write(`[GeminiProvider] Response blocked: ${blockReason}\n`);
+      return { text: '[No response from Gemini]' };
+    }
+    const candidate = candidates[0];
+    const finishReason = candidate.finishReason as string | undefined;
+    if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
+      process.stderr.write(`[GeminiProvider] Unusual finishReason: ${finishReason}\n`);
+    }
+    const parts = ((candidate.content as Record<string, unknown>)?.parts || []) as Array<Record<string, unknown>>;
+    if (!parts?.length) {
+      process.stderr.write(`[GeminiProvider] Empty response parts (finishReason: ${finishReason || 'unknown'})\n`);
+      return { text: finishReason === 'SAFETY' ? '[Response blocked by Gemini safety filter]' : '' };
+    }
 
     const textParts: string[] = [];
     const toolCalls: LLMResponse['toolCalls'] = [];
