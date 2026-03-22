@@ -285,17 +285,9 @@ export class DispatchPipeline {
         } catch (err) { log(`Memory write failed for ${t.agentId}/${t.id}: ${(err as Error).message}`); }
       }
 
-      // 2b. Session gossip summarization
+      // 2b. Session gossip summarization (fire-and-forget — don't block collect)
       if (t.status === 'completed' && t.result && this.llm) {
-        try {
-          const summary = await this.summarizeForSession(t.agentId, t.result);
-          if (summary) {
-            this.sessionGossip.push({ agentId: t.agentId, taskSummary: summary, timestamp: Date.now() });
-            if (this.sessionGossip.length > DispatchPipeline.MAX_SESSION_GOSSIP) {
-              this.sessionGossip.shift();
-            }
-          }
-        } catch { /* never block collect */ }
+        this.summarizeAndStoreGossip(t.agentId, t.result);
       }
 
       // 2c. Store result in plan state for chain threading
@@ -557,6 +549,20 @@ export class DispatchPipeline {
 
   getSkeletonMessages(): string[] {
     return this.gapTracker.checkAndGenerate();
+  }
+
+  private async summarizeAndStoreGossip(agentId: string, result: string): Promise<void> {
+    try {
+      const summary = await this.summarizeForSession(agentId, result);
+      if (summary) {
+        this.sessionGossip.push({ agentId, taskSummary: summary, timestamp: Date.now() });
+        if (this.sessionGossip.length > DispatchPipeline.MAX_SESSION_GOSSIP) {
+          this.sessionGossip.shift();
+        }
+      }
+    } catch (err) {
+      log(`Session gossip summarization failed for ${agentId}: ${(err as Error).message}`);
+    }
   }
 
   private async summarizeForSession(agentId: string, result: string): Promise<string> {

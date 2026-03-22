@@ -25,6 +25,7 @@ describe('Session Gossip', () => {
 
     const t1 = pipeline.dispatch('agent-a', 'review code');
     await pipeline.collect([t1.taskId]);
+    await new Promise(r => setImmediate(r)); // let fire-and-forget gossip settle
 
     pipeline.dispatch('agent-b', 'fix bugs');
     const worker = workers.get('agent-b')!;
@@ -46,6 +47,7 @@ describe('Session Gossip', () => {
     for (let i = 0; i < 25; i++) {
       const t = pipeline.dispatch('agent', `task ${i}`);
       await pipeline.collect([t.taskId]);
+      await new Promise(r => setImmediate(r));
     }
 
     pipeline.dispatch('agent', 'final task');
