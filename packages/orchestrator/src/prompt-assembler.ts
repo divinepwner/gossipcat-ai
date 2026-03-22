@@ -1,6 +1,6 @@
 /**
- * Assemble memory, lens, skills, and context into a single prompt string.
- * Order: MEMORY → LENS → SKILLS → context
+ * Assemble memory, lens, skills, context, and gossip into a single prompt string.
+ * Order: CHAIN CONTEXT → SESSION CONTEXT → MEMORY → LENS → SKILLS → context
  * Each block is only included if content is provided.
  */
 export function assemblePrompt(parts: {
@@ -8,8 +8,18 @@ export function assemblePrompt(parts: {
   lens?: string;
   skills?: string;
   context?: string;
+  sessionContext?: string;
+  chainContext?: string;
 }): string {
   const blocks: string[] = [];
+
+  if (parts.chainContext) {
+    blocks.push(`\n\n${parts.chainContext}`);
+  }
+
+  if (parts.sessionContext) {
+    blocks.push(`\n\n${parts.sessionContext}`);
+  }
 
   if (parts.memory) {
     blocks.push(`\n\n--- MEMORY ---\n${parts.memory}\n--- END MEMORY ---`);
