@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { AgentConfig, TaskEntry } from './types';
+import { AgentConfig, DispatchOptions, TaskEntry } from './types';
 import { loadSkills } from './skill-loader';
 import { assemblePrompt } from './prompt-assembler';
 import { AgentMemoryReader } from './agent-memory';
@@ -9,6 +9,8 @@ import { TaskGraph } from './task-graph';
 import { SkillCatalog } from './skill-catalog';
 import { SkillGapTracker } from './skill-gap-tracker';
 import { GossipPublisher } from './gossip-publisher';
+import { ScopeTracker } from './scope-tracker';
+import { WorktreeManager } from './worktree-manager';
 
 const log = (msg: string) => process.stderr.write(`[gossipcat] ${msg}\n`);
 
@@ -43,6 +45,11 @@ export class DispatchPipeline {
   private tasks: Map<string, TrackedTask> = new Map();
   private batches: Map<string, Set<string>> = new Map();
 
+  private readonly scopeTracker: ScopeTracker;
+  private readonly worktreeManager: WorktreeManager;
+  private writeQueue: Array<() => void> = [];
+  private writeActive = false;
+
   constructor(config: DispatchPipelineConfig) {
     this.projectRoot = config.projectRoot;
     this.workers = config.workers;
@@ -54,6 +61,8 @@ export class DispatchPipeline {
     this.memReader = new AgentMemoryReader(config.projectRoot);
     this.memCompactor = new MemoryCompactor(config.projectRoot);
     this.gapTracker = new SkillGapTracker(config.projectRoot);
+    this.scopeTracker = new ScopeTracker(config.projectRoot);
+    this.worktreeManager = new WorktreeManager(config.projectRoot);
 
     try { this.catalog = new SkillCatalog(); }
     catch (err) { this.catalog = null; log(`SkillCatalog unavailable: ${(err as Error).message}`); }
@@ -61,7 +70,7 @@ export class DispatchPipeline {
 
   private static readonly MAX_TASKS = 500;
 
-  dispatch(agentId: string, task: string): { taskId: string; promise: Promise<string> } {
+  dispatch(agentId: string, task: string, options?: DispatchOptions): { taskId: string; promise: Promise<string> } {
     if (this.tasks.size >= DispatchPipeline.MAX_TASKS) {
       throw new Error(`Too many active tasks (${this.tasks.size}). Collect results before dispatching more.`);
     }
@@ -97,24 +106,80 @@ export class DispatchPipeline {
       startedAt: Date.now(), skillWarnings,
       promise: null as unknown as Promise<string>,
     };
+    entry.writeMode = options?.writeMode;
+    entry.scope = options?.scope;
 
-    // 7. Execute
-    entry.promise = worker.executeTask(task, undefined, promptContent)
-      .then((result: string) => {
-        entry.status = 'completed';
-        entry.result = result;
-        entry.completedAt = Date.now();
+    // 7. Execute (with write-mode awareness)
+    if (options?.writeMode === 'sequential') {
+      entry.promise = this.enqueueSequential(() =>
+        worker.executeTask(task, undefined, promptContent)
+      ).then((result: string) => {
+        entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now();
         return result;
-      })
-      .catch((err: Error) => {
-        entry.status = 'failed';
-        entry.error = err.message;
-        entry.completedAt = Date.now();
+      }).catch((err: Error) => {
+        entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
         throw err;
       });
+    } else if (options?.writeMode === 'scoped') {
+      if (!options.scope) throw new Error('scoped write mode requires a scope path');
+      const overlap = this.scopeTracker.hasOverlap(options.scope);
+      if (overlap.overlaps) {
+        throw new Error(`Scope "${options.scope}" overlaps with task ${overlap.conflictTaskId} at "${overlap.conflictScope}"`);
+      }
+      this.scopeTracker.register(options.scope, taskId);
+      entry.promise = worker.executeTask(task, undefined, promptContent)
+        .then((result: string) => {
+          entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now();
+          this.scopeTracker.release(taskId);
+          return result;
+        }).catch((err: Error) => {
+          entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
+          this.scopeTracker.release(taskId);
+          throw err;
+        });
+    } else if (options?.writeMode === 'worktree') {
+      entry.promise = this.worktreeManager.create(taskId).then(({ path, branch }) => {
+        entry.worktreeInfo = { path, branch };
+        return worker.executeTask(task, undefined, promptContent);
+      }).then((result: string) => {
+        entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now();
+        return result;
+      }).catch((err: Error) => {
+        entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
+        throw err;
+      });
+    } else {
+      // Default: fire-and-forget (read-only)
+      entry.promise = worker.executeTask(task, undefined, promptContent)
+        .then((result: string) => {
+          entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now();
+          return result;
+        }).catch((err: Error) => {
+          entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
+          throw err;
+        });
+    }
 
     this.tasks.set(taskId, entry);
     return { taskId, promise: entry.promise };
+  }
+
+  private enqueueSequential(fn: () => Promise<string>): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const run = () => {
+        this.writeActive = true;
+        fn().then(resolve, reject).finally(() => {
+          this.writeActive = false;
+          const next = this.writeQueue.shift();
+          if (next) next();
+        });
+      };
+      if (this.writeActive) {
+        this.writeQueue.push(run);
+      } else {
+        run();
+      }
+    });
   }
 
   getTask(taskId: string): TaskEntry | undefined {
@@ -125,6 +190,7 @@ export class DispatchPipeline {
       status: t.status, result: t.result, error: t.error,
       startedAt: t.startedAt, completedAt: t.completedAt,
       skillWarnings: t.skillWarnings,
+      writeMode: t.writeMode, scope: t.scope, worktreeInfo: t.worktreeInfo,
     };
   }
 
@@ -210,6 +276,7 @@ export class DispatchPipeline {
       status: t.status, result: t.result, error: t.error,
       startedAt: t.startedAt, completedAt: t.completedAt,
       skillWarnings: t.skillWarnings,
+      writeMode: t.writeMode, scope: t.scope, worktreeInfo: t.worktreeInfo,
     }));
 
     // Cleanup completed tasks

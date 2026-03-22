@@ -99,6 +99,66 @@ describe('DispatchPipeline', () => {
     });
   });
 
+  describe('write modes', () => {
+    it('sequential mode queues tasks', async () => {
+      const order: number[] = [];
+      const slowWorker = {
+        executeTask: jest.fn()
+          .mockImplementationOnce(() => new Promise(r => setTimeout(() => { order.push(1); r('first'); }, 50)))
+          .mockImplementationOnce(() => new Promise(r => setTimeout(() => { order.push(2); r('second'); }, 10))),
+        subscribeToBatch: jest.fn().mockResolvedValue(undefined),
+        unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
+      };
+      workers.set('slow-agent', slowWorker);
+      pipeline = new DispatchPipeline({
+        projectRoot: '/tmp/gossip-test-' + Date.now(),
+        workers,
+        registryGet: (id) => ({ id, provider: 'local' as const, model: 'mock', skills: [] }),
+      });
+
+      const t1 = pipeline.dispatch('slow-agent', 'task 1', { writeMode: 'sequential' });
+      const t2 = pipeline.dispatch('slow-agent', 'task 2', { writeMode: 'sequential' });
+      await Promise.all([t1.promise, t2.promise]);
+      expect(order).toEqual([1, 2]); // second waits for first
+    });
+
+    it('scoped mode rejects overlapping scope', () => {
+      pipeline.dispatch('test-agent', 'task 1', { writeMode: 'scoped', scope: 'packages/relay/' });
+      expect(() =>
+        pipeline.dispatch('test-agent', 'task 2', { writeMode: 'scoped', scope: 'packages/relay/src/' })
+      ).toThrow(/overlaps/);
+    });
+
+    it('scoped mode requires scope param', () => {
+      expect(() =>
+        pipeline.dispatch('test-agent', 'task 1', { writeMode: 'scoped' })
+      ).toThrow('scoped write mode requires a scope path');
+    });
+
+    it('scoped mode allows non-overlapping scopes', () => {
+      pipeline.dispatch('test-agent', 'task 1', { writeMode: 'scoped', scope: 'packages/relay/' });
+      expect(() =>
+        pipeline.dispatch('test-agent', 'task 2', { writeMode: 'scoped', scope: 'packages/tools/' })
+      ).not.toThrow();
+    });
+
+    it('scoped mode releases scope on completion', async () => {
+      const { promise } = pipeline.dispatch('test-agent', 'task 1', { writeMode: 'scoped', scope: 'packages/relay/' });
+      await promise;
+      // After completion, same scope should be available
+      expect(() =>
+        pipeline.dispatch('test-agent', 'task 2', { writeMode: 'scoped', scope: 'packages/relay/' })
+      ).not.toThrow();
+    });
+
+    it('dispatch with options stores writeMode and scope on task', async () => {
+      const { taskId } = pipeline.dispatch('test-agent', 'task 1', { writeMode: 'scoped', scope: 'packages/relay/' });
+      const task = pipeline.getTask(taskId);
+      expect(task?.writeMode).toBe('scoped');
+      expect(task?.scope).toBe('packages/relay/');
+    });
+  });
+
   describe('dispatchParallel()', () => {
     it('dispatches multiple tasks and returns ids', () => {
       workers.set('agent-b', mockWorker('result-b'));
