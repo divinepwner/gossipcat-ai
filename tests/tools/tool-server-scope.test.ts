@@ -91,6 +91,12 @@ describe('ToolServer scope enforcement', () => {
         server.executeTool('git_branch', { name: 'evil-branch' }, 'agent-1')
       ).rejects.toThrow(/Git branch blocked/);
     });
+
+    it('blocks file_write using path traversal to escape scope', async () => {
+      await expect(
+        server.executeTool('file_write', { path: 'packages/relay/../tools/evil.ts', content: 'x' }, 'agent-1')
+      ).rejects.toThrow(/outside scope/);
+    });
   });
 
   describe('worktree agents', () => {
@@ -117,6 +123,26 @@ describe('ToolServer scope enforcement', () => {
       await expect(
         server.executeTool('shell_exec', { command: 'cat ../../etc/passwd' }, 'agent-2')
       ).rejects.toThrow(/Shell command blocked/);
+    });
+
+    it.each([
+      ['git config core.hooksPath /tmp/evil'],
+      ['rm -rf ./.git/hooks/pre-commit'],
+      ['echo "evil" > .git/config'],
+    ])('blocks shell command manipulating git internals: %s', async (command) => {
+      await expect(
+        server.executeTool('shell_exec', { command }, 'agent-2')
+      ).rejects.toThrow(/Shell command blocked/);
+    });
+  });
+
+  describe('fail-closed enforcement', () => {
+    it('blocks write tools if agent is in writeAgents but has no scope/root', async () => {
+      // Simulate state inconsistency: write agent with no scope
+      (server as any).writeAgents.add('agent-no-scope');
+      await expect(
+        server.executeTool('file_write', { path: 'any/file.ts', content: 'x' }, 'agent-no-scope')
+      ).rejects.toThrow(/is a write agent but has no scope\/root registered/);
     });
   });
 

@@ -314,11 +314,14 @@ export class DispatchPipeline {
       writeMode: t.writeMode, scope: t.scope, worktreeInfo: t.worktreeInfo,
     }));
 
-    // Cleanup completed tasks
-    // Note: handleMessage path tasks are cleaned by writeMemoryForTask()
-    // before they can appear as 'running' to collect(). No double-record risk.
+    // Cleanup tasks — mark timed-out tasks as failed to prevent zombies
     for (const t of targets) {
-      if (t.status !== 'running') this.tasks.delete(t.id);
+      if (t.status === 'running') {
+        t.status = 'failed';
+        t.error = 'collect timeout';
+        t.completedAt = Date.now();
+      }
+      this.tasks.delete(t.id);
     }
 
     return results;
