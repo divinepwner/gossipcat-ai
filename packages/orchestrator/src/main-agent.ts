@@ -9,7 +9,7 @@ import { ILLMProvider, createProvider } from './llm-client';
 import { AgentRegistry } from './agent-registry';
 import { TaskDispatcher } from './task-dispatcher';
 import { WorkerAgent } from './worker-agent';
-import { AgentConfig, TaskResult, ChatResponse } from './types';
+import { AgentConfig, DispatchOptions, TaskResult, ChatResponse } from './types';
 import { ALL_TOOLS } from '@gossip/tools';
 import { ContentBlock, TextContent } from '@gossip/types';
 import { DispatchPipeline } from './dispatch-pipeline';
@@ -103,9 +103,9 @@ export class MainAgent {
     }
   }
 
-  dispatch(agentId: string, task: string) { return this.pipeline.dispatch(agentId, task); }
+  dispatch(agentId: string, task: string, options?: DispatchOptions) { return this.pipeline.dispatch(agentId, task, options); }
   async collect(taskIds?: string[], timeoutMs?: number) { return this.pipeline.collect(taskIds, timeoutMs); }
-  dispatchParallel(tasks: Array<{ agentId: string; task: string }>) { return this.pipeline.dispatchParallel(tasks); }
+  dispatchParallel(tasks: Array<{ agentId: string; task: string; options?: DispatchOptions }>) { return this.pipeline.dispatchParallel(tasks); }
   getWorker(agentId: string) { return this.workers.get(agentId); }
   getTask(taskId: string) { return this.pipeline.getTask(taskId); }
   setGossipPublisher(publisher: any) { this.pipeline.setGossipPublisher(publisher); }

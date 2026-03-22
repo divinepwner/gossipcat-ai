@@ -181,8 +181,11 @@ server.tool(
   {
     agent_id: z.string().describe('Agent ID (e.g. "gemini-reviewer")'),
     task: z.string().describe('Task description. Reference file paths — the agent will read them via Tool Server.'),
+    write_mode: z.enum(['sequential', 'scoped', 'worktree']).optional().describe('Write mode: "sequential" (queued), "scoped" (directory-locked), "worktree" (git worktree isolation)'),
+    scope: z.string().optional().describe('Directory scope for "scoped" write mode (e.g. "packages/relay/")'),
+    timeout_ms: z.number().optional().describe('Write task timeout in ms. Default 300000.'),
   },
-  async ({ agent_id, task }) => {
+  async ({ agent_id, task, write_mode, scope, timeout_ms }) => {
     await boot();
     await syncWorkersViaKeychain();
 
@@ -190,9 +193,12 @@ server.tool(
       return { content: [{ type: 'text' as const, text: `Invalid agent ID format: "${agent_id}"` }] };
     }
 
+    const options = write_mode ? { writeMode: write_mode as any, scope, timeoutMs: timeout_ms } : undefined;
+
     try {
-      const { taskId } = mainAgent.dispatch(agent_id, task);
-      return { content: [{ type: 'text' as const, text: `Dispatched to ${agent_id}. Task ID: ${taskId}` }] };
+      const { taskId } = mainAgent.dispatch(agent_id, task, options);
+      const modeLabel = write_mode ? ` [${write_mode}${scope ? `:${scope}` : ''}]` : '';
+      return { content: [{ type: 'text' as const, text: `Dispatched to ${agent_id}${modeLabel}. Task ID: ${taskId}` }] };
     } catch (err: any) {
       process.stderr.write(`[gossipcat] dispatch failed: ${err.message}\n`);
       return { content: [{ type: 'text' as const, text: err.message }] };
@@ -208,7 +214,9 @@ server.tool(
     tasks: z.array(z.object({
       agent_id: z.string(),
       task: z.string(),
-    })).describe('Array of { agent_id, task }'),
+      write_mode: z.enum(['sequential', 'scoped', 'worktree']).optional(),
+      scope: z.string().optional(),
+    })).describe('Array of { agent_id, task, write_mode?, scope? }'),
   },
   async ({ tasks: taskDefs }) => {
     await boot();
@@ -221,9 +229,12 @@ server.tool(
       }
     }
 
-    // Map underscore agent_id → camelCase agentId
     const { taskIds, errors } = mainAgent.dispatchParallel(
-      taskDefs.map((d: { agent_id: string; task: string }) => ({ agentId: d.agent_id, task: d.task }))
+      taskDefs.map((d: any) => ({
+        agentId: d.agent_id,
+        task: d.task,
+        options: d.write_mode ? { writeMode: d.write_mode, scope: d.scope } : undefined,
+      }))
     );
 
     let msg = `Dispatched ${taskIds.length} tasks:\n${taskIds.map((tid: string) => {
@@ -258,11 +269,15 @@ server.tool(
 
     const results = collected.map((t: any) => {
       const dur = t.completedAt ? `${t.completedAt - t.startedAt}ms` : 'running';
+      const modeTag = t.writeMode ? ` [${t.writeMode}${t.scope ? `:${t.scope}` : ''}]` : '';
       let text: string;
-      if (t.status === 'completed') text = `[${t.id}] ${t.agentId} (${dur}):\n${t.result}`;
-      else if (t.status === 'failed') text = `[${t.id}] ${t.agentId} (${dur}): ERROR: ${t.error}`;
-      else text = `[${t.id}] ${t.agentId}: still running...`;
+      if (t.status === 'completed') text = `[${t.id}] ${t.agentId}${modeTag} (${dur}):\n${t.result}`;
+      else if (t.status === 'failed') text = `[${t.id}] ${t.agentId}${modeTag} (${dur}): ERROR: ${t.error}`;
+      else text = `[${t.id}] ${t.agentId}${modeTag}: still running...`;
 
+      if (t.worktreeInfo) {
+        text += `\n📁 Worktree: ${t.worktreeInfo.path} (branch: ${t.worktreeInfo.branch})`;
+      }
       if (t.skillWarnings?.length) {
         text += `\n\n⚠️ Skill coverage gaps:\n${t.skillWarnings.map((w: string) => `  - ${w}`).join('\n')}`;
       }
