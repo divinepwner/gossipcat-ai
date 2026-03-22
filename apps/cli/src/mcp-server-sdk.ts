@@ -226,9 +226,12 @@ server.tool(
         return line;
       }).join('\n');
 
+      const assignedTasks = planned.filter((t: any) => t.agentId);
+      const unassignedTasks = planned.filter((t: any) => !t.agentId);
+
       const planJson = {
         strategy: plan.strategy,
-        tasks: planned.map((t: any) => {
+        tasks: assignedTasks.map((t: any) => {
           const entry: Record<string, string> = { agent_id: t.agentId, task: t.task };
           if (t.writeMode) entry.write_mode = t.writeMode;
           if (t.scope) entry.scope = t.scope;
@@ -239,6 +242,9 @@ server.tool(
       let warnings = '';
       if (plan.warnings?.length) {
         warnings = `\nWarnings:\n${plan.warnings.map((w: string) => `  - ${w}`).join('\n')}\n`;
+      }
+      if (unassignedTasks.length) {
+        warnings += `\nUnassigned (excluded from PLAN_JSON — no matching agent):\n${unassignedTasks.map((t: any) => `  - "${t.task}"`).join('\n')}\n`;
       }
 
       const text = `Plan: "${task}"\n\nStrategy: ${plan.strategy}\n\nTasks:\n${taskLines}\n${warnings}\n---\nPLAN_JSON:\n${JSON.stringify(planJson)}`;

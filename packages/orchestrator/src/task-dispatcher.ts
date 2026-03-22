@@ -139,14 +139,19 @@ Respond as JSON array:
         scope?: string;
       }>;
 
+      const validModes = new Set(['sequential', 'scoped', 'worktree']);
       return plan.subTasks.map((st, i) => {
         const c = classifications.find(cl => cl.index === i);
+        const isWrite = c?.access === 'write';
+        const mode = isWrite && c?.write_mode && validModes.has(c.write_mode)
+          ? c.write_mode as PlannedTask['writeMode']
+          : undefined;
         return {
           agentId: st.assignedAgent || '',
           task: st.description,
-          access: c?.access || 'read',
-          writeMode: c?.access === 'write' ? c.write_mode as PlannedTask['writeMode'] : undefined,
-          scope: c?.scope,
+          access: isWrite ? 'write' as const : 'read' as const,
+          writeMode: mode,
+          scope: isWrite ? c?.scope : undefined,
         };
       });
     } catch {

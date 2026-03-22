@@ -210,4 +210,61 @@ describe('TaskDispatcher.classifyWriteModes', () => {
     expect(result[0].access).toBe('write');
     expect(result[0].writeMode).toBe('sequential');
   });
+
+  it('defaults to read when LLM index does not match any sub-task', async () => {
+    const llm = mockLLM(JSON.stringify([
+      { index: 99, access: 'write', write_mode: 'sequential' },
+    ]));
+    const dispatcher = new TaskDispatcher(llm as any, makeRegistry());
+    const plan = makePlan([
+      { description: 'Real task', assignedAgent: 'gemini-implementer' },
+    ]);
+
+    const result = await dispatcher.classifyWriteModes(plan);
+    expect(result[0].access).toBe('read');
+    expect(result[0].writeMode).toBeUndefined();
+  });
+
+  it('ignores write_mode and scope when access is read', async () => {
+    const llm = mockLLM(JSON.stringify([
+      { index: 0, access: 'read', write_mode: 'scoped', scope: 'should/be/ignored/' },
+    ]));
+    const dispatcher = new TaskDispatcher(llm as any, makeRegistry());
+    const plan = makePlan([
+      { description: 'Review code', assignedAgent: 'gemini-reviewer' },
+    ]);
+
+    const result = await dispatcher.classifyWriteModes(plan);
+    expect(result[0].access).toBe('read');
+    expect(result[0].writeMode).toBeUndefined();
+    expect(result[0].scope).toBeUndefined();
+  });
+
+  it('rejects unknown write_mode values', async () => {
+    const llm = mockLLM(JSON.stringify([
+      { index: 0, access: 'write', write_mode: 'invalid_mode' },
+    ]));
+    const dispatcher = new TaskDispatcher(llm as any, makeRegistry());
+    const plan = makePlan([
+      { description: 'Fix something', assignedAgent: 'gemini-implementer' },
+    ]);
+
+    const result = await dispatcher.classifyWriteModes(plan);
+    expect(result[0].access).toBe('write');
+    expect(result[0].writeMode).toBeUndefined(); // invalid mode rejected
+  });
+
+  it('classifies worktree mode', async () => {
+    const llm = mockLLM(JSON.stringify([
+      { index: 0, access: 'write', write_mode: 'worktree' },
+    ]));
+    const dispatcher = new TaskDispatcher(llm as any, makeRegistry());
+    const plan = makePlan([
+      { description: 'Experiment with a new approach', assignedAgent: 'gemini-implementer' },
+    ]);
+
+    const result = await dispatcher.classifyWriteModes(plan);
+    expect(result[0].writeMode).toBe('worktree');
+    expect(result[0].scope).toBeUndefined();
+  });
 });
