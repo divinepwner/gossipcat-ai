@@ -6,6 +6,7 @@ import { ShellTools } from './shell-tools';
 import { GitTools } from './git-tools';
 import { SkillTools } from './skill-tools';
 import { Sandbox } from './sandbox';
+import { resolve, relative } from 'path';
 
 export interface ToolServerConfig {
   relayUrl: string;
@@ -120,16 +121,22 @@ export class ToolServer {
     if (toolName === 'file_write') {
       const filePath = args.path as string;
       if (scope) {
-        // Normalize: append '/' so 'packages/relay' becomes 'packages/relay/'
-        // This prevents 'packages/relay2' matching scope 'packages/relay/'
-        // But also allows writing to the scope directory itself
-        const pathWithSlash = filePath.endsWith('/') ? filePath : filePath + '/';
-        if (!pathWithSlash.startsWith(scope)) {
+        // Resolve path to prevent traversal attacks (e.g. 'packages/tools/../relay/evil.ts')
+        const resolved = resolve(this.sandbox.projectRoot, filePath);
+        const rel = relative(this.sandbox.projectRoot, resolved);
+        if (rel.startsWith('..')) {
+          throw new Error(`Write blocked: "${filePath}" resolves outside project root`);
+        }
+        const normalizedRel = rel.endsWith('/') ? rel : rel + '/';
+        if (!normalizedRel.startsWith(scope)) {
           throw new Error(`Write blocked: "${filePath}" is outside scope "${scope}"`);
         }
       }
-      if (root && !filePath.startsWith(root)) {
-        throw new Error(`Write blocked: "${filePath}" is outside worktree root "${root}"`);
+      if (root) {
+        const resolved = resolve(root, filePath);
+        if (!resolved.startsWith(root)) {
+          throw new Error(`Write blocked: "${filePath}" is outside worktree root "${root}"`);
+        }
       }
     }
 

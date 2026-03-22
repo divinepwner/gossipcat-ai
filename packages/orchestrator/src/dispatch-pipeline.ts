@@ -293,7 +293,11 @@ export class DispatchPipeline {
               t.result = (t.result || '') + `\n\nWorktree merge: CONFLICT\n  Conflicting files: ${(mergeResult.conflicts || []).join(', ')}\n  Branch preserved: ${t.worktreeInfo.branch}\n  Resolve manually: git merge ${t.worktreeInfo.branch}`;
             }
           }
-        } catch (err) { log(`Worktree cleanup failed for ${t.id}: ${(err as Error).message}`); }
+        } catch (err) {
+          log(`Worktree cleanup failed for ${t.id}: ${(err as Error).message}`);
+          // Best-effort cleanup even if merge threw an unexpected exception
+          try { await this.worktreeManager.cleanup(t.id, t.worktreeInfo.path); } catch {}
+        }
       }
       // Scope is released inline in the promise chain, but release again as safety net
       if (t.writeMode === 'scoped' && t.status !== 'running') {

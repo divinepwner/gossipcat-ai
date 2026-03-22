@@ -183,6 +183,12 @@ export async function startChat(config: GossipConfig): Promise<void> {
         return;
       }
       const scope = parts[1] || undefined;
+      if (mode === 'scoped' && !scope) {
+        console.log(`\n${c.yellow}  Scoped mode requires a directory path.${c.reset}`);
+        console.log(`${c.dim}  Example: /write scoped packages/relay/${c.reset}\n`);
+        rl.prompt();
+        return;
+      }
       activeWriteMode = { mode, scope };
       console.log(`\n${c.green}  Write mode: ${mode}${scope ? ` (scope: ${scope})` : ''}${c.reset}`);
       console.log(`${c.dim}  All dispatched tasks will use this mode. /write off to disable.${c.reset}\n`);
