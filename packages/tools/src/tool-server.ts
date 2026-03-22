@@ -1,6 +1,7 @@
 import { GossipAgent } from '@gossip/client';
 import { MessageType, MessageEnvelope, Message } from '@gossip/types';
 import { encode as msgpackEncode } from '@msgpack/msgpack';
+import { randomUUID } from 'crypto';
 import { FileTools } from './file-tools';
 import { ShellTools } from './shell-tools';
 import { GitTools } from './git-tools';
@@ -26,6 +27,7 @@ export class ToolServer {
   private agentScopes: Map<string, string> = new Map();   // agentId → scope path
   private agentRoots: Map<string, string> = new Map();    // agentId → worktree root path
   private writeAgents: Set<string> = new Set();            // agents with any write mode active
+  private pendingReviews: Map<string, { resolve: (r: string) => void; reject: (e: Error) => void }> = new Map();
 
   constructor(config: ToolServerConfig) {
     this.allowedCallers = config.allowedCallers ? new Set(config.allowedCallers) : null;
@@ -74,6 +76,19 @@ export class ToolServer {
   }
 
   private async handleToolRequest(data: unknown, envelope: MessageEnvelope): Promise<void> {
+    // Handle review responses from orchestrator
+    if (envelope.t === MessageType.RPC_RESPONSE) {
+      const correlationId = (envelope.rid_req || envelope.id) as string;
+      const pending = this.pendingReviews.get(correlationId);
+      if (pending) {
+        this.pendingReviews.delete(correlationId);
+        const payload = data as Record<string, unknown>;
+        if (payload?.error) pending.reject(new Error(payload.error as string));
+        else pending.resolve((payload?.result as string) || '');
+      }
+      return;
+    }
+
     if (envelope.t !== MessageType.RPC_REQUEST) return;
 
     // Authorization: check if caller is allowed
@@ -223,8 +238,74 @@ export class ToolServer {
           args as { skill_name: string; reason: string; task_context: string },
           callerId
         );
+      case 'verify_write':
+        return this.handleVerifyWrite(callerId || 'unknown', args.test_file as string | undefined);
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
+  }
+
+  private async handleVerifyWrite(callerId: string, testFile?: string): Promise<string> {
+    // 1. Capture git diff (direct call — bypasses enforceWriteScope)
+    let fullDiff = '';
+    try {
+      const diff = await this.gitTools.gitDiff({ staged: false });
+      const staged = await this.gitTools.gitDiff({ staged: true });
+      fullDiff = [diff, staged].filter(Boolean).join('\n');
+    } catch { /* not a git repo or no changes */ }
+
+    if (!fullDiff.trim()) {
+      return 'No changes detected. Nothing to verify.';
+    }
+
+    // 2. Run tests (direct call — bypasses enforceWriteScope for scoped agents)
+    if (testFile) this.sandbox.validatePath(testFile);
+    const cmd = testFile
+      ? `npx jest --config jest.config.base.js ${testFile} --verbose`
+      : 'npx jest --config jest.config.base.js --verbose';
+    let testResult: string;
+    try {
+      testResult = await this.shellTools.shellExec({ command: cmd, cwd: this.sandbox.projectRoot, timeout: 30000 });
+    } catch (err) {
+      testResult = `Tests failed: ${(err as Error).message}`;
+    }
+
+    // 3. Request peer review via RPC (best-effort)
+    let reviewResult = '';
+    try {
+      reviewResult = await this.requestPeerReview(callerId, fullDiff, testResult);
+    } catch (err) {
+      reviewResult = `Peer review unavailable: ${(err as Error).message}`;
+    }
+
+    // 4. Format result
+    const testStatus = testResult.includes('FAIL') ? 'FAIL' : 'PASS';
+    return `## Verification Result\n\n### Tests: ${testStatus}\n${testResult.slice(-2000)}\n\n### Peer Review\n${reviewResult || 'No reviewer available'}\n\n### Diff Summary\n${fullDiff.slice(0, 3000)}`;
+  }
+
+  private async requestPeerReview(callerId: string, diff: string, testResult: string): Promise<string> {
+    const requestId = randomUUID();
+
+    const reviewPromise = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingReviews.delete(requestId);
+        reject(new Error('Review timed out'));
+      }, 55_000);
+      timer.unref();
+
+      this.pendingReviews.set(requestId, {
+        resolve: (r: string) => { clearTimeout(timer); resolve(r); },
+        reject: (e: Error) => { clearTimeout(timer); reject(e); },
+      });
+    });
+
+    const body = Buffer.from(msgpackEncode({
+      tool: 'review_request',
+      args: { callerId, diff: diff.slice(0, 3000), testResult: testResult.slice(0, 1000) },
+    })) as unknown as Uint8Array;
+    const msg = Message.createRpcRequest(this.agent.agentId, 'orchestrator', requestId, body);
+    await this.agent.sendEnvelope(msg.toEnvelope());
+
+    return reviewPromise;
   }
 }
