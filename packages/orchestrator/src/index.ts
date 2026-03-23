@@ -31,3 +31,5 @@ export { ScopeTracker } from './scope-tracker';
 export { WorktreeManager } from './worktree-manager';
 export { BootstrapGenerator } from './bootstrap';
 export type { BootstrapResult } from './bootstrap';
+export { OverlapDetector } from './overlap-detector';
+export { LensGenerator } from './lens-generator';

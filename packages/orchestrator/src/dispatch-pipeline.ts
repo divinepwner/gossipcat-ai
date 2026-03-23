@@ -73,6 +73,7 @@ export class DispatchPipeline {
 
   private overlapDetector: OverlapDetector | null = null;
   private lensGenerator: LensGenerator | null = null;
+  private bootWarningShown = false;
 
 
   constructor(config: DispatchPipelineConfig) {
@@ -534,6 +535,20 @@ export class DispatchPipeline {
           return { taskIds: [], errors: [`Scoped tasks have overlapping paths: "${scopeI}" and "${scopeJ}"`] };
         }
       }
+    }
+
+    // One-time boot overlap warning
+    if (!this.bootWarningShown && this.overlapDetector) {
+      const allAgents = taskDefs
+        .map(d => this.registryGet(d.agentId))
+        .filter((c): c is AgentConfig => c !== undefined);
+      const result = this.overlapDetector.detect(allAgents);
+      const warning = this.overlapDetector.formatWarning(result);
+      if (warning) {
+        // Use process.stderr to avoid mixing with tool output
+        process.stderr.write(`[gossipcat] Skill overlap detected:\n  ${warning}\n`);
+      }
+      this.bootWarningShown = true;
     }
 
     // Lens generation for overlapping agents
