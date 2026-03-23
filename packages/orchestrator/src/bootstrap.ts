@@ -170,8 +170,8 @@ ${teamSection}
 | Tool | Description |
 |------|-------------|
 | \`gossip_dispatch(agent_id, task)\` | Send task to one agent. Returns task ID. |
-| \`gossip_dispatch_parallel(tasks)\` | Fan out to multiple agents simultaneously. |
-| \`gossip_collect(task_ids?, timeout_ms?)\` | Collect results. Waits for completion. |
+| \`gossip_dispatch_parallel(tasks, {consensus?})\` | Fan out to multiple agents. Use \`consensus: true\` for cross-review. |
+| \`gossip_collect(task_ids?, timeout_ms?, {consensus?})\` | Collect results. \`consensus: true\` runs cross-review round. |
 | \`gossip_bootstrap()\` | Refresh this prompt with latest team state. |
 | \`gossip_setup(config)\` | Create or update team configuration. |
 | \`gossip_orchestrate(task)\` | Auto-decompose task via MainAgent. |
@@ -202,6 +202,30 @@ gossip_dispatch_parallel(tasks: [
 ])
 \`\`\`
 Then collect and synthesize results.
+
+## Consensus Mode
+
+When multiple agents review the same work, enable **consensus** for structured cross-review:
+
+\`\`\`
+gossip_dispatch_parallel(tasks: [...], { consensus: true })
+// then:
+gossip_collect(task_ids, timeout_ms, { consensus: true })
+\`\`\`
+
+**What happens:** After all agents complete, each agent reviews peer findings and produces agree/disagree/new judgments. Results are tagged:
+- **CONFIRMED** — multiple agents agree (high confidence, act on these)
+- **DISPUTED** — agents disagree (review the evidence)
+- **UNIQUE** — only one agent found this (verify before acting)
+- **NEW** — discovered during cross-review (highest-value findings)
+
+**When to use consensus:**
+- Pre-ship security reviews
+- Architecture decisions
+- Bug diagnosis with competing hypotheses
+- Spec reviews
+
+**Cost:** ~12% overhead (cross-review uses summaries, not full codebase).
 
 ## Write Modes
 
