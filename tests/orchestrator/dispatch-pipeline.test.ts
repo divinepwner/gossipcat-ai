@@ -74,7 +74,7 @@ describe('DispatchPipeline', () => {
   describe('collect()', () => {
     it('waits for tasks and returns results', async () => {
       const { taskId } = pipeline.dispatch('test-agent', 'review code');
-      const results = await pipeline.collect([taskId]);
+      const { results } = await pipeline.collect([taskId]);
       expect(results).toHaveLength(1);
       expect(results[0].status).toBe('completed');
       expect(results[0].result).toBe('done');
@@ -83,12 +83,12 @@ describe('DispatchPipeline', () => {
     it('collects all running tasks when no ids given', async () => {
       pipeline.dispatch('test-agent', 'task 1');
       pipeline.dispatch('test-agent', 'task 2');
-      const results = await pipeline.collect();
+      const { results } = await pipeline.collect();
       expect(results).toHaveLength(2);
     });
 
     it('returns empty array when no tasks match', async () => {
-      const results = await pipeline.collect(['nonexistent']);
+      const { results } = await pipeline.collect(['nonexistent']);
       expect(results).toHaveLength(0);
     });
 
@@ -98,7 +98,7 @@ describe('DispatchPipeline', () => {
       const taskGraph = new TaskGraph(pipeline['projectRoot']);
       taskGraph.recordCreated('orphan-1', 'test-agent', 'lost task', ['testing']);
 
-      const results = await pipeline.collect(['orphan-1']);
+      const { results } = await pipeline.collect(['orphan-1']);
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe('orphan-1');
       expect(results[0].status).toBe('failed');
