@@ -130,4 +130,40 @@ describe('TaskGraphSync', () => {
     const unconfigured = new TaskGraphSync(graph, '', '', 'u', 'p', tmpDir);
     expect(unconfigured.isConfigured()).toBe(false);
   });
+
+  it('includes display_name in created event when provided', async () => {
+    const syncWithName = new TaskGraphSync(
+      graph, 'https://test.supabase.co', 'test-key',
+      'user-hash', 'project-hash', tmpDir, 'alice@co.com'
+    );
+    graph.recordCreated('t1', 'agent-a', 'Review code', ['code_review']);
+    await syncWithName.sync();
+    const insert = fetchCalls.find(c => c.method === 'POST' && c.url.includes('/rest/v1/tasks'));
+    expect(insert!.body.display_name).toBe('alice@co.com');
+  });
+
+  it('sends null display_name when not provided (solo mode)', async () => {
+    graph.recordCreated('t1', 'agent-a', 'Review code', ['code_review']);
+    await sync.sync();
+    const insert = fetchCalls.find(c => c.method === 'POST' && c.url.includes('/rest/v1/tasks'));
+    expect(insert!.body.display_name).toBeNull();
+  });
+
+  it('includes token fields in completed sync', async () => {
+    graph.recordCreated('t1', 'agent-a', 'Task', []);
+    graph.recordCompleted('t1', 'Done', 5000, 1200, 350);
+    await sync.sync();
+    const completed = fetchCalls.find(c => c.method === 'PATCH' && c.url.includes('id=eq.t1'));
+    expect(completed!.body.input_tokens).toBe(1200);
+    expect(completed!.body.output_tokens).toBe(350);
+  });
+
+  it('sends null tokens when not provided', async () => {
+    graph.recordCreated('t1', 'agent-a', 'Task', []);
+    graph.recordCompleted('t1', 'Done', 5000);
+    await sync.sync();
+    const completed = fetchCalls.find(c => c.method === 'PATCH' && c.url.includes('id=eq.t1'));
+    expect(completed!.body.input_tokens).toBeNull();
+    expect(completed!.body.output_tokens).toBeNull();
+  });
 });

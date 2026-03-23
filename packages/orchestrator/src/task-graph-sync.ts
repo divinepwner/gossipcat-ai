@@ -16,6 +16,7 @@ export class TaskGraphSync {
     private userId: string,
     private projectId: string,
     projectRoot: string,
+    private displayName?: string | null,
   ) {
     this.gossipDir = join(projectRoot, '.gossip');
   }
@@ -71,6 +72,7 @@ export class TaskGraphSync {
       id: event.taskId, agent_id: event.agentId, task: event.task,
       skills: event.skills, parent_id: event.parentId || null,
       status: 'created', user_id: this.userId, project_id: this.projectId,
+      display_name: this.displayName || null,
       created_at: event.timestamp,
     });
   }
@@ -79,6 +81,8 @@ export class TaskGraphSync {
     await this.patch(`/rest/v1/tasks?id=eq.${event.taskId}`, {
       status: 'completed', result: event.result,
       duration_ms: event.duration, completed_at: event.timestamp,
+      input_tokens: event.inputTokens ?? null,
+      output_tokens: event.outputTokens ?? null,
     });
   }
 
@@ -86,6 +90,8 @@ export class TaskGraphSync {
     await this.patch(`/rest/v1/tasks?id=eq.${event.taskId}`, {
       status: 'failed', error: event.error,
       duration_ms: event.duration, completed_at: event.timestamp,
+      input_tokens: event.inputTokens ?? null,
+      output_tokens: event.outputTokens ?? null,
     });
   }
 
@@ -129,6 +135,8 @@ export class TaskGraphSync {
           skills: entry.skills || [], relevance: entry.scores?.relevance,
           accuracy: entry.scores?.accuracy, uniqueness: entry.scores?.uniqueness,
           source: 'judgment', created_at: entry.timestamp,
+          project_id: this.projectId,
+          display_name: this.displayName || null,
         });
         synced++;
       } catch { /* skip malformed entries */ }
