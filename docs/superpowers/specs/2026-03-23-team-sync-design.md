@@ -47,17 +47,37 @@ Key invariants:
 
 **Current:** `sha256(process.cwd())` — different per machine.
 
-**New:** Derived from git remote URL:
+**New:** Derived from normalized git remote URL:
 
 ```typescript
+/** Normalize git remote URL to canonical form: hostname/owner/repo
+ *  git@github.com:team/myapp.git  → github.com/team/myapp
+ *  https://github.com/team/myapp.git → github.com/team/myapp
+ *  github.com:team/myapp.git → github.com/team/myapp
+ */
+function normalizeGitUrl(url: string): string | null {
+  if (!url) return null;
+  try {
+    // Convert SCP-style (git@host:path) to URL format
+    const withProtocol = url.replace(/^([^@]+@)?([^:\/]+):(?!\/)/, 'ssh://$2/');
+    const parsed = new URL(withProtocol);
+    let pathname = parsed.pathname.replace(/^\//, '').replace(/\.git$/, '');
+    return `${parsed.hostname}/${pathname}`;
+  } catch {
+    // Fallback for non-standard URLs
+    return url.replace(/^(https?:\/\/|git@|ssh:\/\/)/, '').replace(/\.git$/, '').replace(/:/, '/');
+  }
+}
+
 export function getProjectId(projectRoot: string): string {
   try {
     const remoteUrl = execFileSync(
       'git', ['config', '--get', 'remote.origin.url'],
       { cwd: projectRoot, stdio: 'pipe' }
     ).toString().trim();
-    if (remoteUrl) {
-      return createHash('sha256').update(remoteUrl).digest('hex').slice(0, 16);
+    const normalized = normalizeGitUrl(remoteUrl);
+    if (normalized) {
+      return createHash('sha256').update(normalized).digest('hex').slice(0, 16);
     }
   } catch { /* no remote */ }
   // Fallback: cwd-based hash for repos with no remote (solo projects)
@@ -65,7 +85,9 @@ export function getProjectId(projectRoot: string): string {
 }
 ```
 
-This means everyone who clones the same repo gets the same `projectId`, regardless of where they check it out.
+Normalization ensures that SSH, HTTPS, and SCP-style URLs for the same repo produce the same hash. Everyone who clones the same repo gets the same `projectId`.
+
+**Known limitation:** Repo renames on GitHub change the URL for new clones but not existing ones. After a rename, team members with old clones should run `git remote set-url origin <new-url>` to stay in sync.
 
 ### User Identity — Two Modes
 
@@ -128,6 +150,11 @@ CREATE TABLE IF NOT EXISTS team_config (
 );
 
 ALTER TABLE team_config ENABLE ROW LEVEL SECURITY;
+
+-- RLS note: single-tenant per Supabase project. Each team gets their own
+-- Supabase project, so USING(true) is acceptable — the anon key is the
+-- access boundary. For multi-tenant (multiple teams sharing one Supabase
+-- project), tighten to require Supabase Auth + JWT claims. Deferred.
 CREATE POLICY "Allow all access (single-tenant)" ON team_config
   FOR ALL USING (true) WITH CHECK (true);
 ```
@@ -185,7 +212,8 @@ $ gossipcat sync --setup
   Checking for existing team config...
   ✓ Found team: "myapp" (2 members)
 
-  Your display name: alice@company.co
+  Your git email (alice@company.co) will be visible to teammates.
+  Continue? (Y/n) y
 
   ✓ Config saved. Run: gossipcat sync
 ```
@@ -198,7 +226,9 @@ $ gossipcat sync --setup
   Project name (e.g. myapp): myapp
 
   ✓ Team "myapp" created.
-  Your display name: alice@company.co
+
+  Your git email (alice@company.co) will be visible to teammates.
+  Continue? (Y/n) y
 
   Share the Supabase URL + anon key with teammates.
   They run: gossipcat sync --setup → Team mode
@@ -232,8 +262,14 @@ const email = getGitEmail();
 
 let userId: string;
 let displayName: string | null = null;
-const teamSalt = await keychain.getKey('supabase-team-salt');
-if (config.mode === 'team' && teamSalt) {
+if (config.mode === 'team') {
+  const teamSalt = await keychain.getKey('supabase-team-salt');
+  if (!teamSalt) {
+    throw new Error('Team mode requires teamSalt in keychain. Run: gossipcat sync --setup');
+  }
+  if (!email) {
+    throw new Error('Team mode requires a git email. Run: git config user.email "you@example.com"');
+  }
   userId = getTeamUserId(email, teamSalt);
   displayName = config.displayName || email;
 } else {
@@ -328,17 +364,17 @@ GROUP BY display_name;
 
 | File | Action | Change |
 |------|--------|--------|
-| `apps/cli/src/identity.ts` | Modify | Add `getTeamUserId()`, `getGitEmail()`, update `getProjectId()` to use git remote |
+| `apps/cli/src/identity.ts` | Modify | Add `normalizeGitUrl()`, `getTeamUserId()`, `getGitEmail()`, update `getProjectId()` to use normalized git remote |
 | `apps/cli/src/sync-command.ts` | Modify | Add mode selection (solo/team), team config fetch/create, displayName |
 | `apps/cli/src/mcp-server-sdk.ts` | Modify | Update syncFactory to use team identity when configured |
 | `packages/orchestrator/src/task-graph-sync.ts` | Modify | Add `displayName` constructor param, include in `syncCreated` |
 | `docs/migrations/002-team-sync.sql` | Create | `team_config` table + `display_name` column on tasks |
-| `.gossip/supabase.json` | Runtime | Add `mode`, `displayName`, `teamSalt` fields |
+| `.gossip/supabase.json` | Runtime | Add `mode`, `displayName`, `projectIdVersion`, `previousUserId` fields |
 
 ## Security Constraints
 
 - **Team salt stays in keychain** — stored via `Keychain.setKey('supabase-team-salt', salt)`. Never written to `.gossip/` files. Fetched from Supabase `team_config` table during setup, then cached in keychain for offline use.
-- **Email as display name** — only stored in Supabase, never in local JSONL. Team members opt into visibility.
+- **Email as display name** — only stored in Supabase, never in local JSONL. Requires explicit consent during setup ("Your git email will be visible to teammates. Continue?"). Users can decline and stay in solo mode.
 - **Solo mode default** — team mode requires explicit opt-in during setup.
 - **No pull sync** — you can't read other team members' local data. Supabase is the only shared surface.
 - **Anon key sharing** — team members share the Supabase URL + anon key out-of-band. The anon key is non-privileged (only PostgREST access with RLS).
@@ -358,6 +394,31 @@ This changes the `project_id` for all existing synced data. Historical tasks in 
 3. Set `projectIdVersion: 2` in `.gossip/supabase.json` so the migration only runs once.
 4. If Supabase is not configured (solo mode, no sync), no migration needed — JSONL has no project_id.
 
+### userId change (solo → team mode)
+
+When switching from solo to team mode, the `userId` changes from `sha256(email + cwd + localSalt)` to `sha256(email + teamSalt)`. Historical tasks would be orphaned under the old userId. Strategy:
+
+1. During `sync --setup` when switching to team mode, save the old `userId` in `.gossip/supabase.json` as `previousUserId`.
+2. On first team-mode sync, run a one-time `PATCH` to re-assign old tasks:
+   ```sql
+   UPDATE tasks SET user_id = '{new_userId}', display_name = '{email}'
+     WHERE user_id = '{old_userId}' AND project_id = '{projectId}';
+   UPDATE agent_scores SET user_id = '{new_userId}', display_name = '{email}'
+     WHERE user_id = '{old_userId}' AND project_id = '{projectId}';
+   ```
+3. Clear `previousUserId` from config after migration.
+
+### Email change handling
+
+If a user changes their git email, their `userId` in team mode will change (different hash). To link old and new identities:
+
+1. The sync command detects email mismatch: `config.displayName !== getGitEmail()`.
+2. Prompts: `Your email changed from old@co to new@co. Migrate historical tasks? (Y/n)`
+3. If yes: runs the same `PATCH` migration as solo→team (old userId → new userId).
+4. Updates `displayName` in config.
+
+This is opt-in — if the user declines, old tasks stay under the old identity.
+
 ### Other migration notes
 
 - All new fields are optional/nullable — no breaking schema changes.
@@ -366,9 +427,29 @@ This changes the `project_id` for all existing synced data. Historical tasks in 
 
 ## Testing Strategy
 
+### URL normalization
+- **Unit test:** `normalizeGitUrl` normalizes SSH, HTTPS, SCP-style to same canonical form
+- **Unit test:** `normalizeGitUrl('git@github.com:team/myapp.git')` → `'github.com/team/myapp'`
+- **Unit test:** `normalizeGitUrl('https://github.com/team/myapp.git')` → `'github.com/team/myapp'`
+- **Unit test:** `normalizeGitUrl('github.com:team/myapp.git')` → `'github.com/team/myapp'`
+- **Unit test:** `normalizeGitUrl` returns null for empty/undefined input
+
+### Identity
 - **Unit test:** `getProjectId` with git remote vs no remote fallback
+- **Unit test:** `getProjectId` returns same hash for SSH and HTTPS clones of same repo
 - **Unit test:** `getTeamUserId` produces consistent hashes with same salt
-- **Unit test:** `getProjectId` returns same hash for different cwd paths with same git remote
+- **Unit test:** `getTeamUserId` produces different hashes for different emails
+- **Unit test:** `getGitEmail` returns null when git not configured
+
+### Team mode
+- **Unit test:** Sync throws when team mode active but teamSalt missing from keychain
+- **Unit test:** Sync throws when team mode active but git email is null
+- **Unit test:** Setup aborts if user declines email consent prompt
+- **Mock test:** `syncCreated` includes `display_name` when provided, null when solo
 - **Integration test:** Setup flow creates `team_config` row on first member, fetches on second
-- **Integration test:** Two syncs with different emails but same teamSalt produce different userIds but same projectId
-- **Mock test:** `syncCreated` includes `display_name` when provided
+
+### Migration
+- **Unit test:** projectId migration detects missing `projectIdVersion` and sends PATCH
+- **Unit test:** projectId migration only runs once (`projectIdVersion: 2` set after)
+- **Unit test:** Solo→team userId migration sends PATCH with old→new userId
+- **Unit test:** Email change detected and migration offered
