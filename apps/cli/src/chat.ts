@@ -137,6 +137,11 @@ export async function startChat(config: GossipConfig): Promise<void> {
     agents: configToAgentConfigs(config),
     projectRoot: process.cwd(),
     bootstrapPrompt,
+    toolServer: {
+      assignScope: (agentId: string, scope: string) => toolServer.assignScope(agentId, scope),
+      assignRoot: (agentId: string, root: string) => toolServer.assignRoot(agentId, root),
+      releaseAgent: (agentId: string) => toolServer.releaseAgent(agentId),
+    },
   };
 
   const mainAgent = new MainAgent(mainAgentConfig);

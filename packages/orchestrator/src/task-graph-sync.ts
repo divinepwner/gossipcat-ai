@@ -30,21 +30,25 @@ export class TaskGraphSync {
     const events = this.graph.getUnsynced(meta.lastSync);
     if (events.length === 0) return { events: 0, scores: 0, errors: [] };
     let synced = 0;
+    let lastSyncedTimestamp = '';
     const errors: string[] = [];
     for (const event of events) {
       try {
         await this.syncEvent(event);
         synced++;
+        lastSyncedTimestamp = event.timestamp;
       } catch (err) {
         errors.push(`${event.type}: ${(err as Error).message}`);
+        // Stop advancing timestamp — failed events must be retried next sync
+        break;
       }
     }
     let scores = 0;
     try { scores = await this.syncAgentScores(); }
     catch (err) { errors.push(`agent_scores: ${(err as Error).message}`); }
-    if (synced > 0) {
+    if (synced > 0 && lastSyncedTimestamp) {
       this.graph.updateSyncMeta({
-        lastSync: events[events.length - 1].timestamp,
+        lastSync: lastSyncedTimestamp,
         lastSyncEventCount: meta.lastSyncEventCount + synced,
       });
     }

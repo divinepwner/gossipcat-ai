@@ -103,6 +103,11 @@ async function main(): Promise<void> {
       provider: config.main_agent.provider, model: config.main_agent.model,
       apiKey: mainKey || undefined, relayUrl: relay.url,
       agents: configToAgentConfigs(config), projectRoot: process.cwd(),
+      toolServer: {
+        assignScope: (agentId: string, scope: string) => toolServer.assignScope(agentId, scope),
+        assignRoot: (agentId: string, root: string) => toolServer.assignRoot(agentId, root),
+        releaseAgent: (agentId: string) => toolServer.releaseAgent(agentId),
+      },
     });
     await mainAgent.start();
 

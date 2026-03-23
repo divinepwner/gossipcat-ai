@@ -14,7 +14,7 @@ import { ALL_TOOLS } from '@gossip/tools';
 import { ContentBlock, TextContent, MessageType, MessageEnvelope, Message } from '@gossip/types';
 import { GossipAgent } from '@gossip/client';
 import { encode as msgpackEncode } from '@msgpack/msgpack';
-import { DispatchPipeline } from './dispatch-pipeline';
+import { DispatchPipeline, ToolServerCallbacks } from './dispatch-pipeline';
 import { TaskGraphSync } from './task-graph-sync';
 
 const CHAT_SYSTEM_PROMPT = `You are a developer assistant powering Gossip Mesh. Be concise and direct.
@@ -47,6 +47,7 @@ export interface MainAgentConfig {
   llm?: ILLMProvider;  // override for testing
   bootstrapPrompt?: string;  // NEW — injected by BootstrapGenerator
   syncFactory?: () => TaskGraphSync | null;
+  toolServer?: ToolServerCallbacks | null;
 }
 
 export class MainAgent {
@@ -80,6 +81,7 @@ export class MainAgent {
       registryGet: (id) => this.registry.get(id),
       llm: this.llm,
       syncFactory: config.syncFactory,
+      toolServer: config.toolServer,
     });
   }
 

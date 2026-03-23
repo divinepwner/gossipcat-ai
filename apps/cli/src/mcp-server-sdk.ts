@@ -104,6 +104,11 @@ async function doBoot() {
         return e(bp) ? r(bp, 'utf-8') : '';
       } catch { return ''; }
     })(),
+    toolServer: toolServer ? {
+      assignScope: (agentId: string, scope: string) => toolServer.assignScope(agentId, scope),
+      assignRoot: (agentId: string, root: string) => toolServer.assignRoot(agentId, root),
+      releaseAgent: (agentId: string) => toolServer.releaseAgent(agentId),
+    } : null,
     syncFactory: () => {
       try {
         const { existsSync: exists, readFileSync: readF } = require('fs');

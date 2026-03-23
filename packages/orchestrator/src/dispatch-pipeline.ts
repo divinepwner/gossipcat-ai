@@ -23,6 +23,12 @@ interface WorkerLike {
   unsubscribeFromBatch?(batchId: string): Promise<void>;
 }
 
+export interface ToolServerCallbacks {
+  assignScope: (agentId: string, scope: string) => void;
+  assignRoot: (agentId: string, root: string) => void;
+  releaseAgent: (agentId: string) => void;
+}
+
 export interface DispatchPipelineConfig {
   projectRoot: string;
   workers: Map<string, WorkerLike>;
@@ -30,6 +36,7 @@ export interface DispatchPipelineConfig {
   gossipPublisher?: GossipPublisher | null;
   llm?: ILLMProvider;
   syncFactory?: () => TaskGraphSync | null;
+  toolServer?: ToolServerCallbacks | null;
 }
 
 type TrackedTask = TaskEntry & { promise: Promise<string> };
@@ -48,6 +55,7 @@ export class DispatchPipeline {
   private readonly llm: ILLMProvider | null;
   private gossipPublisher: GossipPublisher | null;
   private syncFactory: (() => TaskGraphSync | null) | null;
+  private toolServer: ToolServerCallbacks | null;
   private isSyncing = false;
   private sessionGossip: SessionGossipEntry[] = [];
   private plans: Map<string, PlanState> = new Map();
@@ -68,6 +76,7 @@ export class DispatchPipeline {
     this.gossipPublisher = config.gossipPublisher ?? null;
     this.llm = config.llm ?? null;
     this.syncFactory = config.syncFactory ?? null;
+    this.toolServer = config.toolServer ?? null;
 
     this.taskGraph = new TaskGraph(config.projectRoot);
     this.memWriter = new MemoryWriter(config.projectRoot);
@@ -172,25 +181,31 @@ export class DispatchPipeline {
         throw new Error(`Scope "${options.scope}" overlaps with task ${overlap.conflictTaskId} at "${overlap.conflictScope}"`);
       }
       this.scopeTracker.register(options.scope, taskId);
+      this.toolServer?.assignScope(agentId, options.scope);
       entry.promise = worker.executeTask(task, undefined, promptContent)
         .then((result: string) => {
           entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now();
           this.scopeTracker.release(taskId);
+          this.toolServer?.releaseAgent(agentId);
           return result;
         }).catch((err: Error) => {
           entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
           this.scopeTracker.release(taskId);
+          this.toolServer?.releaseAgent(agentId);
           throw err;
         });
     } else if (options?.writeMode === 'worktree') {
       entry.promise = this.worktreeManager.create(taskId).then(({ path, branch }) => {
         entry.worktreeInfo = { path, branch };
+        this.toolServer?.assignRoot(agentId, path);
         return worker.executeTask(task, undefined, promptContent);
       }).then((result: string) => {
         entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now();
+        this.toolServer?.releaseAgent(agentId);
         return result;
       }).catch((err: Error) => {
         entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
+        this.toolServer?.releaseAgent(agentId);
         throw err;
       });
     } else {

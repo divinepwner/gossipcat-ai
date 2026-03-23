@@ -220,14 +220,17 @@ export class ToolServer {
       case 'file_read':
         return this.fileTools.fileRead(args as { path: string; startLine?: number; endLine?: number });
       case 'file_write': {
-        const result = await this.fileTools.fileWrite(args as { path: string; content: string });
+        // Check cap BEFORE write to avoid write-success-with-false-error
         if (callerId) {
           if (!this.agentWrittenFiles.has(callerId)) this.agentWrittenFiles.set(callerId, new Set());
           const tracked = this.agentWrittenFiles.get(callerId)!;
           if (tracked.size >= ToolServer.MAX_WRITTEN_FILES_PER_AGENT && !tracked.has(args.path as string)) {
             throw new Error(`Agent ${callerId} exceeded max tracked file writes (${ToolServer.MAX_WRITTEN_FILES_PER_AGENT})`);
           }
-          tracked.add(args.path as string);
+        }
+        const result = await this.fileTools.fileWrite(args as { path: string; content: string });
+        if (callerId) {
+          this.agentWrittenFiles.get(callerId)!.add(args.path as string);
         }
         return result;
       }
