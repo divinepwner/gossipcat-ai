@@ -6,8 +6,14 @@ import type {
   TaskFailedEvent, TaskCancelledEvent, TaskDecomposedEvent, TaskReferenceEvent,
 } from './types';
 
+export interface SyncMigrationConfig {
+  oldProjectId?: string;
+  oldUserId?: string;
+}
+
 export class TaskGraphSync {
   private readonly gossipDir: string;
+  private migrationDone = false;
 
   constructor(
     private graph: TaskGraph,
@@ -17,6 +23,7 @@ export class TaskGraphSync {
     private projectId: string,
     projectRoot: string,
     private displayName?: string | null,
+    private migration?: SyncMigrationConfig,
   ) {
     this.gossipDir = join(projectRoot, '.gossip');
   }
@@ -27,6 +34,14 @@ export class TaskGraphSync {
 
   async sync(): Promise<{ events: number; scores: number; errors: string[] }> {
     if (!this.isConfigured()) return { events: 0, scores: 0, errors: ['Not configured'] };
+
+    // One-time migration
+    if (this.migration && !this.migrationDone) {
+      try { await this.runMigrations(); }
+      catch (err) { return { events: 0, scores: 0, errors: [`Migration failed: ${(err as Error).message}`] }; }
+      this.migrationDone = true;
+    }
+
     const meta = this.graph.getSyncMeta();
     const events = this.graph.getUnsynced(meta.lastSync);
     if (events.length === 0) return { events: 0, scores: 0, errors: [] };
@@ -142,6 +157,29 @@ export class TaskGraphSync {
       } catch { /* skip malformed entries */ }
     }
     return synced;
+  }
+
+  private async runMigrations(): Promise<void> {
+    if (this.migration?.oldProjectId) {
+      await this.patch(
+        `/rest/v1/tasks?project_id=eq.${this.migration.oldProjectId}&user_id=eq.${this.userId}`,
+        { project_id: this.projectId }
+      );
+      await this.patch(
+        `/rest/v1/agent_scores?project_id=eq.${this.migration.oldProjectId}&user_id=eq.${this.userId}`,
+        { project_id: this.projectId }
+      );
+    }
+    if (this.migration?.oldUserId) {
+      await this.patch(
+        `/rest/v1/tasks?user_id=eq.${this.migration.oldUserId}&project_id=eq.${this.projectId}`,
+        { user_id: this.userId, display_name: this.displayName || null }
+      );
+      await this.patch(
+        `/rest/v1/agent_scores?user_id=eq.${this.migration.oldUserId}&project_id=eq.${this.projectId}`,
+        { user_id: this.userId, display_name: this.displayName || null }
+      );
+    }
   }
 
   private async patch(path: string, body: Record<string, unknown>): Promise<void> {

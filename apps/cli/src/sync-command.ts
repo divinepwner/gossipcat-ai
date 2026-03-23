@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { TaskGraph, TaskGraphSync } from '@gossip/orchestrator';
+import type { SyncMigrationConfig } from '@gossip/orchestrator/dist/task-graph-sync';
 import { Keychain } from './keychain';
 import { getUserId, getProjectId, getTeamUserId, getGitEmail } from './identity';
 
@@ -72,10 +73,35 @@ export async function runSyncCommand(args: string[]): Promise<void> {
     userId = getUserId(cwd);
   }
 
-  const sync = new TaskGraphSync(graph, config.url, key, userId, getProjectId(cwd), cwd, displayName);
+  // Detect projectId migration
+  let migration: SyncMigrationConfig | undefined;
+  if (!config.projectIdVersion) {
+    const { createHash } = require('crypto');
+    const oldProjectId = createHash('sha256').update(cwd).digest('hex').slice(0, 16);
+    const newProjectId = getProjectId(cwd);
+    if (oldProjectId !== newProjectId) {
+      migration = { ...migration, oldProjectId };
+      console.log(`${c.cyan}Migrating project identity to git remote-based hash...${c.reset}`);
+    }
+  }
+
+  // Detect solo→team userId migration
+  if (config.previousUserId) {
+    migration = { ...migration, oldUserId: config.previousUserId };
+    console.log(`${c.cyan}Migrating task history to team identity...${c.reset}`);
+  }
+
+  const sync = new TaskGraphSync(graph, config.url, key, userId, getProjectId(cwd), cwd, displayName, migration);
 
   console.log('Syncing to Supabase...');
   const result = await sync.sync();
+
+  // After sync, mark migrations as done
+  if (migration && !result.errors.length) {
+    config.projectIdVersion = 2;
+    delete config.previousUserId;
+    saveSupabaseConfig(config);
+  }
 
   if (result.errors.length) {
     console.log(`${c.yellow}Synced ${result.events} events with ${result.errors.length} errors:${c.reset}`);

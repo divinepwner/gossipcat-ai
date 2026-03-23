@@ -166,4 +166,31 @@ describe('TaskGraphSync', () => {
     expect(completed!.body.input_tokens).toBeNull();
     expect(completed!.body.output_tokens).toBeNull();
   });
+
+  describe('migration', () => {
+    it('migrates projectId when oldProjectId provided', async () => {
+      const syncWithMigration = new TaskGraphSync(
+        graph, 'https://test.supabase.co', 'test-key',
+        'user-hash', 'new-project-hash', tmpDir, null,
+        { oldProjectId: 'old-project-hash' }
+      );
+      graph.recordCreated('t1', 'agent-a', 'Task', []);
+      await syncWithMigration.sync();
+
+      const migration = fetchCalls.find(c =>
+        c.method === 'PATCH' && c.body?.project_id === 'new-project-hash' &&
+        c.url.includes('project_id=eq.old-project-hash')
+      );
+      expect(migration).toBeDefined();
+    });
+
+    it('skips migration when no oldProjectId provided', async () => {
+      graph.recordCreated('t1', 'agent-a', 'Task', []);
+      await sync.sync();
+      const migration = fetchCalls.find(c =>
+        c.method === 'PATCH' && c.url.includes('project_id=eq.')
+      );
+      expect(migration).toBeUndefined();
+    });
+  });
 });
