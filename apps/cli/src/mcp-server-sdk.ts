@@ -96,6 +96,14 @@ async function doBoot() {
     relayUrl: relay.url,
     agents: agentConfigs,
     projectRoot: process.cwd(),
+    bootstrapPrompt: (() => {
+      try {
+        const { existsSync: e, readFileSync: r } = require('fs');
+        const { join: j } = require('path');
+        const bp = j(process.cwd(), '.gossip', 'bootstrap.md');
+        return e(bp) ? r(bp, 'utf-8') : '';
+      } catch { return ''; }
+    })(),
     syncFactory: () => {
       try {
         const { existsSync: exists, readFileSync: readF } = require('fs');
