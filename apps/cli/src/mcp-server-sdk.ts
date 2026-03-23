@@ -142,6 +142,23 @@ async function doBoot() {
   mainAgent.setWorkers(workers);
   await mainAgent.start();
 
+  // Wire adaptive team intelligence (overlap detection + lens generation)
+  try {
+    const { OverlapDetector, LensGenerator } = await import('@gossip/orchestrator');
+    let utilityLlm: any;
+    if (config.utility_model) {
+      const utilityKey = await keychain.getKey(config.utility_model.provider);
+      utilityLlm = m.createProvider(config.utility_model.provider, config.utility_model.model, utilityKey ?? undefined);
+    } else {
+      utilityLlm = m.createProvider(mainProvider as any, mainModel, mainKey ?? undefined);
+    }
+    mainAgent.setOverlapDetector(new OverlapDetector());
+    mainAgent.setLensGenerator(new LensGenerator(utilityLlm));
+    process.stderr.write(`[gossipcat] Adaptive team intelligence ready${config.utility_model ? ` (utility: ${config.utility_model.provider}/${config.utility_model.model})` : ''}\n`);
+  } catch (err) {
+    process.stderr.write(`[gossipcat] Adaptive team intelligence failed: ${(err as Error).message}\n`);
+  }
+
   // Create gossip publisher and wire into pipeline
   try {
     const { GossipAgent: GossipAgentPub } = await import('@gossip/client');

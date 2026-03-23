@@ -7,6 +7,10 @@ export interface GossipConfig {
     provider: string;
     model: string;
   };
+  utility_model?: {
+    provider: string;
+    model: string;
+  };
   agents?: Record<string, {
     provider: string;
     model: string;
@@ -53,6 +57,16 @@ export function validateConfig(raw: any): GossipConfig {
     throw new Error(
       `Invalid provider "${raw.main_agent.provider}". Must be one of: ${VALID_PROVIDERS.join(', ')}`
     );
+  }
+
+  if (raw.utility_model) {
+    if (!raw.utility_model.provider) throw new Error('Config "utility_model" missing provider');
+    if (!raw.utility_model.model) throw new Error('Config "utility_model" missing model');
+    if (!VALID_PROVIDERS.includes(raw.utility_model.provider)) {
+      throw new Error(
+        `Invalid utility_model provider "${raw.utility_model.provider}". Must be one of: ${VALID_PROVIDERS.join(', ')}`
+      );
+    }
   }
 
   if (raw.agents) {
