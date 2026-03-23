@@ -35,3 +35,5 @@ export type { BootstrapResult } from './bootstrap';
 export { OverlapDetector } from './overlap-detector';
 export { LensGenerator } from './lens-generator';
 export { PerformanceWriter } from './performance-writer';
+export { ConsensusEngine } from './consensus-engine';
+export type { ConsensusEngineConfig } from './consensus-engine';

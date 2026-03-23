@@ -1,4 +1,5 @@
 import type { ConsensusReport, ConsensusFinding, ConsensusSignal, CollectResult } from '@gossip/orchestrator';
+import { ConsensusEngine } from '@gossip/orchestrator';
 
 describe('Consensus types', () => {
   it('CollectResult shape is valid', () => {
@@ -41,5 +42,60 @@ describe('Consensus types', () => {
     expect(report.agentCount).toBe(2);
     expect(report.confirmed).toHaveLength(1);
     expect(signal.type).toBe('consensus');
+  });
+});
+
+describe('ConsensusEngine', () => {
+  describe('extractSummary()', () => {
+    it('extracts ## Consensus Summary section', () => {
+      const result = `Some long analysis...\n\n## Consensus Summary\n- SQL injection at auth.ts:47\n- Missing rate limiting on /api/tasks\n\nSome trailing text`;
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: () => undefined,
+      });
+      const summary = engine.extractSummary(result);
+      expect(summary).toBe('- SQL injection at auth.ts:47\n- Missing rate limiting on /api/tasks');
+    });
+
+    it('returns full result (truncated) when no summary section found', () => {
+      const result = 'Found a bug at line 47. Also line 92 has issues.';
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: () => undefined,
+      });
+      const summary = engine.extractSummary(result);
+      expect(summary).toBe(result);
+    });
+
+    it('truncates full result at sentence boundary when no summary section', () => {
+      const sentences = Array.from({ length: 50 }, (_, i) => `Finding ${i}: something is wrong at file${i}.ts:${i}.`);
+      const result = sentences.join(' ');
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: () => undefined,
+      });
+      const summary = engine.extractSummary(result);
+      expect(summary.endsWith('.')).toBe(true);
+      expect(summary.length).toBeLessThanOrEqual(2000);
+    });
+
+    it('returns empty string for empty result', () => {
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: () => undefined,
+      });
+      const summary = engine.extractSummary('');
+      expect(summary).toBe('');
+    });
+
+    it('handles multiple ## Consensus Summary sections (takes first)', () => {
+      const result = '## Consensus Summary\n- Finding A\n\n## Consensus Summary\n- Finding B';
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: () => undefined,
+      });
+      const summary = engine.extractSummary(result);
+      expect(summary).toContain('Finding A');
+    });
   });
 });
