@@ -1,7 +1,7 @@
 import { LLMMessage } from '@gossip/types';
 import { ILLMProvider } from './llm-client';
 import { AgentConfig, TaskEntry } from './types';
-import { CrossReviewEntry } from './consensus-types';
+import { ConsensusReport, ConsensusFinding, ConsensusNewFinding, ConsensusSignal, CrossReviewEntry } from './consensus-types';
 
 export type {
   ConsensusReport,
@@ -120,6 +120,298 @@ Return ONLY a JSON array:
       // Graceful degradation: skip agents whose LLM call fails
       return [];
     }
+  }
+
+  /**
+   * Phase 3: Synthesize Phase 1 results and Phase 2 cross-review entries into a consensus report.
+   */
+  synthesize(results: TaskEntry[], crossReviewEntries: CrossReviewEntry[]): ConsensusReport {
+    const signals: ConsensusSignal[] = [];
+    const newFindings: ConsensusNewFinding[] = [];
+    const successful = results.filter(r => r.status === 'completed' && r.result);
+
+    // (a) Seed finding map from Phase 1 results
+    const findingMap = new Map<string, {
+      originalAgentId: string;
+      finding: string;
+      confirmedBy: string[];
+      disputedBy: Array<{ agentId: string; reason: string; evidence: string }>;
+      confidences: number[];
+    }>();
+
+    for (const r of successful) {
+      const summary = this.extractSummary(r.result!);
+      const lines = summary.split('\n').filter(l => l.trimStart().startsWith('-'));
+      for (const line of lines) {
+        const finding = line.replace(/^\s*-\s*/, '').trim();
+        if (!finding) continue;
+        const key = `${r.agentId}::${finding}`;
+        findingMap.set(key, {
+          originalAgentId: r.agentId,
+          finding,
+          confirmedBy: [],
+          disputedBy: [],
+          confidences: [],
+        });
+      }
+    }
+
+    // (b) Apply cross-review entries
+    for (const entry of crossReviewEntries) {
+      const now = new Date().toISOString();
+
+      if (entry.action === 'new') {
+        newFindings.push({
+          agentId: entry.agentId,
+          finding: entry.finding,
+          evidence: entry.evidence,
+          confidence: entry.confidence,
+        });
+        signals.push({
+          type: 'consensus',
+          taskId: '',
+          signal: 'new_finding',
+          agentId: entry.agentId,
+          evidence: entry.evidence,
+          timestamp: now,
+        });
+        continue;
+      }
+
+      if (entry.action === 'agree') {
+        const matchKey = this.findMatchingFinding(findingMap, entry.peerAgentId, entry.finding);
+        if (matchKey) {
+          const f = findingMap.get(matchKey)!;
+          f.confirmedBy.push(entry.agentId);
+          f.confidences.push(entry.confidence);
+        }
+        signals.push({
+          type: 'consensus',
+          taskId: '',
+          signal: 'agreement',
+          agentId: entry.agentId,
+          counterpartId: entry.peerAgentId,
+          evidence: entry.evidence,
+          timestamp: now,
+        });
+        continue;
+      }
+
+      if (entry.action === 'disagree') {
+        const matchKey = this.findMatchingFinding(findingMap, entry.peerAgentId, entry.finding);
+        if (matchKey) {
+          const f = findingMap.get(matchKey)!;
+          f.disputedBy.push({
+            agentId: entry.agentId,
+            reason: entry.evidence,
+            evidence: entry.evidence,
+          });
+          f.confidences.push(entry.confidence);
+        }
+
+        const isHallucination = this.detectHallucination(entry.evidence);
+        if (isHallucination) {
+          signals.push({
+            type: 'consensus',
+            taskId: '',
+            signal: 'hallucination_caught',
+            agentId: entry.peerAgentId,
+            counterpartId: entry.agentId,
+            outcome: 'incorrect',
+            evidence: entry.evidence,
+            timestamp: now,
+          });
+        } else {
+          signals.push({
+            type: 'consensus',
+            taskId: '',
+            signal: 'disagreement',
+            agentId: entry.agentId,
+            counterpartId: entry.peerAgentId,
+            evidence: entry.evidence,
+            timestamp: now,
+          });
+        }
+      }
+    }
+
+    // (c) Tag findings
+    const confirmed: ConsensusFinding[] = [];
+    const disputed: ConsensusFinding[] = [];
+    const unique: ConsensusFinding[] = [];
+    let findingIdx = 0;
+
+    for (const [, entry] of findingMap) {
+      findingIdx++;
+      const avgConfidence = entry.confidences.length > 0
+        ? entry.confidences.reduce((a, b) => a + b, 0) / entry.confidences.length
+        : 3;
+
+      const finding: ConsensusFinding = {
+        id: `f${findingIdx}`,
+        originalAgentId: entry.originalAgentId,
+        finding: entry.finding,
+        tag: 'unique',
+        confirmedBy: entry.confirmedBy,
+        disputedBy: entry.disputedBy,
+        confidence: Math.round(avgConfidence),
+      };
+
+      if (entry.disputedBy.length > 0) {
+        finding.tag = 'disputed';
+        disputed.push(finding);
+      } else if (entry.confirmedBy.length > 0) {
+        finding.tag = 'confirmed';
+        confirmed.push(finding);
+      } else {
+        finding.tag = 'unique';
+        unique.push(finding);
+        signals.push({
+          type: 'consensus',
+          taskId: '',
+          signal: 'unique_unconfirmed',
+          agentId: entry.originalAgentId,
+          evidence: entry.finding,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
+    // (d) Generate formatted report
+    const summary = this.formatReport(confirmed, disputed, unique, newFindings, successful.length);
+
+    return {
+      agentCount: successful.length,
+      rounds: 2,
+      confirmed,
+      disputed,
+      unique,
+      newFindings,
+      signals,
+      summary,
+    };
+  }
+
+  /**
+   * Detect if disagreement evidence indicates a hallucination.
+   */
+  private detectHallucination(evidence: string): boolean {
+    const indicators = [
+      'does not exist', "doesn't exist", 'no such file', 'no such function',
+      'no such method', 'no such variable', 'not found in', 'is a comment',
+      'only has', 'no line', 'nonexistent', 'non-existent', 'never defined',
+      'not defined', 'fabricated', 'hallucinated',
+    ];
+    const lower = evidence.toLowerCase();
+    return indicators.some(phrase => lower.includes(phrase));
+  }
+
+  /**
+   * Find a matching finding in the map for a given peer agent and finding text.
+   * 3-tier matching: exact, substring, word overlap.
+   */
+  private findMatchingFinding(
+    findingMap: Map<string, { originalAgentId: string; finding: string; confirmedBy: string[]; disputedBy: any[]; confidences: number[] }>,
+    peerAgentId: string,
+    findingText: string,
+  ): string | null {
+    // Tier 1: Exact match
+    const exactKey = `${peerAgentId}::${findingText}`;
+    if (findingMap.has(exactKey)) return exactKey;
+
+    // Tier 2: Case-insensitive substring match (either direction)
+    const lowerText = findingText.toLowerCase();
+    for (const [key, entry] of findingMap) {
+      if (entry.originalAgentId !== peerAgentId) continue;
+      const lowerFinding = entry.finding.toLowerCase();
+      if (lowerFinding.includes(lowerText) || lowerText.includes(lowerFinding)) {
+        return key;
+      }
+    }
+
+    // Tier 3: Significant word overlap >50%
+    const significantWords = (text: string) =>
+      text.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+    const textWords = significantWords(findingText);
+    if (textWords.length === 0) return null;
+
+    for (const [key, entry] of findingMap) {
+      if (entry.originalAgentId !== peerAgentId) continue;
+      const findingWords = significantWords(entry.finding);
+      if (findingWords.length === 0) continue;
+      const overlap = textWords.filter(w => findingWords.includes(w)).length;
+      const overlapRatio = overlap / Math.max(textWords.length, findingWords.length);
+      if (overlapRatio > 0.5) return key;
+    }
+
+    return null;
+  }
+
+  /**
+   * Format the consensus report as a human-readable string.
+   */
+  private formatReport(
+    confirmed: ConsensusFinding[],
+    disputed: ConsensusFinding[],
+    unique: ConsensusFinding[],
+    newFindings: ConsensusNewFinding[],
+    agentCount: number,
+  ): string {
+    const bar = '═══════════════════════════════════════════';
+    const lines: string[] = [];
+
+    lines.push(bar);
+    lines.push(`CONSENSUS REPORT (${agentCount} agents, 2 rounds)`);
+    lines.push(bar);
+    lines.push('');
+
+    if (confirmed.length > 0) {
+      lines.push('CONFIRMED (high confidence — act on these):');
+      for (const f of confirmed) {
+        const origPreset = this.config.registryGet(f.originalAgentId)?.preset || f.originalAgentId;
+        const confirmerPresets = f.confirmedBy.map(id => this.config.registryGet(id)?.preset || id).join(', ');
+        lines.push(`  ✓ [${origPreset} + ${confirmerPresets}] ${f.finding}`);
+      }
+      lines.push('');
+    }
+
+    if (disputed.length > 0) {
+      lines.push('DISPUTED (agents disagree — review the evidence):');
+      for (const f of disputed) {
+        const origPreset = this.config.registryGet(f.originalAgentId)?.preset || f.originalAgentId;
+        lines.push(`  ⚡ [${origPreset} vs ${f.disputedBy.map(d => this.config.registryGet(d.agentId)?.preset || d.agentId).join(', ')}] "${f.finding}"`);
+        lines.push(`    → ${origPreset}: original finding`);
+        for (const d of f.disputedBy) {
+          const dispPreset = this.config.registryGet(d.agentId)?.preset || d.agentId;
+          lines.push(`    → ${dispPreset}: ${d.reason}`);
+        }
+      }
+      lines.push('');
+    }
+
+    if (unique.length > 0) {
+      lines.push('UNIQUE (one agent only — verify before acting):');
+      for (const f of unique) {
+        const preset = this.config.registryGet(f.originalAgentId)?.preset || f.originalAgentId;
+        lines.push(`  ? [${preset}] "${f.finding}"`);
+      }
+      lines.push('');
+    }
+
+    if (newFindings.length > 0) {
+      lines.push('NEW (discovered during cross-review):');
+      for (const f of newFindings) {
+        const preset = this.config.registryGet(f.agentId)?.preset || f.agentId;
+        lines.push(`  ★ [${preset}] "${f.finding}"`);
+      }
+      lines.push('');
+    }
+
+    lines.push(bar);
+    lines.push(`Summary: ${confirmed.length} confirmed, ${disputed.length} disputed, ${unique.length} unique, ${newFindings.length} new`);
+    lines.push(bar);
+
+    return lines.join('\n');
   }
 
   /**

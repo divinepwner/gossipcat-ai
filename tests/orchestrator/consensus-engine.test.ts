@@ -1,4 +1,4 @@
-import type { ConsensusReport, ConsensusFinding, ConsensusSignal, CollectResult, TaskEntry } from '@gossip/orchestrator';
+import type { ConsensusReport, ConsensusFinding, ConsensusSignal, CollectResult, TaskEntry, CrossReviewEntry } from '@gossip/orchestrator';
 import { ConsensusEngine } from '@gossip/orchestrator';
 
 describe('Consensus types', () => {
@@ -257,6 +257,208 @@ describe('ConsensusEngine', () => {
       const entries = await engine.dispatchCrossReview(results);
       expect(entries.some(e => e.confidence === 1)).toBe(true);
       expect(entries.some(e => e.confidence === 3)).toBe(true);
+    });
+  });
+
+  describe('synthesize()', () => {
+    it('tags findings as confirmed when peer agrees', () => {
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: (id) => ({
+          id, provider: 'google' as const, model: 'm',
+          preset: id === 'agent-a' ? 'reviewer' : 'tester', skills: [],
+        }),
+      });
+
+      const results: TaskEntry[] = [
+        { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed', result: '## Consensus Summary\n- SQL injection at auth.ts:47', startedAt: 0 },
+        { id: 't2', agentId: 'agent-b', task: 'review', status: 'completed', result: '## Consensus Summary\n- Missing validation', startedAt: 0 },
+      ];
+
+      const crossReviewEntries: CrossReviewEntry[] = [
+        { action: 'agree', agentId: 'agent-b', peerAgentId: 'agent-a', finding: 'SQL injection at auth.ts:47', evidence: 'confirmed', confidence: 5 },
+      ];
+
+      const report = engine.synthesize(results, crossReviewEntries);
+      expect(report.confirmed).toHaveLength(1);
+      expect(report.confirmed[0].finding).toContain('SQL injection');
+      expect(report.confirmed[0].confirmedBy).toContain('agent-b');
+    });
+
+    it('tags findings as disputed when peer disagrees', () => {
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: (id) => ({ id, provider: 'google' as const, model: 'm', skills: [] }),
+      });
+
+      const results: TaskEntry[] = [
+        { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed', result: '## Consensus Summary\n- Rate limit bypass', startedAt: 0 },
+        { id: 't2', agentId: 'agent-b', task: 'review', status: 'completed', result: '## Consensus Summary\n- Other finding', startedAt: 0 },
+      ];
+
+      const crossReviewEntries: CrossReviewEntry[] = [
+        { action: 'disagree', agentId: 'agent-b', peerAgentId: 'agent-a', finding: 'Rate limit bypass', evidence: 'nginx handles this', confidence: 4 },
+      ];
+
+      const report = engine.synthesize(results, crossReviewEntries);
+      expect(report.disputed).toHaveLength(1);
+      expect(report.disputed[0].disputedBy[0].reason).toContain('nginx');
+    });
+
+    it('tags findings as unique when no peer mentions them', () => {
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: (id) => ({ id, provider: 'google' as const, model: 'm', skills: [] }),
+      });
+
+      const results: TaskEntry[] = [
+        { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed', result: '## Consensus Summary\n- Obscure edge case', startedAt: 0 },
+        { id: 't2', agentId: 'agent-b', task: 'review', status: 'completed', result: '## Consensus Summary\n- Something else', startedAt: 0 },
+      ];
+
+      const report = engine.synthesize(results, []);
+      expect(report.unique.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('collects new findings from cross-review', () => {
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: (id) => ({ id, provider: 'google' as const, model: 'm', skills: [] }),
+      });
+
+      const results: TaskEntry[] = [
+        { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed', result: '## Consensus Summary\n- Finding A', startedAt: 0 },
+        { id: 't2', agentId: 'agent-b', task: 'review', status: 'completed', result: '## Consensus Summary\n- Finding B', startedAt: 0 },
+      ];
+
+      const crossReviewEntries: CrossReviewEntry[] = [
+        { action: 'new', agentId: 'agent-a', peerAgentId: 'agent-b', finding: 'No auth error path tests', evidence: 'After seeing Bs findings', confidence: 4 },
+      ];
+
+      const report = engine.synthesize(results, crossReviewEntries);
+      expect(report.newFindings).toHaveLength(1);
+      expect(report.newFindings[0].finding).toContain('auth error path');
+    });
+
+    it('emits hallucination_caught signal when disagree evidence indicates hallucination', () => {
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: (id) => ({ id, provider: 'google' as const, model: 'm', skills: [] }),
+      });
+
+      const results: TaskEntry[] = [
+        { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed', result: '## Consensus Summary\n- Vulnerability at server.ts:47', startedAt: 0 },
+        { id: 't2', agentId: 'agent-b', task: 'review', status: 'completed', result: '## Consensus Summary\n- Other finding', startedAt: 0 },
+      ];
+
+      const crossReviewEntries: CrossReviewEntry[] = [
+        { action: 'disagree', agentId: 'agent-b', peerAgentId: 'agent-a', finding: 'Vulnerability at server.ts:47', evidence: 'line 47 does not exist, file only has 30 lines', confidence: 5 },
+      ];
+
+      const report = engine.synthesize(results, crossReviewEntries);
+      expect(report.signals.some(s => s.signal === 'hallucination_caught')).toBe(true);
+      expect(report.signals.some(s => s.signal === 'hallucination_caught' && s.agentId === 'agent-a')).toBe(true);
+    });
+
+    it('detects hallucination from various indicator phrases', () => {
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: (id) => ({ id, provider: 'google' as const, model: 'm', skills: [] }),
+      });
+
+      const results: TaskEntry[] = [
+        { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed', result: '## Consensus Summary\n- Bug in validateInput()\n- Issue at auth.ts:99', startedAt: 0 },
+        { id: 't2', agentId: 'agent-b', task: 'review', status: 'completed', result: '## Consensus Summary\n- Other', startedAt: 0 },
+      ];
+
+      const crossReviewEntries: CrossReviewEntry[] = [
+        { action: 'disagree', agentId: 'agent-b', peerAgentId: 'agent-a', finding: 'Bug in validateInput()', evidence: 'no such function exists in the codebase', confidence: 5 },
+        { action: 'disagree', agentId: 'agent-b', peerAgentId: 'agent-a', finding: 'Issue at auth.ts:99', evidence: 'line 99 is a comment, not executable code', confidence: 4 },
+      ];
+
+      const report = engine.synthesize(results, crossReviewEntries);
+      const hallucinations = report.signals.filter(s => s.signal === 'hallucination_caught');
+      expect(hallucinations).toHaveLength(2);
+    });
+
+    it('generates consensus signals', () => {
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: (id) => ({ id, provider: 'google' as const, model: 'm', skills: [] }),
+      });
+
+      const results: TaskEntry[] = [
+        { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed', result: '## Consensus Summary\n- Bug A', startedAt: 0 },
+        { id: 't2', agentId: 'agent-b', task: 'review', status: 'completed', result: '## Consensus Summary\n- Bug B', startedAt: 0 },
+      ];
+
+      const crossReviewEntries: CrossReviewEntry[] = [
+        { action: 'agree', agentId: 'agent-b', peerAgentId: 'agent-a', finding: 'Bug A', evidence: 'confirmed', confidence: 5 },
+        { action: 'new', agentId: 'agent-a', peerAgentId: 'agent-b', finding: 'Missed thing', evidence: 'realized after', confidence: 3 },
+      ];
+
+      const report = engine.synthesize(results, crossReviewEntries);
+      expect(report.signals.length).toBeGreaterThan(0);
+      expect(report.signals.some(s => s.signal === 'agreement')).toBe(true);
+      expect(report.signals.some(s => s.signal === 'new_finding')).toBe(true);
+    });
+
+    it('generates formatted summary string', () => {
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: (id) => ({
+          id, provider: 'google' as const, model: 'm',
+          preset: id === 'agent-a' ? 'reviewer' : 'tester', skills: [],
+        }),
+      });
+
+      const results: TaskEntry[] = [
+        { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed', result: '## Consensus Summary\n- SQL injection', startedAt: 0 },
+        { id: 't2', agentId: 'agent-b', task: 'review', status: 'completed', result: '## Consensus Summary\n- Missing tests', startedAt: 0 },
+      ];
+
+      const crossReviewEntries: CrossReviewEntry[] = [
+        { action: 'agree', agentId: 'agent-b', peerAgentId: 'agent-a', finding: 'SQL injection', evidence: 'confirmed', confidence: 5 },
+      ];
+
+      const report = engine.synthesize(results, crossReviewEntries);
+      expect(report.summary).toContain('CONSENSUS REPORT');
+      expect(report.summary).toContain('CONFIRMED');
+    });
+  });
+
+  describe('findMatchingFinding()', () => {
+    const engine = new ConsensusEngine({
+      llm: null as any,
+      registryGet: () => undefined,
+    });
+
+    const match = (findings: Array<[string, string]>, peerId: string, text: string) => {
+      const map = new Map(findings.map(([agent, finding]) => [
+        `${agent}::${finding}`,
+        { originalAgentId: agent, finding, confirmedBy: [] as string[], disputedBy: [] as any[], confidences: [] as number[] },
+      ]));
+      return (engine as any).findMatchingFinding(map, peerId, text);
+    };
+
+    it('matches exact finding text', () => {
+      expect(match([['a', 'SQL injection at auth.ts:47']], 'a', 'SQL injection at auth.ts:47')).toBeTruthy();
+    });
+
+    it('matches case-insensitive substring', () => {
+      expect(match([['a', 'SQL injection at auth.ts:47']], 'a', 'sql injection')).toBeTruthy();
+    });
+
+    it('matches by significant word overlap', () => {
+      expect(match([['a', 'SQL injection vulnerability in auth handler']], 'a', 'SQLi vulnerability auth handler detected')).toBeTruthy();
+    });
+
+    it('returns null when no match found', () => {
+      expect(match([['a', 'SQL injection']], 'a', 'completely unrelated finding')).toBeNull();
+    });
+
+    it('only matches findings from the specified peer agent', () => {
+      expect(match([['a', 'SQL injection'], ['b', 'SQL injection']], 'b', 'SQL injection')).toBe('b::SQL injection');
     });
   });
 });
