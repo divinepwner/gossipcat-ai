@@ -3,7 +3,7 @@ import { DispatchPipeline } from '@gossip/orchestrator';
 // Minimal mock worker
 function mockWorker(result = 'done') {
   return {
-    executeTask: jest.fn().mockResolvedValue(result),
+    executeTask: jest.fn().mockResolvedValue({ result, inputTokens: 0, outputTokens: 0 }),
     subscribeToBatch: jest.fn().mockResolvedValue(undefined),
     unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
   };
@@ -104,8 +104,8 @@ describe('DispatchPipeline', () => {
       const order: number[] = [];
       const slowWorker = {
         executeTask: jest.fn()
-          .mockImplementationOnce(() => new Promise(r => setTimeout(() => { order.push(1); r('first'); }, 50)))
-          .mockImplementationOnce(() => new Promise(r => setTimeout(() => { order.push(2); r('second'); }, 10))),
+          .mockImplementationOnce(() => new Promise(r => setTimeout(() => { order.push(1); r({ result: 'first', inputTokens: 0, outputTokens: 0 }); }, 50)))
+          .mockImplementationOnce(() => new Promise(r => setTimeout(() => { order.push(2); r({ result: 'second', inputTokens: 0, outputTokens: 0 }); }, 10))),
         subscribeToBatch: jest.fn().mockResolvedValue(undefined),
         unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
       };

@@ -184,7 +184,7 @@ describe('MainAgent handleMessage → pipeline integration', () => {
     const mockWorker = {
       executeTask: async (task: string, _lens?: string, _promptContent?: string) => {
         executeTaskCalls.push(task);
-        return 'review complete';
+        return { result: 'review complete', inputTokens: 0, outputTokens: 0 };
       },
       start: async () => {},
       stop: async () => {},

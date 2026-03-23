@@ -118,8 +118,8 @@ describe('E2E: Full Gossip Mesh Flow', () => {
     //   3. Tool server read the real file and sent RPC_RESPONSE
     //   4. Worker received file contents and called MockLLM again
     //   5. MockLLM returned a final response referencing the file content
-    expect(result).toMatch(/I read the file/i);
-    expect(result).toMatch(/Hello from Gossip Mesh/i);
+    expect(result.result).toMatch(/I read the file/i);
+    expect(result.result).toMatch(/Hello from Gossip Mesh/i);
 
     await worker.stop();
   }, 30_000);
@@ -151,7 +151,7 @@ describe('E2E: Full Gossip Mesh Flow', () => {
     // The tool-server rejects the path; the worker catches the error and
     // passes it as a tool result so the LLM can see it and adapt
     const result = await worker.executeTask('Read /etc/passwd');
-    expect(result.toLowerCase()).toContain('outside project root');
+    expect(result.result.toLowerCase()).toContain('outside project root');
 
     await worker.stop();
   }, 30_000);

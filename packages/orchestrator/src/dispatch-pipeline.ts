@@ -167,9 +167,13 @@ export class DispatchPipeline {
     if (options?.writeMode === 'sequential') {
       entry.promise = this.enqueueSequential(() =>
         worker.executeTask(task, undefined, promptContent)
-      ).then((result: string) => {
-        entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now();
-        return result;
+      ).then((execResult: TaskExecutionResult) => {
+        entry.status = 'completed';
+        entry.result = execResult.result;
+        entry.inputTokens = execResult.inputTokens;
+        entry.outputTokens = execResult.outputTokens;
+        entry.completedAt = Date.now();
+        return execResult.result;
       }).catch((err: Error) => {
         entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
         throw err;
@@ -183,11 +187,15 @@ export class DispatchPipeline {
       this.scopeTracker.register(options.scope, taskId);
       this.toolServer?.assignScope(agentId, options.scope);
       entry.promise = worker.executeTask(task, undefined, promptContent)
-        .then((result: string) => {
-          entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now();
+        .then((execResult: TaskExecutionResult) => {
+          entry.status = 'completed';
+          entry.result = execResult.result;
+          entry.inputTokens = execResult.inputTokens;
+          entry.outputTokens = execResult.outputTokens;
+          entry.completedAt = Date.now();
           this.scopeTracker.release(taskId);
           this.toolServer?.releaseAgent(agentId);
-          return result;
+          return execResult.result;
         }).catch((err: Error) => {
           entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
           this.scopeTracker.release(taskId);
@@ -199,10 +207,14 @@ export class DispatchPipeline {
         entry.worktreeInfo = { path, branch };
         this.toolServer?.assignRoot(agentId, path);
         return worker.executeTask(task, undefined, promptContent);
-      }).then((result: string) => {
-        entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now();
+      }).then((execResult: TaskExecutionResult) => {
+        entry.status = 'completed';
+        entry.result = execResult.result;
+        entry.inputTokens = execResult.inputTokens;
+        entry.outputTokens = execResult.outputTokens;
+        entry.completedAt = Date.now();
         this.toolServer?.releaseAgent(agentId);
-        return result;
+        return execResult.result;
       }).catch((err: Error) => {
         entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
         this.toolServer?.releaseAgent(agentId);
@@ -211,9 +223,13 @@ export class DispatchPipeline {
     } else {
       // Default: fire-and-forget (read-only)
       entry.promise = worker.executeTask(task, undefined, promptContent)
-        .then((result: string) => {
-          entry.status = 'completed'; entry.result = result; entry.completedAt = Date.now();
-          return result;
+        .then((execResult: TaskExecutionResult) => {
+          entry.status = 'completed';
+          entry.result = execResult.result;
+          entry.inputTokens = execResult.inputTokens;
+          entry.outputTokens = execResult.outputTokens;
+          entry.completedAt = Date.now();
+          return execResult.result;
         }).catch((err: Error) => {
           entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
           throw err;
@@ -226,11 +242,11 @@ export class DispatchPipeline {
 
   private static readonly MAX_WRITE_QUEUE = 20;
 
-  private enqueueSequential(fn: () => Promise<string>): Promise<string> {
+  private enqueueSequential(fn: () => Promise<TaskExecutionResult>): Promise<TaskExecutionResult> {
     if (this.writeActive && this.writeQueue.length >= DispatchPipeline.MAX_WRITE_QUEUE) {
       throw new Error('Sequential write queue full (20 tasks). Collect results before dispatching more.');
     }
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<TaskExecutionResult>((resolve, reject) => {
       const run = () => {
         this.writeActive = true;
         fn().then(resolve, reject).finally(() => {
@@ -257,6 +273,7 @@ export class DispatchPipeline {
       skillWarnings: t.skillWarnings,
       writeMode: t.writeMode, scope: t.scope, worktreeInfo: t.worktreeInfo,
       planId: t.planId, planStep: t.planStep,
+      inputTokens: t.inputTokens, outputTokens: t.outputTokens,
     };
   }
 
@@ -285,9 +302,9 @@ export class DispatchPipeline {
       // 1. TaskGraph
       try {
         if (t.status === 'completed') {
-          this.taskGraph.recordCompleted(t.id, (t.result || '').slice(0, 4000), duration);
+          this.taskGraph.recordCompleted(t.id, (t.result || '').slice(0, 4000), duration, t.inputTokens, t.outputTokens);
         } else if (t.status === 'failed') {
-          this.taskGraph.recordFailed(t.id, t.error || 'Unknown', duration);
+          this.taskGraph.recordFailed(t.id, t.error || 'Unknown', duration, t.inputTokens, t.outputTokens);
         } else if (t.status === 'running') {
           this.taskGraph.recordCancelled(t.id, 'collect timeout', duration);
         }
@@ -414,6 +431,7 @@ export class DispatchPipeline {
       skillWarnings: t.skillWarnings,
       writeMode: t.writeMode, scope: t.scope, worktreeInfo: t.worktreeInfo,
       planId: t.planId, planStep: t.planStep,
+      inputTokens: t.inputTokens, outputTokens: t.outputTokens,
     }));
 
     // Cleanup tasks — mark timed-out tasks as failed to prevent zombies
