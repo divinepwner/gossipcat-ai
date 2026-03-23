@@ -145,16 +145,26 @@ async function doBoot() {
   // Wire adaptive team intelligence (overlap detection + lens generation)
   try {
     const { OverlapDetector, LensGenerator } = await import('@gossip/orchestrator');
-    let utilityLlm: any;
+    
+    // Default to the main agent's model
+    let utilityLlm = m.createProvider(mainProvider as any, mainModel, mainKey ?? undefined);
+    let utilityModelId = `${mainProvider}/${mainModel}`;
+
     if (config.utility_model) {
       const utilityKey = await keychain.getKey(config.utility_model.provider);
-      utilityLlm = m.createProvider(config.utility_model.provider, config.utility_model.model, utilityKey ?? undefined);
-    } else {
-      utilityLlm = m.createProvider(mainProvider as any, mainModel, mainKey ?? undefined);
+      if (utilityKey) {
+        // If a utility model is configured AND its key exists, override the default
+        utilityLlm = m.createProvider(config.utility_model.provider, config.utility_model.model, utilityKey);
+        utilityModelId = `${config.utility_model.provider}/${config.utility_model.model}`;
+      } else {
+        // If configured but key is missing, just warn. The fallback is already set.
+        process.stderr.write(`[gossipcat] Utility model key for "${config.utility_model.provider}" not found, falling back to main agent model for lens generation.\n`);
+      }
     }
+    
     mainAgent.setOverlapDetector(new OverlapDetector());
     mainAgent.setLensGenerator(new LensGenerator(utilityLlm));
-    process.stderr.write(`[gossipcat] Adaptive team intelligence ready${config.utility_model ? ` (utility: ${config.utility_model.provider}/${config.utility_model.model})` : ''}\n`);
+    process.stderr.write(`[gossipcat] Adaptive team intelligence ready (utility: ${utilityModelId})\n`);
   } catch (err) {
     process.stderr.write(`[gossipcat] Adaptive team intelligence failed: ${(err as Error).message}\n`);
   }
@@ -282,7 +292,7 @@ server.tool(
       if (mainKey) {
         llm = createProvider(config.main_agent.provider, config.main_agent.model, mainKey);
       } else {
-        // Fallback: use the first agent that has an API key
+        // Fallback: use the first agent that has a working key
         for (const ac of agentConfigs) {
           const key = await keychain.getKey(ac.provider);
           if (key) {
@@ -433,7 +443,7 @@ server.tool(
 // ── Low-level: parallel dispatch ──────────────────────────────────────────
 server.tool(
   'gossip_dispatch_parallel',
-  'Fan out tasks to multiple agents simultaneously. For tasks involving file modifications, use gossip_plan first to get a pre-built task array with write modes, then pass it here. The PLAN_JSON from gossip_plan is directly passable as the tasks parameter.',
+  'Fan out tasks to multiple agents simultaneously. Use consensus: true to enable cross-review when collecting. For tasks involving file modifications, use gossip_plan first to get a pre-built task array with write modes, then pass it here.',
   {
     tasks: z.array(z.object({
       agent_id: z.string(),
@@ -441,8 +451,9 @@ server.tool(
       write_mode: z.enum(['sequential', 'scoped', 'worktree']).optional(),
       scope: z.string().optional(),
     })).describe('Array of { agent_id, task, write_mode?, scope? }'),
+    consensus: z.boolean().optional().describe('Enable consensus summary format in agent output. Pass consensus: true to gossip_collect later.'),
   },
-  async ({ tasks: taskDefs }) => {
+  async ({ tasks: taskDefs, consensus }) => {
     await boot();
     await syncWorkersViaKeychain();
 
@@ -458,13 +469,15 @@ server.tool(
         agentId: d.agent_id,
         task: d.task,
         options: d.write_mode ? { writeMode: d.write_mode, scope: d.scope } : undefined,
-      }))
+      })),
+      consensus ? { consensus: true } : undefined,
     );
 
     let msg = `Dispatched ${taskIds.length} tasks:\n${taskIds.map((tid: string) => {
       const t = mainAgent.getTask(tid);
       return `  ${tid} → ${t?.agentId || 'unknown'}`;
     }).join('\n')}`;
+    if (consensus) msg += '\n\n📋 Consensus mode: agents will include structured summary for cross-review.';
     if (errors.length) msg += `\nErrors: ${errors.join(', ')}`;
     return { content: [{ type: 'text' as const, text: msg }] };
   }
@@ -473,25 +486,28 @@ server.tool(
 // ── Low-level: collect results ────────────────────────────────────────────
 server.tool(
   'gossip_collect',
-  'Collect results from dispatched tasks. Waits for completion by default.',
+  'Collect results from dispatched tasks. Waits for completion by default. Use consensus: true for cross-review round.',
   {
     task_ids: z.array(z.string()).optional().describe('Task IDs to collect. Omit for all.'),
     timeout_ms: z.number().optional().describe('Max wait time. Default 120000.'),
+    consensus: z.boolean().optional().describe('Enable cross-review consensus. Agents review each others findings.'),
   },
-  async ({ task_ids, timeout_ms }) => {
+  async ({ task_ids, timeout_ms, consensus }) => {
     let collected;
     try {
-      collected = await mainAgent.collect(task_ids, timeout_ms);
+      collected = await mainAgent.collect(task_ids, timeout_ms, consensus ? { consensus: true } : undefined);
     } catch (err) {
       process.stderr.write(`[gossipcat] collect failed: ${(err as Error).message}\n`);
       return { content: [{ type: 'text' as const, text: `Collect error: ${(err as Error).message}` }] };
     }
 
-    if (collected.length === 0) {
+    const { results: taskResults, consensus: consensusReport } = collected;
+
+    if (taskResults.length === 0) {
       return { content: [{ type: 'text' as const, text: task_ids ? 'No matching tasks.' : 'No pending tasks.' }] };
     }
 
-    const results = collected.map((t: any) => {
+    const resultTexts = taskResults.map((t: any) => {
       const dur = t.completedAt ? `${t.completedAt - t.startedAt}ms` : 'running';
       const modeTag = t.writeMode ? ` [${t.writeMode}${t.scope ? `:${t.scope}` : ''}]` : '';
       let text: string;
@@ -508,7 +524,13 @@ server.tool(
       return text;
     });
 
-    return { content: [{ type: 'text' as const, text: results.join('\n\n---\n\n') }] };
+    let output = resultTexts.join('\n\n---\n\n');
+
+    if (consensusReport) {
+      output += '\n\n' + consensusReport.summary;
+    }
+
+    return { content: [{ type: 'text' as const, text: output }] };
   }
 );
 
