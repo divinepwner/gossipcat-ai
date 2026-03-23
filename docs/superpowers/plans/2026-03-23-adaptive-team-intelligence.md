@@ -175,7 +175,9 @@ export class OverlapDetector {
         const b = agents[j];
         const shared = a.skills.filter(s => b.skills.includes(s));
         if (shared.length > 0) {
-          const type = a.preset === b.preset ? 'redundant' : 'complementary';
+          const presetA = a.preset || 'custom';
+          const presetB = b.preset || 'custom';
+          const type = presetA === presetB ? 'redundant' : 'complementary';
           pairs.push({ agentA: a.id, agentB: b.id, shared, type });
           shared.forEach(s => allShared.add(s));
         }
@@ -227,7 +229,7 @@ git commit -m "feat(overlap): add OverlapDetector with preset-aware skill analys
 // tests/orchestrator/lens-generator.test.ts
 import { LensGenerator } from '../../packages/orchestrator/src/lens-generator';
 import type { ILLMProvider } from '../../packages/orchestrator/src/llm-client';
-import type { LLMResponse } from '@gossip/types';
+import type { LLMResponse } from '../../packages/orchestrator/src/types';
 
 function mockLLM(response: string): ILLMProvider {
   return {
@@ -589,7 +591,9 @@ const { taskId, promise } = this.dispatch(def.agentId, def.task, {
 });
 ```
 
-- [ ] **Step 3: Make `dispatchParallel` async**
+- [ ] **Step 3: Make `dispatchParallel` async + update ALL callers atomically**
+
+**CRITICAL: Steps 2 and 3 MUST be done together in one commit.** If you make `dispatchParallel` async without updating callers, `taskIds` and `errors` will be `undefined` (destructuring a Promise), crashing at runtime.
 
 The method signature needs to become `async` since `lensGenerator.generateLenses` is async. Change:
 
@@ -758,14 +762,20 @@ In `apps/cli/src/mcp-server-sdk.ts`, AFTER `mainAgent` is constructed in `doBoot
 ```typescript
 // Wire adaptive team intelligence
 const { OverlapDetector, LensGenerator, createProvider: cp } = await import('@gossip/orchestrator');
-const utilityLlm = config.utility_model
-  ? cp(config.utility_model.provider as any, config.utility_model.model, await keychain.getKey(config.utility_model.provider))
-  : mainLlm;  // mainLlm is whatever provider was created for main_agent
+let utilityLlm: any;
+if (config.utility_model) {
+  const utilityKey = await keychain.getKey(config.utility_model.provider);
+  utilityLlm = cp(config.utility_model.provider as any, config.utility_model.model, utilityKey ?? undefined);
+} else {
+  // Fallback: create a provider from main_agent config (there is no mainLlm variable exposed)
+  const mainKey = await keychain.getKey(config.main_agent.provider);
+  utilityLlm = cp(config.main_agent.provider as any, config.main_agent.model, mainKey ?? undefined);
+}
 mainAgent.setOverlapDetector(new OverlapDetector());
 mainAgent.setLensGenerator(new LensGenerator(utilityLlm));
 ```
 
-NOTE: Read `doBoot()` to find `mainLlm` — it may be named differently. The key is to get the LLM provider that was created for `main_agent` and reuse it as fallback.
+NOTE: `doBoot()` does not expose the main agent's LLM as a variable. We create a fresh provider from `config.main_agent` as fallback. This is the same `createProvider` call pattern used at line 157 for the GossipPublisher.
 
 - [ ] **Step 4: Run full tests**
 
