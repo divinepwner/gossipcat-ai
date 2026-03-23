@@ -262,6 +262,8 @@ export interface ReconstructedTask {
   references?: TaskReferenceEvent[];
   createdAt: string;
   completedAt?: string;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export interface SyncMeta {

@@ -159,9 +159,13 @@ export class TaskGraph {
       if (e.type === 'task.completed' && e.taskId === taskId) {
         task.status = 'completed'; task.result = e.result;
         task.duration = e.duration; task.completedAt = e.timestamp;
+        task.inputTokens = e.inputTokens;
+        task.outputTokens = e.outputTokens;
       } else if (e.type === 'task.failed' && e.taskId === taskId) {
         task.status = 'failed'; task.error = e.error;
         task.duration = e.duration; task.completedAt = e.timestamp;
+        task.inputTokens = e.inputTokens;
+        task.outputTokens = e.outputTokens;
       } else if (e.type === 'task.cancelled' && e.taskId === taskId) {
         task.status = 'cancelled'; task.error = e.reason;
         task.duration = e.duration; task.completedAt = e.timestamp;
