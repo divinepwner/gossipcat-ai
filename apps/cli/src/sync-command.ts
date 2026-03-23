@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { TaskGraph, TaskGraphSync } from '@gossip/orchestrator';
 import { Keychain } from './keychain';
-import { getUserId, getProjectId } from './identity';
+import { getUserId, getProjectId, getTeamUserId, getGitEmail } from './identity';
 
 const c = {
   reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m',
@@ -12,6 +12,10 @@ const c = {
 interface SupabaseConfig {
   url: string;
   projectRef: string;
+  mode?: 'solo' | 'team';
+  displayName?: string;
+  projectIdVersion?: number;
+  previousUserId?: string;
 }
 
 function loadSupabaseConfig(): SupabaseConfig | null {
@@ -48,7 +52,27 @@ export async function runSyncCommand(args: string[]): Promise<void> {
 
   const cwd = process.cwd();
   const graph = new TaskGraph(cwd);
-  const sync = new TaskGraphSync(graph, config.url, key, getUserId(cwd), getProjectId(cwd), cwd);
+
+  let userId: string;
+  let displayName: string | null = null;
+  if (config.mode === 'team') {
+    const teamSalt = await keychain.getKey('supabase-team-salt');
+    if (!teamSalt) {
+      console.log(`${c.red}Team mode requires teamSalt. Run: gossipcat sync --setup${c.reset}`);
+      return;
+    }
+    const email = getGitEmail();
+    if (!email) {
+      console.log(`${c.red}Team mode requires a git email. Run: git config user.email "you@example.com"${c.reset}`);
+      return;
+    }
+    userId = getTeamUserId(email, teamSalt);
+    displayName = config.displayName || email;
+  } else {
+    userId = getUserId(cwd);
+  }
+
+  const sync = new TaskGraphSync(graph, config.url, key, userId, getProjectId(cwd), cwd, displayName);
 
   console.log('Syncing to Supabase...');
   const result = await sync.sync();
@@ -68,6 +92,8 @@ function showStatus(): void {
 
   console.log(`\n${c.bold}Sync Status${c.reset}\n`);
   console.log(`  Supabase: ${config ? `${c.green}configured${c.reset} (${config.url})` : `${c.dim}not configured${c.reset}`}`);
+  console.log(`  Mode: ${config?.mode === 'team' ? `${c.cyan}team${c.reset}` : 'solo'}`);
+  if (config?.displayName) console.log(`  Display name: ${config.displayName}`);
   console.log(`  Total events: ${graph.getEventCount()}`);
   console.log(`  Last sync: ${meta.lastSync || 'never'}`);
   console.log(`  Synced events: ${meta.lastSyncEventCount}`);
@@ -99,16 +125,88 @@ async function runSetup(): Promise<void> {
   const key = await ask(`  Supabase anon key: `);
   if (!key) { console.log(`${c.red}Key required.${c.reset}`); rl.close(); return; }
 
-  rl.close();
+  console.log(`\n  Sync mode:`);
+  console.log(`    ${c.bold}A)${c.reset} Solo — private, only your data (default)`);
+  console.log(`    ${c.bold}B)${c.reset} Team — shared with teammates on this project`);
+  const modeChoice = await ask('  > ');
+  const isTeam = modeChoice.trim().toUpperCase() === 'B';
 
-  saveSupabaseConfig({ url, projectRef: ref });
-  const keychain = new Keychain();
-  await keychain.setKey('supabase', key);
+  if (isTeam) {
+    const email = getGitEmail();
+    if (!email) {
+      console.log(`${c.red}Team mode requires a git email. Run: git config user.email "you@example.com"${c.reset}`);
+      rl.close(); return;
+    }
 
-  console.log(`\n${c.green}Supabase configured.${c.reset}`);
-  console.log(`  Config: .gossip/supabase.json`);
-  console.log(`  Key: stored in keychain`);
-  console.log(`\n  Run the migration SQL in your Supabase dashboard:`);
-  console.log(`  ${c.dim}See docs/migrations/001-taskgraph-schema.sql${c.reset}`);
-  console.log(`\n  Then run: ${c.cyan}gossipcat sync${c.reset} to sync existing events.\n`);
+    // Check for existing team config
+    const projectId = getProjectId(process.cwd());
+    const checkRes = await fetch(`${url}/rest/v1/team_config?project_id=eq.${projectId}`, {
+      headers: { 'apikey': key, 'Authorization': `Bearer ${key}` },
+    });
+    const existingTeam = await checkRes.json();
+
+    let teamSalt: string;
+    if (existingTeam.length > 0) {
+      console.log(`  ${c.green}✓${c.reset} Found team: "${existingTeam[0].project_name || 'unnamed'}"`);
+      teamSalt = existingTeam[0].team_salt;
+    } else {
+      const projectName = await ask('  Project name (e.g. myapp): ');
+      const { randomBytes } = await import('crypto');
+      teamSalt = randomBytes(32).toString('hex');
+      // Use on_conflict to handle race where two members run setup simultaneously
+      await fetch(`${url}/rest/v1/team_config?on_conflict=project_id`, {
+        method: 'POST',
+        headers: {
+          'apikey': key, 'Authorization': `Bearer ${key}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=ignore-duplicates,return=representation',
+        },
+        body: JSON.stringify({
+          project_id: projectId, team_salt: teamSalt,
+          project_name: projectName || null,
+        }),
+      });
+      // Re-fetch to get the actual salt (ours or the winner's)
+      const refetchRes = await fetch(`${url}/rest/v1/team_config?project_id=eq.${projectId}`, {
+        headers: { 'apikey': key, 'Authorization': `Bearer ${key}` },
+      });
+      const refetched = await refetchRes.json();
+      teamSalt = refetched[0].team_salt;
+      console.log(`  ${c.green}✓${c.reset} Team "${projectName}" created.`);
+    }
+
+    console.log(`\n  Your git email (${email}) will be visible to teammates.`);
+    const consent = await ask('  Continue? (Y/n) ');
+    if (consent.toLowerCase() === 'n') { rl.close(); return; }
+
+    // Save old solo userId for migration on first team sync
+    const oldSoloUserId = getUserId(process.cwd());
+
+    rl.close();
+
+    const keychain = new Keychain();
+    await keychain.setKey('supabase', key);
+    await keychain.setKey('supabase-team-salt', teamSalt);
+    saveSupabaseConfig({ url, projectRef: ref, mode: 'team', displayName: email, previousUserId: oldSoloUserId });
+
+    console.log(`\n${c.green}Supabase configured (team mode).${c.reset}`);
+    console.log(`  Config: .gossip/supabase.json`);
+    console.log(`  Key + team salt: stored in keychain`);
+    console.log(`\n  Run the migration SQL in your Supabase dashboard:`);
+    console.log(`  ${c.dim}See docs/migrations/001-taskgraph-schema.sql${c.reset}`);
+    console.log(`\n  Then run: ${c.cyan}gossipcat sync${c.reset} to sync existing events.\n`);
+  } else {
+    rl.close();
+
+    const keychain = new Keychain();
+    await keychain.setKey('supabase', key);
+    saveSupabaseConfig({ url, projectRef: ref });
+
+    console.log(`\n${c.green}Supabase configured.${c.reset}`);
+    console.log(`  Config: .gossip/supabase.json`);
+    console.log(`  Key: stored in keychain`);
+    console.log(`\n  Run the migration SQL in your Supabase dashboard:`);
+    console.log(`  ${c.dim}See docs/migrations/001-taskgraph-schema.sql${c.reset}`);
+    console.log(`\n  Then run: ${c.cyan}gossipcat sync${c.reset} to sync existing events.\n`);
+  }
 }
