@@ -42,6 +42,12 @@ async function main(): Promise<void> {
       return;
     }
 
+    case 'sync': {
+      const { runSyncCommand } = await import('./sync-command');
+      await runSyncCommand(process.argv.slice(3));
+      return;
+    }
+
     case 'help':
     case '--help':
     case '-h':
@@ -141,6 +147,9 @@ function printHelp(): void {
     gossipcat tasks            Show recent task history
     gossipcat tasks <id>       Show detail for a specific task
     gossipcat tasks --agent <id>  Filter tasks by agent
+    gossipcat sync             Sync task history to Supabase
+    gossipcat sync --setup     Configure Supabase connection
+    gossipcat sync --status    Show sync status
     gossipcat mcp-serve        Start MCP server (for Claude Code / Cursor)
     gossipcat help             Show this help
 
