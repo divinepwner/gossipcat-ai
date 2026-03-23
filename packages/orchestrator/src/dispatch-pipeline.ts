@@ -13,6 +13,7 @@ import { SkillGapTracker } from './skill-gap-tracker';
 import { GossipPublisher } from './gossip-publisher';
 import { ScopeTracker } from './scope-tracker';
 import { WorktreeManager } from './worktree-manager';
+import { TaskGraphSync } from './task-graph-sync';
 
 const log = (msg: string) => process.stderr.write(`[gossipcat] ${msg}\n`);
 
@@ -28,6 +29,7 @@ export interface DispatchPipelineConfig {
   registryGet: (agentId: string) => AgentConfig | undefined;
   gossipPublisher?: GossipPublisher | null;
   llm?: ILLMProvider;
+  syncFactory?: () => TaskGraphSync | null;
 }
 
 type TrackedTask = TaskEntry & { promise: Promise<string> };
@@ -45,6 +47,7 @@ export class DispatchPipeline {
   private readonly catalog: SkillCatalog | null;
   private readonly llm: ILLMProvider | null;
   private gossipPublisher: GossipPublisher | null;
+  private syncFactory: (() => TaskGraphSync | null) | null;
   private sessionGossip: SessionGossipEntry[] = [];
   private plans: Map<string, PlanState> = new Map();
   private static readonly MAX_SESSION_GOSSIP = 20;
@@ -63,6 +66,7 @@ export class DispatchPipeline {
     this.registryGet = config.registryGet;
     this.gossipPublisher = config.gossipPublisher ?? null;
     this.llm = config.llm ?? null;
+    this.syncFactory = config.syncFactory ?? null;
 
     this.taskGraph = new TaskGraph(config.projectRoot);
     this.memWriter = new MemoryWriter(config.projectRoot);
@@ -319,7 +323,21 @@ export class DispatchPipeline {
       this.gapTracker.checkAndGenerate();
     } catch (err) { log(`Skill gap check failed: ${(err as Error).message}`); }
 
-    // 5. Batch cleanup
+    // 5. Sync threshold check (every 30 events)
+    try {
+      const eventCount = this.taskGraph.getEventCount();
+      const syncMeta = this.taskGraph.getSyncMeta();
+      if (eventCount - syncMeta.lastSyncEventCount >= 30 && this.syncFactory) {
+        const sync = this.syncFactory();
+        if (sync?.isConfigured()) {
+          sync.sync().catch(err =>
+            log(`Supabase sync failed: ${(err as Error).message}`)
+          );
+        }
+      }
+    } catch (err) { log(`Sync check failed: ${(err as Error).message}`); }
+
+    // 6. Batch cleanup
     for (const [bid, taskIdSet] of this.batches) {
       const allDone = Array.from(taskIdSet).every(tid => {
         const bt = this.tasks.get(tid);
@@ -337,7 +355,7 @@ export class DispatchPipeline {
       }
     }
 
-    // 6. Plan cleanup — remove completed or expired plans
+    // 7. Plan cleanup — remove completed or expired plans
     for (const [id, plan] of this.plans) {
       const allDone = plan.steps.every(s => s.result !== undefined);
       const expired = Date.now() - plan.createdAt > 3_600_000;
