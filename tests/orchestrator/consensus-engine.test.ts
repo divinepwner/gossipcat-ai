@@ -427,6 +427,53 @@ describe('ConsensusEngine', () => {
     });
   });
 
+  describe('run()', () => {
+    it('runs full consensus pipeline: extract → cross-review → synthesize → report', async () => {
+      const mockLlm = {
+        generate: jest.fn().mockResolvedValue({
+          text: JSON.stringify([
+            { action: 'agree', agentId: 'agent-a', finding: 'SQL injection', evidence: 'confirmed at auth.ts:47', confidence: 5 },
+          ]),
+        }),
+      };
+
+      const engine = new ConsensusEngine({
+        llm: mockLlm as any,
+        registryGet: (id) => ({
+          id, provider: 'google' as const, model: 'm',
+          preset: id === 'agent-a' ? 'reviewer' : 'tester', skills: ['security'],
+        }),
+      });
+
+      const results: TaskEntry[] = [
+        { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed', result: '## Consensus Summary\n- SQL injection at auth.ts:47', startedAt: 0 },
+        { id: 't2', agentId: 'agent-b', task: 'review', status: 'completed', result: '## Consensus Summary\n- Missing validation on /api/tasks', startedAt: 0 },
+      ];
+
+      const report = await engine.run(results);
+      expect(report.agentCount).toBe(2);
+      expect(report.rounds).toBe(2);
+      expect(report.summary).toContain('CONSENSUS REPORT');
+      expect(report.signals.length).toBeGreaterThan(0);
+    });
+
+    it('returns empty report when fewer than 2 successful agents', async () => {
+      const engine = new ConsensusEngine({
+        llm: null as any,
+        registryGet: () => undefined,
+      });
+
+      const results: TaskEntry[] = [
+        { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed', result: 'stuff', startedAt: 0 },
+      ];
+
+      const report = await engine.run(results);
+      expect(report.agentCount).toBe(0);
+      expect(report.confirmed).toEqual([]);
+      expect(report.summary).toContain('insufficient agents');
+    });
+  });
+
   describe('findMatchingFinding()', () => {
     const engine = new ConsensusEngine({
       llm: null as any,

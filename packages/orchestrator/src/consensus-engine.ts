@@ -48,6 +48,26 @@ export class ConsensusEngine {
     return truncated;
   }
 
+  async run(results: TaskEntry[]): Promise<ConsensusReport> {
+    const successful = results.filter(r => r.status === 'completed' && r.result);
+    if (successful.length < 2) {
+      return {
+        agentCount: 0, rounds: 0,
+        confirmed: [], disputed: [], unique: [], newFindings: [], signals: [],
+        summary: 'Consensus skipped: insufficient agents (need ≥2 successful).',
+      };
+    }
+
+    process.stderr.write(`[consensus] Starting cross-review for ${successful.length} agents\n`);
+    const crossReviewEntries = await this.dispatchCrossReview(results);
+    process.stderr.write(`[consensus] Cross-review complete: ${crossReviewEntries.length} entries\n`);
+
+    const report = this.synthesize(results, crossReviewEntries);
+    process.stderr.write(`[consensus] ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unique.length} unique, ${report.newFindings.length} new\n`);
+
+    return report;
+  }
+
   /**
    * Phase 2: Send cross-review prompts to each agent and collect structured responses.
    * Each agent reviews all peer summaries and produces agree/disagree/new entries.
