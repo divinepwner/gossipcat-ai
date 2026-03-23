@@ -32,6 +32,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // packages/types/src/protocol.ts
 var MessageType, FieldNames;
@@ -5751,6 +5752,7 @@ var init_dispatch_pipeline = __esm({
       catalog;
       llm;
       gossipPublisher;
+      syncFactory;
       sessionGossip = [];
       plans = /* @__PURE__ */ new Map();
       static MAX_SESSION_GOSSIP = 20;
@@ -5766,6 +5768,7 @@ var init_dispatch_pipeline = __esm({
         this.registryGet = config2.registryGet;
         this.gossipPublisher = config2.gossipPublisher ?? null;
         this.llm = config2.llm ?? null;
+        this.syncFactory = config2.syncFactory ?? null;
         this.taskGraph = new TaskGraph(config2.projectRoot);
         this.memWriter = new MemoryWriter(config2.projectRoot);
         this.memReader = new AgentMemoryReader(config2.projectRoot);
@@ -6008,6 +6011,20 @@ var init_dispatch_pipeline = __esm({
           this.gapTracker.checkAndGenerate();
         } catch (err) {
           log(`Skill gap check failed: ${err.message}`);
+        }
+        try {
+          const eventCount = this.taskGraph.getEventCount();
+          const syncMeta = this.taskGraph.getSyncMeta();
+          if (eventCount - syncMeta.lastSyncEventCount >= 30 && this.syncFactory) {
+            const sync = this.syncFactory();
+            if (sync?.isConfigured()) {
+              sync.sync().catch(
+                (err) => log(`Supabase sync failed: ${err.message}`)
+              );
+            }
+          }
+        } catch (err) {
+          log(`Sync check failed: ${err.message}`);
         }
         for (const [bid, taskIdSet] of this.batches) {
           const allDone = Array.from(taskIdSet).every((tid) => {
@@ -6301,18 +6318,19 @@ When there's a clear best option, recommend it but still offer alternatives.`;
           projectRoot: this.projectRoot,
           workers: this.workers,
           registryGet: (id) => this.registry.get(id),
-          llm: this.llm
+          llm: this.llm,
+          syncFactory: config2.syncFactory
         });
       }
       /** Start all worker agents (connect to relay) */
       async start() {
-        const { existsSync: existsSync11, readFileSync: readFileSync10 } = await import("fs");
-        const { join: join10 } = await import("path");
+        const { existsSync: existsSync12, readFileSync: readFileSync11 } = await import("fs");
+        const { join: join11 } = await import("path");
         for (const config2 of this.registry.getAll()) {
           if (this.workers.has(config2.id)) continue;
           const llm = createProvider(config2.provider, config2.model, this.apiKeys[config2.provider]);
-          const instructionsPath = join10(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
-          const instructions = existsSync11(instructionsPath) ? readFileSync10(instructionsPath, "utf-8") : void 0;
+          const instructionsPath = join11(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
+          const instructions = existsSync12(instructionsPath) ? readFileSync11(instructionsPath, "utf-8") : void 0;
           const worker = new WorkerAgent(config2.id, llm, this.relayUrl, ALL_TOOLS, instructions);
           await worker.start();
           this.workers.set(config2.id, worker);
@@ -6357,15 +6375,15 @@ When there's a clear best option, recommend it but still offer alternatives.`;
         this.registry.register(config2);
       }
       async syncWorkers(keyProvider) {
-        const { existsSync: existsSync11, readFileSync: readFileSync10 } = await import("fs");
-        const { join: join10 } = await import("path");
+        const { existsSync: existsSync12, readFileSync: readFileSync11 } = await import("fs");
+        const { join: join11 } = await import("path");
         let added = 0;
         for (const ac of this.registry.getAll()) {
           if (this.workers.has(ac.id)) continue;
           const key = await keyProvider(ac.provider);
           const llm = createProvider(ac.provider, ac.model, key ?? void 0);
-          const instructionsPath = join10(this.projectRoot, ".gossip", "agents", ac.id, "instructions.md");
-          const instructions = existsSync11(instructionsPath) ? readFileSync10(instructionsPath, "utf-8") : void 0;
+          const instructionsPath = join11(this.projectRoot, ".gossip", "agents", ac.id, "instructions.md");
+          const instructions = existsSync12(instructionsPath) ? readFileSync11(instructionsPath, "utf-8") : void 0;
           const worker = new WorkerAgent(ac.id, llm, this.relayUrl, ALL_TOOLS, instructions);
           await worker.start();
           this.workers.set(ac.id, worker);
@@ -6547,6 +6565,173 @@ var init_types = __esm({
   }
 });
 
+// packages/orchestrator/src/task-graph-sync.ts
+var import_fs10, import_path14, TaskGraphSync;
+var init_task_graph_sync = __esm({
+  "packages/orchestrator/src/task-graph-sync.ts"() {
+    "use strict";
+    import_fs10 = require("fs");
+    import_path14 = require("path");
+    TaskGraphSync = class {
+      constructor(graph, supabaseUrl, supabaseKey, userId, projectId, projectRoot) {
+        this.graph = graph;
+        this.supabaseUrl = supabaseUrl;
+        this.supabaseKey = supabaseKey;
+        this.userId = userId;
+        this.projectId = projectId;
+        this.gossipDir = (0, import_path14.join)(projectRoot, ".gossip");
+      }
+      gossipDir;
+      isConfigured() {
+        return !!(this.supabaseUrl && this.supabaseKey);
+      }
+      async sync() {
+        if (!this.isConfigured()) return { events: 0, scores: 0, errors: ["Not configured"] };
+        const meta3 = this.graph.getSyncMeta();
+        const events = this.graph.getUnsynced(meta3.lastSync);
+        if (events.length === 0) return { events: 0, scores: 0, errors: [] };
+        let synced = 0;
+        const errors = [];
+        for (const event of events) {
+          try {
+            await this.syncEvent(event);
+            synced++;
+          } catch (err) {
+            errors.push(`${event.type}: ${err.message}`);
+          }
+        }
+        let scores = 0;
+        try {
+          scores = await this.syncAgentScores();
+        } catch (err) {
+          errors.push(`agent_scores: ${err.message}`);
+        }
+        if (synced > 0) {
+          this.graph.updateSyncMeta({
+            lastSync: events[events.length - 1].timestamp,
+            lastSyncEventCount: meta3.lastSyncEventCount + synced
+          });
+        }
+        return { events: synced, scores, errors };
+      }
+      async syncEvent(event) {
+        switch (event.type) {
+          case "task.created":
+            return this.syncCreated(event);
+          case "task.completed":
+            return this.syncCompleted(event);
+          case "task.failed":
+            return this.syncFailed(event);
+          case "task.cancelled":
+            return this.syncCancelled(event);
+          case "task.decomposed":
+            return this.syncDecomposed(event);
+          case "task.reference":
+            return this.syncReference(event);
+        }
+      }
+      async syncCreated(event) {
+        await this.upsert("/rest/v1/tasks?on_conflict=id", {
+          id: event.taskId,
+          agent_id: event.agentId,
+          task: event.task,
+          skills: event.skills,
+          parent_id: event.parentId || null,
+          status: "created",
+          user_id: this.userId,
+          project_id: this.projectId,
+          created_at: event.timestamp
+        });
+      }
+      async syncCompleted(event) {
+        await this.upsert("/rest/v1/tasks?on_conflict=id", {
+          id: event.taskId,
+          status: "completed",
+          result: event.result,
+          duration_ms: event.duration,
+          completed_at: event.timestamp
+        });
+      }
+      async syncFailed(event) {
+        await this.upsert("/rest/v1/tasks?on_conflict=id", {
+          id: event.taskId,
+          status: "failed",
+          error: event.error,
+          duration_ms: event.duration,
+          completed_at: event.timestamp
+        });
+      }
+      async syncCancelled(event) {
+        await this.upsert("/rest/v1/tasks?on_conflict=id", {
+          id: event.taskId,
+          status: "cancelled",
+          error: event.reason,
+          duration_ms: event.duration,
+          completed_at: event.timestamp
+        });
+      }
+      async syncDecomposed(event) {
+        await this.upsert("/rest/v1/task_decompositions", {
+          parent_id: event.parentId,
+          strategy: event.strategy,
+          sub_task_ids: event.subTaskIds,
+          created_at: event.timestamp
+        });
+      }
+      async syncReference(event) {
+        await this.upsert("/rest/v1/task_references", {
+          from_task_id: event.fromTaskId,
+          to_task_id: event.toTaskId,
+          relationship: event.relationship,
+          evidence: event.evidence || null,
+          created_at: event.timestamp
+        });
+      }
+      async syncAgentScores() {
+        const perfPath = (0, import_path14.join)(this.gossipDir, "agent-performance.jsonl");
+        if (!(0, import_fs10.existsSync)(perfPath)) return 0;
+        const content = (0, import_fs10.readFileSync)(perfPath, "utf-8");
+        const lines = content.trim().split("\n").filter(Boolean);
+        const meta3 = this.graph.getSyncMeta();
+        let synced = 0;
+        for (const line of lines) {
+          try {
+            const entry = JSON.parse(line);
+            if (meta3.lastSync && entry.timestamp <= meta3.lastSync) continue;
+            await this.upsert("/rest/v1/agent_scores", {
+              user_id: this.userId,
+              agent_id: entry.agentId,
+              task_id: entry.taskId,
+              skills: entry.skills || [],
+              relevance: entry.scores?.relevance,
+              accuracy: entry.scores?.accuracy,
+              uniqueness: entry.scores?.uniqueness,
+              source: "judgment",
+              created_at: entry.timestamp
+            });
+            synced++;
+          } catch {
+          }
+        }
+        return synced;
+      }
+      async upsert(path, body) {
+        const res = await fetch(`${this.supabaseUrl}${path}`, {
+          method: "POST",
+          headers: {
+            "apikey": this.supabaseKey,
+            "Authorization": `Bearer ${this.supabaseKey}`,
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates,return=representation"
+          },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) throw new Error(`UPSERT ${path} failed: ${res.status} ${await res.text()}`);
+      }
+    };
+  }
+});
+
 // packages/orchestrator/src/gossip-publisher.ts
 var GossipPublisher;
 var init_gossip_publisher = __esm({
@@ -6609,12 +6794,12 @@ Return JSON: { "<agentId>": "<summary>", ... }`
 });
 
 // packages/orchestrator/src/bootstrap.ts
-var import_fs10, import_path14, log2, BootstrapGenerator;
+var import_fs11, import_path15, log2, BootstrapGenerator;
 var init_bootstrap = __esm({
   "packages/orchestrator/src/bootstrap.ts"() {
     "use strict";
-    import_fs10 = require("fs");
-    import_path14 = require("path");
+    import_fs11 = require("fs");
+    import_path15 = require("path");
     log2 = (msg) => process.stderr.write(`[gossipcat] ${msg}
 `);
     BootstrapGenerator = class {
@@ -6636,23 +6821,23 @@ var init_bootstrap = __esm({
         };
       }
       migrateConfig() {
-        const oldPath = (0, import_path14.resolve)(this.projectRoot, "gossip.agents.json");
-        const newPath = (0, import_path14.resolve)(this.projectRoot, ".gossip", "config.json");
-        if (!(0, import_fs10.existsSync)(newPath) && (0, import_fs10.existsSync)(oldPath)) {
-          (0, import_fs10.mkdirSync)((0, import_path14.resolve)(this.projectRoot, ".gossip"), { recursive: true });
-          (0, import_fs10.copyFileSync)(oldPath, newPath);
+        const oldPath = (0, import_path15.resolve)(this.projectRoot, "gossip.agents.json");
+        const newPath = (0, import_path15.resolve)(this.projectRoot, ".gossip", "config.json");
+        if (!(0, import_fs11.existsSync)(newPath) && (0, import_fs11.existsSync)(oldPath)) {
+          (0, import_fs11.mkdirSync)((0, import_path15.resolve)(this.projectRoot, ".gossip"), { recursive: true });
+          (0, import_fs11.copyFileSync)(oldPath, newPath);
           log2("Migrated config to .gossip/config.json \u2014 gossip.agents.json is now ignored.");
         }
       }
       loadConfig() {
         const paths = [
-          (0, import_path14.resolve)(this.projectRoot, ".gossip", "config.json"),
-          (0, import_path14.resolve)(this.projectRoot, "gossip.agents.json")
+          (0, import_path15.resolve)(this.projectRoot, ".gossip", "config.json"),
+          (0, import_path15.resolve)(this.projectRoot, "gossip.agents.json")
         ];
         for (const p of paths) {
-          if ((0, import_fs10.existsSync)(p)) {
+          if ((0, import_fs11.existsSync)(p)) {
             try {
-              return JSON.parse((0, import_fs10.readFileSync)(p, "utf-8"));
+              return JSON.parse((0, import_fs11.readFileSync)(p, "utf-8"));
             } catch {
               log2("Config parse error, falling back to setup mode");
               return null;
@@ -6673,9 +6858,9 @@ var init_bootstrap = __esm({
             skills: ac.skills || [],
             taskCount: 0
           };
-          const tasksPath = (0, import_path14.join)(this.projectRoot, ".gossip", "agents", id, "memory", "tasks.jsonl");
-          if ((0, import_fs10.existsSync)(tasksPath)) {
-            const lines = (0, import_fs10.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+          const tasksPath = (0, import_path15.join)(this.projectRoot, ".gossip", "agents", id, "memory", "tasks.jsonl");
+          if ((0, import_fs11.existsSync)(tasksPath)) {
+            const lines = (0, import_fs11.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
             let count = 0;
             let lastTs = "";
             for (const line of lines) {
@@ -6689,9 +6874,9 @@ var init_bootstrap = __esm({
             summary.taskCount = count;
             if (lastTs) summary.lastActive = lastTs.split("T")[0];
           }
-          const memPath = (0, import_path14.join)(this.projectRoot, ".gossip", "agents", id, "memory", "MEMORY.md");
-          if ((0, import_fs10.existsSync)(memPath)) {
-            const content = (0, import_fs10.readFileSync)(memPath, "utf-8").slice(0, 500);
+          const memPath = (0, import_path15.join)(this.projectRoot, ".gossip", "agents", id, "memory", "MEMORY.md");
+          if ((0, import_fs11.existsSync)(memPath)) {
+            const content = (0, import_fs11.readFileSync)(memPath, "utf-8").slice(0, 500);
             const knowledgeLines = content.match(/- \[([^\]]+)\]/g);
             if (knowledgeLines?.length) {
               summary.topics = knowledgeLines.map((l) => l.replace(/- \[([^\]]+)\].*/, "$1")).join(", ");
@@ -6704,9 +6889,9 @@ var init_bootstrap = __esm({
       renderTier1() {
         let skills = "";
         try {
-          const catalogPath = (0, import_path14.resolve)(__dirname, "default-skills", "catalog.json");
-          if ((0, import_fs10.existsSync)(catalogPath)) {
-            const catalog = JSON.parse((0, import_fs10.readFileSync)(catalogPath, "utf-8"));
+          const catalogPath = (0, import_path15.resolve)(__dirname, "default-skills", "catalog.json");
+          if ((0, import_fs11.existsSync)(catalogPath)) {
+            const catalog = JSON.parse((0, import_fs11.readFileSync)(catalogPath, "utf-8"));
             skills = `
 Available skills: ${catalog.skills.map((s) => s.name).join(", ")}`;
           }
@@ -6837,6 +7022,7 @@ __export(src_exports4, {
   SkillGapTracker: () => SkillGapTracker,
   TaskDispatcher: () => TaskDispatcher,
   TaskGraph: () => TaskGraph,
+  TaskGraphSync: () => TaskGraphSync,
   WorkerAgent: () => WorkerAgent,
   WorktreeManager: () => WorktreeManager,
   assemblePrompt: () => assemblePrompt,
@@ -6860,6 +7046,7 @@ var init_src5 = __esm({
     init_memory_writer();
     init_memory_compactor();
     init_task_graph();
+    init_task_graph_sync();
     init_gossip_publisher();
     init_dispatch_pipeline();
     init_scope_tracker();
@@ -6879,18 +7066,18 @@ __export(config_exports, {
 function findConfigPath(projectRoot) {
   const root = projectRoot || process.cwd();
   const candidates = [
-    (0, import_path15.resolve)(root, ".gossip", "config.json"),
-    (0, import_path15.resolve)(root, "gossip.agents.json"),
-    (0, import_path15.resolve)(root, "gossip.agents.yaml"),
-    (0, import_path15.resolve)(root, "gossip.agents.yml")
+    (0, import_path16.resolve)(root, ".gossip", "config.json"),
+    (0, import_path16.resolve)(root, "gossip.agents.json"),
+    (0, import_path16.resolve)(root, "gossip.agents.yaml"),
+    (0, import_path16.resolve)(root, "gossip.agents.yml")
   ];
   for (const p of candidates) {
-    if ((0, import_fs11.existsSync)(p)) return p;
+    if ((0, import_fs12.existsSync)(p)) return p;
   }
   return null;
 }
 function loadConfig(configPath) {
-  const raw = (0, import_fs11.readFileSync)(configPath, "utf-8");
+  const raw = (0, import_fs12.readFileSync)(configPath, "utf-8");
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -6930,12 +7117,12 @@ function configToAgentConfigs(config2) {
     skills: agent.skills
   }));
 }
-var import_fs11, import_path15, VALID_PROVIDERS;
+var import_fs12, import_path16, VALID_PROVIDERS;
 var init_config = __esm({
   "apps/cli/src/config.ts"() {
     "use strict";
-    import_fs11 = require("fs");
-    import_path15 = require("path");
+    import_fs12 = require("fs");
+    import_path16 = require("path");
     VALID_PROVIDERS = ["anthropic", "openai", "google", "local"];
   }
 });
@@ -20888,10 +21075,10 @@ async function doBoot() {
   for (const ac of agentConfigs) {
     const key = await keychain.getKey(ac.provider);
     const llm = m.createProvider(ac.provider, ac.model, key ?? void 0);
-    const { existsSync: existsSync11, readFileSync: readFileSync10 } = require("fs");
-    const { join: join10 } = require("path");
-    const instructionsPath = join10(process.cwd(), ".gossip", "agents", ac.id, "instructions.md");
-    const instructions = existsSync11(instructionsPath) ? readFileSync10(instructionsPath, "utf-8") : void 0;
+    const { existsSync: existsSync12, readFileSync: readFileSync11 } = require("fs");
+    const { join: join11 } = require("path");
+    const instructionsPath = join11(process.cwd(), ".gossip", "agents", ac.id, "instructions.md");
+    const instructions = existsSync12(instructionsPath) ? readFileSync11(instructionsPath, "utf-8") : void 0;
     const worker = new m.WorkerAgent(ac.id, llm, relay.url, m.ALL_TOOLS, instructions);
     await worker.start();
     workers.set(ac.id, worker);
@@ -20912,13 +21099,38 @@ async function doBoot() {
       }
     }
   }
+  const supaKey = await keychain.getKey("supabase");
   mainAgent = new m.MainAgent({
     provider: mainProvider,
     model: mainModel,
     apiKey: mainKey ?? void 0,
     relayUrl: relay.url,
     agents: agentConfigs,
-    projectRoot: process.cwd()
+    projectRoot: process.cwd(),
+    syncFactory: () => {
+      try {
+        const { existsSync: exists, readFileSync: readF } = require("fs");
+        const { join: joinP } = require("path");
+        const { createHash } = require("crypto");
+        const { execFileSync: execFileSync2 } = require("child_process");
+        const configPath2 = joinP(process.cwd(), ".gossip", "supabase.json");
+        if (!exists(configPath2) || !supaKey) return null;
+        const supaConfig = JSON.parse(readF(configPath2, "utf-8"));
+        const saltPath = joinP(process.cwd(), ".gossip", "local-salt");
+        const salt = exists(saltPath) ? readF(saltPath, "utf-8").trim() : "";
+        let email3 = "unknown";
+        try {
+          email3 = execFileSync2("git", ["config", "user.email"], { stdio: "pipe" }).toString().trim();
+        } catch {
+        }
+        const userId = createHash("sha256").update(email3 + process.cwd() + salt).digest("hex").slice(0, 16);
+        const projectId = createHash("sha256").update(process.cwd()).digest("hex").slice(0, 16);
+        const { TaskGraph: TG, TaskGraphSync: TGS } = (init_src5(), __toCommonJS(src_exports4));
+        return new TGS(new TG(process.cwd()), supaConfig.url, supaKey, userId, projectId, process.cwd());
+      } catch {
+        return null;
+      }
+    }
   });
   mainAgent.setWorkers(workers);
   await mainAgent.start();
@@ -21346,9 +21558,9 @@ server.tool(
     const generator = new BootstrapGenerator2(process.cwd());
     const result = generator.generate();
     const { writeFileSync: writeFileSync6, mkdirSync: mkdirSync6 } = require("fs");
-    const { join: join10 } = require("path");
-    mkdirSync6(join10(process.cwd(), ".gossip"), { recursive: true });
-    writeFileSync6(join10(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
+    const { join: join11 } = require("path");
+    mkdirSync6(join11(process.cwd(), ".gossip"), { recursive: true });
+    writeFileSync6(join11(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
     return { content: [{ type: "text", text: result.prompt }] };
   }
 );
@@ -21374,9 +21586,9 @@ server.tool(
       return { content: [{ type: "text", text: `Invalid config: ${err.message}` }] };
     }
     const { writeFileSync: writeFileSync6, mkdirSync: mkdirSync6 } = require("fs");
-    const { join: join10 } = require("path");
-    mkdirSync6(join10(process.cwd(), ".gossip"), { recursive: true });
-    writeFileSync6(join10(process.cwd(), ".gossip", "config.json"), JSON.stringify(config2, null, 2));
+    const { join: join11 } = require("path");
+    mkdirSync6(join11(process.cwd(), ".gossip"), { recursive: true });
+    writeFileSync6(join11(process.cwd(), ".gossip", "config.json"), JSON.stringify(config2, null, 2));
     const agentCount = Object.keys(config2.agents || {}).length;
     return { content: [{ type: "text", text: `Config saved. ${agentCount} agents configured. Agents will start on first dispatch \u2014 call gossip_dispatch() to begin.` }] };
   }
