@@ -125,6 +125,22 @@ export interface DispatchOptions {
   timeoutMs?: number;
   planId?: string;
   step?: number;
+  lens?: string;  // NEW — focus lens from adaptive team intelligence
+}
+
+/** Result of analyzing skill overlap between co-dispatched agents */
+export interface OverlapResult {
+  hasOverlaps: boolean;
+  agents: Array<{ id: string; preset: string; skills: string[] }>;
+  sharedSkills: string[];
+  pairs: Array<{ agentA: string; agentB: string; shared: string[]; type: 'redundant' | 'complementary' }>;
+}
+
+/** A focus lens assigned to an agent for a specific dispatch */
+export interface LensAssignment {
+  agentId: string;
+  focus: string;
+  avoidOverlap: string;
 }
 
 /** Session gossip entry — accumulated across all dispatches */
