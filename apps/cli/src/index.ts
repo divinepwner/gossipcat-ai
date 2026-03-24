@@ -67,14 +67,21 @@ async function main(): Promise<void> {
     // Try to detect a main agent provider from keychain
     const { Keychain } = await import('./keychain');
     const kc = new Keychain();
+    let hasKey = false;
     for (const provider of ['google', 'anthropic', 'openai'] as const) {
       const key = await kc.getKey(provider);
       if (key) {
         minimalConfig.main_agent.provider = provider;
         minimalConfig.main_agent.model = provider === 'google' ? 'gemini-2.5-pro'
           : provider === 'anthropic' ? 'claude-sonnet-4-6' : 'gpt-4o';
+        hasKey = true;
         break;
       }
+    }
+    if (!hasKey) {
+      console.log('No API keys found. Running setup wizard to configure providers...');
+      await runSetupWizard();
+      return;
     }
     await startChat(minimalConfig);
     return;
