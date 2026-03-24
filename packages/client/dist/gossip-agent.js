@@ -45,6 +45,7 @@ class GossipAgent extends events_1.EventEmitter {
     _connected = false;
     _sessionId = null;
     intentionalDisconnect = false;
+    subscribedChannels = new Set();
     constructor(config) {
         super();
         this.config = {
@@ -74,7 +75,7 @@ class GossipAgent extends events_1.EventEmitter {
             }, 10000);
             ws.once('open', () => {
                 // Send auth frame
-                ws.send(JSON.stringify({ type: 'auth', agentId: this.config.agentId }));
+                ws.send(JSON.stringify({ type: 'auth', agentId: this.config.agentId, apiKey: this.config.apiKey || 'default' }));
             });
             ws.once('error', (err) => {
                 clearTimeout(timeout);
@@ -92,10 +93,11 @@ class GossipAgent extends events_1.EventEmitter {
                             this._connected = true;
                             this._sessionId = msg.sessionId;
                             this.reconnectAttempts = 0;
-                            // Swap to binary message handler
+                            // Swap to binary message handler + register persistent error handler
                             ws.removeAllListeners('message');
                             ws.on('message', (d) => this.handleMessage(d));
                             ws.on('close', (code, reason) => this.handleClose(code, reason));
+                            ws.on('error', (err) => this.emit('error', err));
                             this.startKeepAlive();
                             this.emit('connect', msg.sessionId);
                             resolve();
@@ -160,11 +162,13 @@ class GossipAgent extends events_1.EventEmitter {
     }
     async subscribe(channel) {
         const ch = channel.replace(/^#/, '');
+        this.subscribedChannels.add(ch);
         const msg = types_1.Message.createSubscription(this.config.agentId, ch, undefined, { seq: this.seq++ });
         await this.sendEnvelope(msg.envelope);
     }
     async unsubscribe(channel) {
         const ch = channel.replace(/^#/, '');
+        this.subscribedChannels.delete(ch);
         const msg = types_1.Message.createUnsubscription(this.config.agentId, ch, { seq: this.seq++ });
         await this.sendEnvelope(msg.envelope);
     }
@@ -224,6 +228,11 @@ class GossipAgent extends events_1.EventEmitter {
             try {
                 await this.connect();
                 console.log('[GossipAgent] Reconnected');
+                // Re-subscribe to all channels after reconnection
+                for (const ch of this.subscribedChannels) {
+                    const msg = types_1.Message.createSubscription(this.config.agentId, ch, undefined, { seq: this.seq++ });
+                    await this.sendEnvelope(msg.envelope).catch(() => { });
+                }
             }
             catch (err) {
                 console.warn(`[GossipAgent] Reconnect attempt ${this.reconnectAttempts} failed:`, err.message);

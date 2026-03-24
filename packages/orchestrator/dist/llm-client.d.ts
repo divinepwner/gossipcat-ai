@@ -38,6 +38,8 @@ export declare class GeminiProvider implements ILLMProvider {
     private model;
     constructor(apiKey: string, model: string);
     generate(messages: LLMMessage[], options?: LLMGenerateOptions): Promise<LLMResponse>;
+    private toGeminiMessage;
+    private parseGeminiResponse;
 }
 export declare class OllamaProvider implements ILLMProvider {
     private model;

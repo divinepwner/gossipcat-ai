@@ -11,6 +11,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OllamaProvider = exports.GeminiProvider = exports.OpenAIProvider = exports.AnthropicProvider = void 0;
 exports.createProvider = createProvider;
+const crypto_1 = require("crypto");
 // ─── Anthropic ──────────────────────────────────────────────────────────────
 class AnthropicProvider {
     apiKey;
@@ -28,7 +29,7 @@ class AnthropicProvider {
             messages: nonSystemMsgs.map(m => this.toAnthropicMessage(m)),
         };
         if (systemMsg)
-            body.system = systemMsg.content;
+            body.system = typeof systemMsg.content === 'string' ? systemMsg.content : '';
         if (options?.temperature !== undefined)
             body.temperature = options.temperature;
         if (options?.tools?.length) {
@@ -45,18 +46,31 @@ class AnthropicProvider {
             },
             body: JSON.stringify(body),
         });
-        if (!res.ok)
-            throw new Error(`Anthropic API error (${res.status}): ${await res.text()}`);
+        if (!res.ok) {
+            const body = (await res.text()).slice(0, 200);
+            throw new Error(`Anthropic API error (${res.status}): ${body}`);
+        }
         const data = await res.json();
         return this.parseAnthropicResponse(data);
     }
     toAnthropicMessage(m) {
+        // Multimodal content — translate ContentBlock[] to Anthropic format
+        if (typeof m.content !== 'string') {
+            return {
+                role: m.role,
+                content: m.content.map(block => block.type === 'image'
+                    ? { type: 'image', source: { type: 'base64', media_type: block.mediaType, data: block.data } }
+                    : { type: 'text', text: block.text }),
+            };
+        }
+        // Tool result — guard content with typeof
         if (m.role === 'tool') {
             return {
                 role: 'user',
-                content: [{ type: 'tool_result', tool_use_id: m.toolCallId, content: m.content }],
+                content: [{ type: 'tool_result', tool_use_id: m.toolCallId, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }],
             };
         }
+        // Assistant with tool calls — cast content to string
         if (m.role === 'assistant' && m.toolCalls?.length) {
             const content = [];
             if (m.content)
@@ -120,14 +134,24 @@ class OpenAIProvider {
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
             body: JSON.stringify(body),
         });
-        if (!res.ok)
-            throw new Error(`OpenAI API error (${res.status}): ${await res.text()}`);
+        if (!res.ok) {
+            const body = (await res.text()).slice(0, 200);
+            throw new Error(`OpenAI API error (${res.status}): ${body}`);
+        }
         const data = await res.json();
         return this.parseOpenAIResponse(data);
     }
     toOpenAIMessage(m) {
+        if (typeof m.content !== 'string') {
+            return {
+                role: m.role,
+                content: m.content.map(block => block.type === 'image'
+                    ? { type: 'image_url', image_url: { url: `data:${block.mediaType};base64,${block.data}` } }
+                    : { type: 'text', text: block.text }),
+            };
+        }
         if (m.role === 'tool') {
-            return { role: 'tool', content: m.content, tool_call_id: m.toolCallId };
+            return { role: 'tool', content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content), tool_call_id: m.toolCallId };
         }
         if (m.role === 'assistant' && m.toolCalls?.length) {
             return {
@@ -168,16 +192,23 @@ class GeminiProvider {
         this.model = model;
     }
     async generate(messages, options) {
-        const contents = messages.filter(m => m.role !== 'system').map(m => ({
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: m.content }],
-        }));
+        const contents = messages.filter(m => m.role !== 'system').map(m => this.toGeminiMessage(m));
         const systemMsg = messages.find(m => m.role === 'system');
         const body = { contents };
         if (systemMsg)
-            body.systemInstruction = { parts: [{ text: systemMsg.content }] };
+            body.systemInstruction = { parts: [{ text: typeof systemMsg.content === 'string' ? systemMsg.content : '' }] };
         if (options?.temperature !== undefined) {
-            body.generationConfig = { temperature: options.temperature, maxOutputTokens: options?.maxTokens ?? 4096 };
+            body.generationConfig = { temperature: options.temperature, maxOutputTokens: options?.maxTokens ?? 8192 };
+        }
+        // Pass tools as functionDeclarations
+        if (options?.tools?.length) {
+            body.tools = [{
+                    functionDeclarations: options.tools.map(t => ({
+                        name: t.name,
+                        description: t.description,
+                        parameters: t.parameters,
+                    })),
+                }];
         }
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
         const res = await fetch(url, {
@@ -185,12 +216,80 @@ class GeminiProvider {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });
-        if (!res.ok)
-            throw new Error(`Gemini API error (${res.status}): ${await res.text()}`);
-        const data = await res.json();
+        if (!res.ok) {
+            const errBody = (await res.text()).slice(0, 200);
+            throw new Error(`Gemini API error (${res.status}): ${errBody}`);
+        }
+        return this.parseGeminiResponse(await res.json());
+    }
+    toGeminiMessage(m) {
+        // Tool result → functionResponse part
+        if (m.role === 'tool') {
+            return {
+                role: 'user',
+                parts: [{ functionResponse: { name: m.name || 'unknown', response: { result: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) } } }],
+            };
+        }
+        // Assistant with tool calls → model with functionCall parts
+        if (m.role === 'assistant' && m.toolCalls?.length) {
+            const parts = [];
+            if (m.content && typeof m.content === 'string' && m.content.trim()) {
+                parts.push({ text: m.content });
+            }
+            for (const tc of m.toolCalls) {
+                parts.push({ functionCall: { name: tc.name, args: tc.arguments } });
+            }
+            return { role: 'model', parts };
+        }
+        // Multimodal content
+        if (typeof m.content !== 'string') {
+            return {
+                role: m.role === 'assistant' ? 'model' : 'user',
+                parts: m.content.map(block => block.type === 'image'
+                    ? { inlineData: { mimeType: block.mediaType, data: block.data } }
+                    : { text: block.text }),
+            };
+        }
+        return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] };
+    }
+    parseGeminiResponse(data) {
         const candidates = data.candidates;
-        const parts = candidates[0].content.parts;
-        return { text: parts.map(p => p.text).join('') };
+        if (!candidates?.length) {
+            // Log blocked responses for debugging
+            const blockReason = data.promptFeedback?.blockReason;
+            if (blockReason)
+                process.stderr.write(`[GeminiProvider] Response blocked: ${blockReason}\n`);
+            return { text: '[No response from Gemini]' };
+        }
+        const candidate = candidates[0];
+        const finishReason = candidate.finishReason;
+        if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
+            process.stderr.write(`[GeminiProvider] Unusual finishReason: ${finishReason}\n`);
+        }
+        const parts = (candidate.content?.parts || []);
+        if (!parts?.length) {
+            process.stderr.write(`[GeminiProvider] Empty response parts (finishReason: ${finishReason || 'unknown'})\n`);
+            return { text: finishReason === 'SAFETY' ? '[Response blocked by Gemini safety filter]' : '' };
+        }
+        const textParts = [];
+        const toolCalls = [];
+        for (const part of parts) {
+            if (part.text) {
+                textParts.push(part.text);
+            }
+            if (part.functionCall) {
+                const fc = part.functionCall;
+                toolCalls.push({
+                    id: fc.id || (0, crypto_1.randomUUID)().slice(0, 12),
+                    name: fc.name,
+                    arguments: fc.args || {},
+                });
+            }
+        }
+        return {
+            text: textParts.join(''),
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        };
     }
 }
 exports.GeminiProvider = GeminiProvider;
@@ -205,7 +304,18 @@ class OllamaProvider {
     async generate(messages, options) {
         const body = {
             model: this.model,
-            messages: messages.map(m => ({ role: m.role === 'tool' ? 'user' : m.role, content: m.content })),
+            messages: messages.map(m => {
+                if (typeof m.content !== 'string') {
+                    const texts = m.content.filter(b => b.type === 'text').map(b => b.text);
+                    const images = m.content.filter(b => b.type === 'image').map(b => b.data);
+                    return {
+                        role: m.role === 'tool' ? 'user' : m.role,
+                        content: texts.join(' ') || '',
+                        ...(images.length ? { images } : {}),
+                    };
+                }
+                return { role: m.role === 'tool' ? 'user' : m.role, content: m.content };
+            }),
             stream: false,
         };
         if (options?.temperature !== undefined)
@@ -215,8 +325,10 @@ class OllamaProvider {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });
-        if (!res.ok)
-            throw new Error(`Ollama API error (${res.status}): ${await res.text()}`);
+        if (!res.ok) {
+            const body = (await res.text()).slice(0, 200);
+            throw new Error(`Ollama API error (${res.status}): ${body}`);
+        }
         const data = await res.json();
         const msg = data.message;
         return { text: msg.content };

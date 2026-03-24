@@ -24,7 +24,32 @@ class GitTools {
         return this.git('status', '--short');
     }
     async gitDiff(args) {
-        return args?.staged ? this.git('diff', '--staged') : this.git('diff');
+        const flags = args?.staged ? ['diff', '--staged'] : ['diff'];
+        if (args?.paths?.length)
+            flags.push('--', ...args.paths);
+        return this.git(...flags);
+    }
+    async gitUntrackedDiff(paths) {
+        const diffs = [];
+        for (const p of paths) {
+            try {
+                // git status --porcelain returns '?? path' for untracked files
+                const status = await this.git('status', '--porcelain', '--', p);
+                if (!status.startsWith('??'))
+                    continue;
+                // git diff --no-index exits 1 when files differ — that's expected
+                const { stdout } = await execFileAsync('git', ['diff', '--no-index', '/dev/null', p], { cwd: this.cwd }).catch((err) => {
+                    const e = err;
+                    return { stdout: e.stdout || '' };
+                });
+                if (stdout)
+                    diffs.push(stdout.trim());
+            }
+            catch (err) {
+                console.warn(`[GitTools] gitUntrackedDiff skipped "${p}": ${err.message}`);
+            }
+        }
+        return diffs.join('\n');
     }
     async gitLog(args) {
         return this.git('log', '--oneline', `-${args?.count || 20}`);

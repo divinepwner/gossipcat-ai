@@ -6,8 +6,9 @@ const util_1 = require("util");
 const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
 const DEFAULT_ALLOWED_COMMANDS = [
     'npm', 'npx', 'node', 'git', 'tsc', 'jest',
-    'ls', 'cat', 'head', 'tail', 'wc', 'find', 'grep',
-    'echo', 'pwd', 'which', 'env', 'sleep'
+    'ls', 'wc', 'echo', 'pwd', 'which',
+    // REMOVED: env (leaks API keys), sleep (DoS vector),
+    // cat/head/tail/grep (bypass sandbox — use file_read/file_grep instead)
 ];
 const BLOCKED_PATTERNS = [
     /rm\s+(-rf|-fr|--force)/,
@@ -17,6 +18,13 @@ const BLOCKED_PATTERNS = [
     /mkfs/,
     /:\(\)\s*\{.*\|.*&.*\}/, // fork bomb
 ];
+const BLOCKED_ARG_PATTERNS = [
+    /^-exec$/,
+    /^-delete$/,
+    /^--force$/,
+    /^-rf$/,
+    /^-fr$/,
+];
 class ShellTools {
     allowedCommands;
     maxOutputSize;
@@ -25,17 +33,37 @@ class ShellTools {
         this.maxOutputSize = options?.maxOutputSize || 1024 * 1024; // 1MB
     }
     async shellExec(args) {
-        const parts = args.command.trim().split(/\s+/);
-        const cmd = parts[0];
-        const cmdArgs = parts.slice(1);
+        let cmd;
+        let cmdArgs;
+        if (args.args) {
+            // When args[] is provided, use directly (no string splitting)
+            const parts = args.command.trim().split(/\s+/);
+            cmd = parts[0];
+            cmdArgs = args.args;
+        }
+        else {
+            // Backwards compat: split command string
+            const parts = args.command.trim().split(/\s+/);
+            cmd = parts[0];
+            cmdArgs = parts.slice(1);
+        }
         // Check allowlist
         if (!this.allowedCommands.includes(cmd)) {
             throw new Error(`Command "${cmd}" is not in the allowed commands list`);
         }
-        // Check for blocked patterns
+        // Check for blocked patterns against full command (including args)
+        const fullCommand = [cmd, ...cmdArgs].join(' ');
         for (const pattern of BLOCKED_PATTERNS) {
-            if (pattern.test(args.command)) {
-                throw new Error(`Command blocked by safety rules: ${args.command}`);
+            if (pattern.test(fullCommand)) {
+                throw new Error(`Command blocked by safety rules: ${fullCommand}`);
+            }
+        }
+        // Check each argument against blocked arg patterns
+        for (const arg of cmdArgs) {
+            for (const pattern of BLOCKED_ARG_PATTERNS) {
+                if (pattern.test(arg)) {
+                    throw new Error(`Argument "${arg}" is blocked by safety rules`);
+                }
             }
         }
         try {

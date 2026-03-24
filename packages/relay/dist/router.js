@@ -186,6 +186,9 @@ class MessageRouter {
     getPresenceTracker() {
         return this.presenceTracker;
     }
+    stop() {
+        this.presenceTracker.stop();
+    }
 }
 exports.MessageRouter = MessageRouter;
 //# sourceMappingURL=router.js.map

@@ -26,71 +26,12 @@ let pendingChoices: { options: Array<{ value: string; label: string; hint?: stri
  * Temporarily takes over stdin in raw mode, renders a selectable list,
  * returns the selected value. Restores stdin state after.
  */
-// Keep a reference to the readline interface so inlineSelect can pause/resume it
-let _rl: Interface | null = null;
-
-function inlineSelect(options: Array<{ value: string; label: string; hint?: string }>): Promise<string | null> {
-  return new Promise((resolve) => {
-    let selected = 0;
-    const stdin = process.stdin;
-    const wasRaw = stdin.isRaw;
-
-    // Pause readline to prevent history interference
-    if (_rl) _rl.pause();
-
-    function render() {
-      process.stdout.write(`\x1b[${options.length}A`); // move up N lines
-      for (let i = 0; i < options.length; i++) {
-        const prefix = i === selected ? `${c.cyan}  > ` : '    ';
-        const label = i === selected ? `${c.bold}${options[i].label}${c.reset}` : `${c.dim}${options[i].label}${c.reset}`;
-        const hint = options[i].hint ? ` ${c.dim}(${options[i].hint})${c.reset}` : '';
-        process.stdout.write(`\r\x1b[K${prefix}${label}${hint}\n`);
-      }
-    }
-
-    // Reserve lines and do initial render
-    for (let i = 0; i < options.length; i++) console.log('');
-    render();
-
-    stdin.setRawMode(true);
-    stdin.resume();
-
-    function onData(buf: Buffer) {
-      const key = buf.toString();
-
-      if (key === '\x1b[A') { // up arrow
-        selected = (selected - 1 + options.length) % options.length;
-        render();
-      } else if (key === '\x1b[B') { // down arrow
-        selected = (selected + 1) % options.length;
-        render();
-      } else if (key === '\r' || key === '\n') { // enter
-        cleanup();
-        resolve(options[selected].value);
-      } else if (key === '\x03' || key === '\x1b') { // ctrl-c or escape
-        cleanup();
-        resolve(null);
-      } else if (key >= '1' && key <= '9') { // number key
-        const idx = parseInt(key, 10) - 1;
-        if (idx < options.length) {
-          selected = idx;
-          render();
-          cleanup();
-          resolve(options[selected].value);
-        }
-      }
-    }
-
-    function cleanup() {
-      stdin.removeListener('data', onData);
-      stdin.setRawMode(wasRaw ?? false);
-      // Resume readline
-      if (_rl) _rl.resume();
-    }
-
-    stdin.on('data', onData);
-  });
-}
+// Pending choices state — shared between renderResponse and REPL line handler
+let _pendingChoices: {
+  options: Array<{ value: string; label: string; hint?: string }>;
+  originalMessage: string;
+  mainAgent: MainAgent;
+} | null = null;
 
 // ── Render a ChatResponse ───────────────────────────────────────────────────
 async function renderResponse(

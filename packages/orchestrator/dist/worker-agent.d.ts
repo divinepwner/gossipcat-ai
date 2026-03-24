@@ -6,20 +6,29 @@
  */
 import { ToolDefinition } from '@gossip/types';
 import { ILLMProvider } from './llm-client';
+import { TaskExecutionResult } from './types';
 export declare class WorkerAgent {
     private agentId;
     private llm;
     private tools;
     private agent;
+    private instructions;
+    private gossipQueue;
+    private static readonly MAX_GOSSIP_QUEUE;
     private pendingToolCalls;
-    constructor(agentId: string, llm: ILLMProvider, relayUrl: string, tools: ToolDefinition[]);
+    constructor(agentId: string, llm: ILLMProvider, relayUrl: string, tools: ToolDefinition[], instructions?: string);
+    setInstructions(instructions: string): void;
+    getInstructions(): string;
+    subscribeToBatch(batchId: string): Promise<void>;
+    unsubscribeFromBatch(batchId: string): Promise<void>;
     start(): Promise<void>;
+    private rejectPendingToolCalls;
     stop(): Promise<void>;
     /**
      * Execute a task with the LLM, using multi-turn tool calling.
      * Returns the final text response.
      */
-    executeTask(task: string, context?: string): Promise<string>;
+    executeTask(task: string, context?: string, skillsContent?: string): Promise<TaskExecutionResult>;
     /** Send RPC_REQUEST to tool-server via relay */
     private callTool;
     /** Handle incoming messages — resolve pending RPC tool calls */

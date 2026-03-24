@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ALL_TOOLS = exports.GIT_TOOLS = exports.SHELL_TOOLS = exports.FILE_TOOLS = void 0;
+exports.ALL_TOOLS = exports.VERIFY_TOOLS = exports.SKILL_TOOLS = exports.GIT_TOOLS = exports.SHELL_TOOLS = exports.FILE_TOOLS = void 0;
 exports.FILE_TOOLS = [
     {
         name: 'file_read',
@@ -133,5 +133,32 @@ exports.GIT_TOOLS = [
         }
     }
 ];
-exports.ALL_TOOLS = [...exports.FILE_TOOLS, ...exports.SHELL_TOOLS, ...exports.GIT_TOOLS];
+exports.SKILL_TOOLS = [
+    {
+        name: 'suggest_skill',
+        description: 'Suggest a skill that would help with the current task. Non-blocking — logs the suggestion and you keep working.',
+        parameters: {
+            type: 'object',
+            properties: {
+                skill_name: { type: 'string', description: 'Skill name using underscores (e.g. "dos_resilience")' },
+                reason: { type: 'string', description: 'Why you need this skill' },
+                task_context: { type: 'string', description: 'What you were doing when you noticed the gap' }
+            },
+            required: ['skill_name', 'reason', 'task_context']
+        }
+    }
+];
+exports.VERIFY_TOOLS = [
+    {
+        name: 'verify_write',
+        description: 'Run tests and get a peer review of your changes. Call this after writing files to verify correctness. Returns test results + reviewer feedback.',
+        parameters: {
+            type: 'object',
+            properties: {
+                test_file: { type: 'string', description: 'Specific test file to run (e.g. "tests/tools/tool-server-scope.test.ts"). If omitted, runs full test suite.' },
+            },
+        },
+    },
+];
+exports.ALL_TOOLS = [...exports.FILE_TOOLS, ...exports.SHELL_TOOLS, ...exports.GIT_TOOLS, ...exports.SKILL_TOOLS, ...exports.VERIFY_TOOLS];
 //# sourceMappingURL=definitions.js.map

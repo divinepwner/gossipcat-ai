@@ -5,6 +5,39 @@
  * Receives natural language tasks, decomposes them via TaskDispatcher,
  * fans out to WorkerAgents, and synthesizes results.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MainAgent = void 0;
 const llm_client_1 = require("./llm-client");
@@ -12,6 +45,10 @@ const agent_registry_1 = require("./agent-registry");
 const task_dispatcher_1 = require("./task-dispatcher");
 const worker_agent_1 = require("./worker-agent");
 const tools_1 = require("@gossip/tools");
+const types_1 = require("@gossip/types");
+const client_1 = require("@gossip/client");
+const msgpack_1 = require("@msgpack/msgpack");
+const dispatch_pipeline_1 = require("./dispatch-pipeline");
 const CHAT_SYSTEM_PROMPT = `You are a developer assistant powering Gossip Mesh. Be concise and direct.
 
 When you want to present the developer with choices, use this format in your response:
@@ -36,26 +73,98 @@ class MainAgent {
     dispatcher;
     workers = new Map();
     relayUrl;
+    apiKeys;
+    projectRoot;
+    pipeline;
+    bootstrapPrompt;
+    orchestratorAgent = null;
     constructor(config) {
-        this.llm = (0, llm_client_1.createProvider)(config.provider, config.model, config.apiKey);
+        this.llm = config.llm ?? (0, llm_client_1.createProvider)(config.provider, config.model, config.apiKey);
         this.registry = new agent_registry_1.AgentRegistry();
         this.dispatcher = new task_dispatcher_1.TaskDispatcher(this.llm, this.registry);
         this.relayUrl = config.relayUrl;
+        this.apiKeys = config.apiKeys ?? {};
+        this.bootstrapPrompt = config.bootstrapPrompt || '';
         for (const agent of config.agents) {
             this.registry.register(agent);
         }
+        this.projectRoot = config.projectRoot || process.cwd();
+        this.pipeline = new dispatch_pipeline_1.DispatchPipeline({
+            projectRoot: this.projectRoot,
+            workers: this.workers,
+            registryGet: (id) => this.registry.get(id),
+            llm: this.llm,
+            syncFactory: config.syncFactory,
+            toolServer: config.toolServer,
+        });
     }
     /** Start all worker agents (connect to relay) */
     async start() {
+        const { existsSync, readFileSync } = await Promise.resolve().then(() => __importStar(require('fs')));
+        const { join } = await Promise.resolve().then(() => __importStar(require('path')));
         for (const config of this.registry.getAll()) {
-            const llm = (0, llm_client_1.createProvider)(config.provider, config.model);
-            const worker = new worker_agent_1.WorkerAgent(config.id, llm, this.relayUrl, tools_1.ALL_TOOLS);
+            if (this.workers.has(config.id))
+                continue; // skip if already set externally
+            const llm = (0, llm_client_1.createProvider)(config.provider, config.model, this.apiKeys[config.provider]);
+            // Load per-agent instructions if available
+            const instructionsPath = join(this.projectRoot, '.gossip', 'agents', config.id, 'instructions.md');
+            const instructions = existsSync(instructionsPath)
+                ? readFileSync(instructionsPath, 'utf-8') : undefined;
+            const worker = new worker_agent_1.WorkerAgent(config.id, llm, this.relayUrl, tools_1.ALL_TOOLS, instructions);
             await worker.start();
             this.workers.set(config.id, worker);
         }
+        // Connect orchestrator agent to relay for verify_write review requests
+        try {
+            this.orchestratorAgent = new client_1.GossipAgent({ agentId: 'orchestrator', relayUrl: this.relayUrl, reconnect: true });
+            await this.orchestratorAgent.connect();
+            this.orchestratorAgent.on('message', this.handleReviewRequest.bind(this));
+        }
+        catch (err) {
+            console.error(`[MainAgent] Orchestrator relay connection failed: ${err.message}`);
+        }
+    }
+    /** Set externally-created workers (used by MCP server to avoid duplicate connections) */
+    setWorkers(externalWorkers) {
+        for (const [id, worker] of externalWorkers) {
+            this.workers.set(id, worker);
+        }
+    }
+    dispatch(agentId, task, options) { return this.pipeline.dispatch(agentId, task, options); }
+    async collect(taskIds, timeoutMs, options) { return this.pipeline.collect(taskIds, timeoutMs, options); }
+    async dispatchParallel(tasks, options) { return this.pipeline.dispatchParallel(tasks, options); }
+    registerPlan(plan) { this.pipeline.registerPlan(plan); }
+    getWorker(agentId) { return this.workers.get(agentId); }
+    getTask(taskId) { return this.pipeline.getTask(taskId); }
+    setGossipPublisher(publisher) { this.pipeline.setGossipPublisher(publisher); }
+    setOverlapDetector(detector) { this.pipeline.setOverlapDetector(detector); }
+    setLensGenerator(generator) { this.pipeline.setLensGenerator(generator); }
+    /** Register new agent configs (for hot-reload from config changes) */
+    registerAgent(config) {
+        this.registry.register(config);
+    }
+    async syncWorkers(keyProvider) {
+        const { existsSync, readFileSync } = await Promise.resolve().then(() => __importStar(require('fs')));
+        const { join } = await Promise.resolve().then(() => __importStar(require('path')));
+        let added = 0;
+        for (const ac of this.registry.getAll()) {
+            if (this.workers.has(ac.id))
+                continue;
+            const key = await keyProvider(ac.provider);
+            const llm = (0, llm_client_1.createProvider)(ac.provider, ac.model, key ?? undefined);
+            const instructionsPath = join(this.projectRoot, '.gossip', 'agents', ac.id, 'instructions.md');
+            const instructions = existsSync(instructionsPath)
+                ? readFileSync(instructionsPath, 'utf-8') : undefined;
+            const worker = new worker_agent_1.WorkerAgent(ac.id, llm, this.relayUrl, tools_1.ALL_TOOLS, instructions);
+            await worker.start();
+            this.workers.set(ac.id, worker);
+            added++;
+        }
+        return added;
     }
     /** Stop all worker agents */
     async stop() {
+        this.pipeline.flushTaskGraph();
         for (const worker of this.workers.values()) {
             await worker.stop();
         }
@@ -63,27 +172,23 @@ class MainAgent {
     }
     /** Handle a user message: decompose, dispatch, synthesize. Returns structured ChatResponse. */
     async handleMessage(userMessage) {
-        const plan = await this.dispatcher.decompose(userMessage);
+        // Extract text for task decomposition (dispatcher needs text only)
+        const textForDispatch = typeof userMessage === 'string'
+            ? userMessage
+            : userMessage.filter(b => b.type === 'text').map(b => b.text).join(' ') || 'Describe this image.';
+        const plan = await this.dispatcher.decompose(textForDispatch);
         this.dispatcher.assignAgents(plan);
         // Handle unassigned tasks directly with main LLM
         const unassigned = plan.subTasks.filter(st => !st.assignedAgent);
         if (unassigned.length === plan.subTasks.length) {
+            const systemPrompt = this.bootstrapPrompt
+                ? this.bootstrapPrompt + '\n\n' + CHAT_SYSTEM_PROMPT
+                : CHAT_SYSTEM_PROMPT;
             const response = await this.llm.generate([
-                { role: 'system', content: CHAT_SYSTEM_PROMPT },
+                { role: 'system', content: systemPrompt },
                 { role: 'user', content: userMessage },
             ]);
             return this.parseResponse(response.text);
-        }
-        // If multiple approaches, present choices before executing
-        if (plan.subTasks.length > 1 && plan.strategy !== 'parallel') {
-            // Ask the LLM if it wants to present choices
-            const planSummary = plan.subTasks.map((st, i) => `${i + 1}. ${st.description}`).join('\n');
-            await this.llm.generate([
-                { role: 'system', content: CHAT_SYSTEM_PROMPT },
-                { role: 'user', content: userMessage },
-                { role: 'assistant', content: `I've broken this into steps:\n${planSummary}\n\nShould I present these as choices to the developer, or just execute them all?` },
-            ]);
-            // If the LLM suggests choices, the response will be parsed by parseResponse
         }
         // Execute assigned sub-tasks
         const results = [];
@@ -97,7 +202,7 @@ class MainAgent {
                 results.push(await this.executeSubTask(subTask));
             }
         }
-        const text = await this.synthesize(userMessage, results);
+        const text = await this.synthesize(textForDispatch, results);
         return {
             text,
             status: 'done',
@@ -106,8 +211,11 @@ class MainAgent {
     }
     /** Handle a user's choice selection — continues the conversation with context */
     async handleChoice(originalMessage, choiceValue) {
+        const systemPrompt = this.bootstrapPrompt
+            ? this.bootstrapPrompt + '\n\n' + CHAT_SYSTEM_PROMPT
+            : CHAT_SYSTEM_PROMPT;
         const response = await this.llm.generate([
-            { role: 'system', content: CHAT_SYSTEM_PROMPT },
+            { role: 'system', content: systemPrompt },
             { role: 'user', content: originalMessage },
             { role: 'assistant', content: `I presented options and the developer chose: "${choiceValue}". Proceeding with that approach.` },
             { role: 'user', content: `Yes, go with "${choiceValue}".` },
@@ -150,14 +258,54 @@ class MainAgent {
             status: 'done',
         };
     }
-    async executeSubTask(subTask) {
-        const worker = this.workers.get(subTask.assignedAgent);
-        if (!worker) {
-            return { agentId: 'unknown', task: subTask.description, result: '', error: 'No worker', duration: 0 };
+    async handleReviewRequest(data, envelope) {
+        if (envelope.t !== types_1.MessageType.RPC_REQUEST)
+            return;
+        const payload = data;
+        if (payload?.tool !== 'review_request')
+            return;
+        const rawArgs = payload.args;
+        if (!rawArgs || typeof rawArgs.callerId !== 'string' || typeof rawArgs.diff !== 'string' || typeof rawArgs.testResult !== 'string') {
+            console.error('[MainAgent] Malformed review_request payload — missing or invalid args');
+            return;
         }
+        const args = rawArgs;
+        let reviewText = 'No reviewer available — tests-only verification.';
+        try {
+            // Find best reviewer, excluding the calling agent
+            const reviewer = this.registry.getAll()
+                .filter(a => a.id !== args.callerId && a.skills.includes('code_review'))
+                .find(a => this.workers.has(a.id));
+            if (reviewer) {
+                const { promise } = this.pipeline.dispatch(reviewer.id, `Review this diff for correctness:\n\n${args.diff}\n\nTest results:\n${args.testResult}\n\nProvide a brief review: what's good, what needs fixing.`);
+                try {
+                    reviewText = await promise;
+                }
+                catch {
+                    reviewText = 'Reviewer agent failed.';
+                }
+            }
+        }
+        catch (err) {
+            reviewText = `Review error: ${err.message}`;
+        }
+        // Send RPC response back to ToolServer
+        try {
+            const body = Buffer.from((0, msgpack_1.encode)({ result: reviewText }));
+            const correlationId = (envelope.rid_req || envelope.id);
+            const response = types_1.Message.createRpcResponse('orchestrator', envelope.sid, correlationId, body);
+            await this.orchestratorAgent.sendEnvelope(response.toEnvelope());
+        }
+        catch (err) {
+            console.error(`[MainAgent] Failed to send review response: ${err.message}`);
+        }
+    }
+    async executeSubTask(subTask) {
+        const { taskId, promise } = this.pipeline.dispatch(subTask.assignedAgent, subTask.description);
         const start = Date.now();
         try {
-            const result = await worker.executeTask(subTask.description);
+            const result = await promise;
+            await this.pipeline.writeMemoryForTask(taskId);
             return { agentId: subTask.assignedAgent, task: subTask.description, result, duration: Date.now() - start };
         }
         catch (err) {

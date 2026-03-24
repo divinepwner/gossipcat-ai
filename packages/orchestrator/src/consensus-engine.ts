@@ -14,6 +14,7 @@ export type {
 const SUMMARY_HEADER = '## Consensus Summary';
 const FALLBACK_MAX_LENGTH = 2000;
 const MAX_SUMMARY_LENGTH = 3000;
+const MAX_CROSS_REVIEW_ENTRIES = 50; // DoS prevention
 const VALID_ACTIONS = new Set(['agree', 'disagree', 'new']);
 
 export interface ConsensusEngineConfig {
@@ -107,13 +108,14 @@ export class ConsensusEngine {
       if (peerId === agent.agentId) continue;
       const peerConfig = this.config.registryGet(peerId);
       const preset = peerConfig?.preset ?? 'unknown';
-      peerLines.push(`Agent "${peerId}" (${preset}):\n${peerSummary}`);
+      // SECURITY: Wrap external LLM output in <data> tags to prevent prompt injection.
+      peerLines.push(`Agent "${peerId}" (${preset}):\n<data>${peerSummary}</data>`);
     }
 
     const userContent = `You previously reviewed code and produced findings. Now review your peers' findings.
 
 YOUR FINDINGS (Phase 1):
-${ownSummary}
+<data>${ownSummary}</data>
 
 PEER FINDINGS:
 ${peerLines.join('\n\n')}
@@ -136,7 +138,7 @@ Return ONLY a JSON array:
     try {
       const response = await this.config.llm.generate(messages, { temperature: 0 });
       const validPeerIds = new Set(summaries.keys());
-      const entries = this.parseCrossReviewResponse(agent.agentId, response.text);
+      const entries = this.parseCrossReviewResponse(agent.agentId, response.text, MAX_CROSS_REVIEW_ENTRIES);
       // Filter: no self-references, peerAgentId must be a real agent in this batch
       return entries.filter(e => e.peerAgentId !== agent.agentId && validPeerIds.has(e.peerAgentId));
     } catch {
@@ -461,7 +463,7 @@ Return ONLY a JSON array:
    * Parse LLM cross-review response into structured entries.
    * Handles markdown code fences, invalid JSON, and confidence clamping.
    */
-  private parseCrossReviewResponse(reviewerAgentId: string, text: string): CrossReviewEntry[] {
+  private parseCrossReviewResponse(reviewerAgentId: string, text: string, limit: number): CrossReviewEntry[] {
     // Strip markdown code fences if present
     let cleaned = text.trim();
     const fenceMatch = cleaned.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/);
@@ -478,8 +480,11 @@ Return ONLY a JSON array:
 
     if (!Array.isArray(parsed)) return [];
 
+    // SECURITY: Limit the number of entries to prevent DoS attacks.
+    const limited = parsed.slice(0, limit);
+
     const entries: CrossReviewEntry[] = [];
-    for (const item of parsed) {
+    for (const item of limited) {
       if (!item || typeof item !== 'object') continue;
       if (!VALID_ACTIONS.has(item.action)) continue;
       if (!item.finding || !item.evidence) continue;

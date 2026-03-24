@@ -8,6 +8,7 @@ export interface RelayServerConfig {
     port: number;
     host?: string;
     authTimeoutMs?: number;
+    apiKey?: string;
 }
 export declare class RelayServer {
     private config;
@@ -18,6 +19,9 @@ export declare class RelayServer {
     private codec;
     private _port;
     private authTimeoutMs;
+    private connectionsByIp;
+    private readonly maxConnectionsPerIp;
+    private readonly maxTotalConnections;
     constructor(config: RelayServerConfig);
     get port(): number;
     get url(): string;

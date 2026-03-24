@@ -28,16 +28,22 @@ class FileTools {
     }
     async fileSearch(args) {
         const results = [];
-        await this.walkDir(this.sandbox.projectRoot, args.pattern, results);
+        await this.walkDir(this.sandbox.projectRoot, args.pattern, results, 0, 10);
         return results.join('\n') || 'No files found';
     }
     async fileGrep(args) {
         const searchRoot = args.path
             ? this.sandbox.validatePath(args.path)
             : this.sandbox.projectRoot;
-        const regex = new RegExp(args.pattern);
+        let regex;
+        try {
+            regex = new RegExp(args.pattern);
+        }
+        catch (error) {
+            return `Invalid regex pattern: ${error instanceof Error ? error.message : 'Unknown error'}`;
+        }
         const results = [];
-        await this.grepDir(searchRoot, regex, results);
+        await this.grepDir(searchRoot, regex, results, 0, 10);
         return results.join('\n') || 'No matches found';
     }
     async fileTree(args) {
@@ -50,7 +56,9 @@ class FileTools {
         return lines.join('\n');
     }
     // ─── Private helpers ──────────────────────────────────────────────────────
-    async walkDir(dir, pattern, results) {
+    async walkDir(dir, pattern, results, depth = 0, maxDepth = 10) {
+        if (depth >= maxDepth)
+            return;
         let entries;
         try {
             entries = await (0, promises_1.readdir)(dir);
@@ -70,7 +78,7 @@ class FileTools {
                 continue;
             }
             if (info.isDirectory()) {
-                await this.walkDir(fullPath, pattern, results);
+                await this.walkDir(fullPath, pattern, results, depth + 1, maxDepth);
             }
             else {
                 // Match glob-style pattern: convert * and ? to regex
@@ -86,7 +94,9 @@ class FileTools {
             }
         }
     }
-    async grepDir(dir, regex, results) {
+    async grepDir(dir, regex, results, depth = 0, maxDepth = 10) {
+        if (depth >= maxDepth)
+            return;
         let entries;
         try {
             entries = await (0, promises_1.readdir)(dir);
@@ -106,7 +116,7 @@ class FileTools {
                 continue;
             }
             if (info.isDirectory()) {
-                await this.grepDir(fullPath, regex, results);
+                await this.grepDir(fullPath, regex, results, depth + 1, maxDepth);
             }
             else {
                 try {
