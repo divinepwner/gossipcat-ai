@@ -149,11 +149,20 @@ export async function startChat(config: GossipConfig): Promise<void> {
   await mainAgent.start();
 
   const agents = configToAgentConfigs(config);
-  s.stop(`Ready — ${agents.length} agent${agents.length !== 1 ? 's' : ''} online (relay :${relay.port})`);
-  console.log(`\n${c.dim}  Just type naturally to chat. Or use slash commands:${c.reset}`);
-  console.log(`${c.dim}  /dispatch-consensus <task>  →  dispatch to all ${agents.length} agents + cross-review${c.reset}`);
-  console.log(`${c.dim}  /dispatch <agent> <task>    →  dispatch to one agent${c.reset}`);
-  console.log(`${c.dim}  /help                       →  all commands${c.reset}\n`);
+  const orchestratorLabel = `${config.main_agent.provider}/${config.main_agent.model}`;
+
+  if (agents.length === 0) {
+    s.stop(`Ready — orchestrator online (${orchestratorLabel}), no agents yet`);
+    console.log(`\n${c.green}  Describe your project and I'll set up a tailored agent team.${c.reset}`);
+    console.log(`${c.dim}  Or use /init <description> to initialize explicitly.${c.reset}`);
+    console.log(`${c.dim}  /help for all commands.${c.reset}\n`);
+  } else {
+    s.stop(`Ready — ${agents.length} agent${agents.length !== 1 ? 's' : ''} online (${orchestratorLabel}, relay :${relay.port})`);
+    console.log(`\n${c.dim}  Just type naturally to chat. Or use slash commands:${c.reset}`);
+    console.log(`${c.dim}  /dispatch-consensus <task>  →  dispatch to all ${agents.length} agents + cross-review${c.reset}`);
+    console.log(`${c.dim}  /dispatch <agent> <task>    →  dispatch to one agent${c.reset}`);
+    console.log(`${c.dim}  /help                       →  all commands${c.reset}\n`);
+  }
 
   // ── REPL loop ───────────────────────────────────────────────────────────
   const rl = createInterface({
