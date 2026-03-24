@@ -122,7 +122,12 @@ export class MainAgent {
 
     for (const config of this.registry.getAll()) {
       if (this.workers.has(config.id)) continue; // skip if already set externally
-      const llm = createProvider(config.provider, config.model, this.apiKeys[config.provider]);
+      // Try apiKeys map first, then keyProvider callback
+      let apiKey: string | undefined = this.apiKeys[config.provider];
+      if (!apiKey && this.keyProviderFn) {
+        apiKey = (await this.keyProviderFn(config.provider)) ?? undefined;
+      }
+      const llm = createProvider(config.provider, config.model, apiKey);
 
       // Load per-agent instructions if available
       const instructionsPath = join(this.projectRoot, '.gossip', 'agents', config.id, 'instructions.md');

@@ -8043,7 +8043,11 @@ When there's a clear best option, recommend it but still offer alternatives.`;
         const { join: join16 } = await import("path");
         for (const config2 of this.registry.getAll()) {
           if (this.workers.has(config2.id)) continue;
-          const llm = createProvider(config2.provider, config2.model, this.apiKeys[config2.provider]);
+          let apiKey = this.apiKeys[config2.provider];
+          if (!apiKey && this.keyProviderFn) {
+            apiKey = await this.keyProviderFn(config2.provider) ?? void 0;
+          }
+          const llm = createProvider(config2.provider, config2.model, apiKey);
           const instructionsPath = join16(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
           const instructions = existsSync16(instructionsPath) ? readFileSync17(instructionsPath, "utf-8") : void 0;
           const worker = new WorkerAgent(config2.id, llm, this.relayUrl, ALL_TOOLS, instructions);
