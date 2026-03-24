@@ -509,12 +509,17 @@ ${c.dim}"exit" to quit.${c.reset}
         }
       } else {
         // Show appropriate spinner based on state
-        const hasAgents = configToAgentConfigs(config).length > 0;
-        const spinnerText = hasAgents ? 'thinking...' : 'analyzing project and proposing team...';
-        process.stdout.write(`${c.dim}  ${spinnerText}${c.reset}`);
-        const response = await mainAgent.handleMessage(input);
-        process.stdout.write('\r\x1b[K');
-        await renderResponse(response, input, mainAgent);
+        const isInit = configToAgentConfigs(config).length === 0;
+        const spinnerText = isInit ? 'analyzing project and proposing team...' : 'thinking...';
+        process.stdout.write(`\r${c.dim}  ${spinnerText}${c.reset}`);
+        try {
+          const response = await mainAgent.handleMessage(input);
+          process.stdout.write('\r\x1b[K');
+          await renderResponse(response, input, mainAgent);
+        } catch (err) {
+          process.stdout.write('\r\x1b[K');
+          console.log(`\n${c.yellow}  Error: ${err instanceof Error ? err.message : 'Unknown error'}${c.reset}\n`);
+        }
       }
     } catch (err) {
       process.stdout.write('\r\x1b[K');
