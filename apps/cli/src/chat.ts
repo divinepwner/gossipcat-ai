@@ -545,8 +545,13 @@ async function shutdown(
 ): Promise<void> {
   console.log(`\n${c.dim}  Shutting down...${c.reset}`);
   rl.close();
-  await mainAgent.stop();
-  await toolServer.stop();
-  await relay.stop();
+  // Force exit after 3s if graceful shutdown hangs
+  const forceExit = setTimeout(() => process.exit(0), 3000);
+  try {
+    await mainAgent.stop();
+    await toolServer.stop();
+    await relay.stop();
+  } catch { /* ignore shutdown errors */ }
+  clearTimeout(forceExit);
   process.exit(0);
 }
