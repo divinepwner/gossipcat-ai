@@ -271,9 +271,18 @@ export class MainAgent {
         ? userMessage
         : userMessage.filter(b => b.type === 'text').map(b => (b as any).text).join(' ') || '';
 
+      // If pendingTask exists, this is a modification of a prior proposal
+      // Combine original task + modification instruction
+      const taskForProposal = this.projectInitializer.pendingTask
+        ? `${this.projectInitializer.pendingTask}\n\nModification: ${text}`
+        : text;
+
       const signals = this.projectInitializer.scanDirectory(this.projectRoot);
-      this.projectInitializer.pendingTask = text;
-      const proposal = await this.projectInitializer.proposeTeam(text, signals);
+      // Store the original task (not the modification) for re-processing after accept
+      if (!this.projectInitializer.pendingTask) {
+        this.projectInitializer.pendingTask = text;
+      }
+      const proposal = await this.projectInitializer.proposeTeam(taskForProposal, signals);
 
       return {
         text: proposal.text,
@@ -354,7 +363,8 @@ export class MainAgent {
         return this.handleMessageCognitive(task);
       }
       if (choiceValue === 'modify') {
-        this.projectInitializer.pendingTask = null;
+        // Keep pendingTask so next message re-triggers init with modifications
+        // pendingProposal cleared so a fresh proposal is generated
         this.projectInitializer.pendingProposal = null;
         return { text: 'Describe what you\'d like to change and I\'ll create a new proposal.', status: 'done' };
       }
