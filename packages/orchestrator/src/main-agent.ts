@@ -347,20 +347,34 @@ export class MainAgent {
       if (choiceValue === 'accept') {
         await this.projectInitializer.writeConfig(this.projectRoot);
         // Reload agents from new config
+        const newAgents: string[] = [];
         if (this.projectInitializer.pendingProposal?.agents) {
           for (const agent of this.projectInitializer.pendingProposal.agents) {
             this.registry.register(agent);
+            newAgents.push(agent.id);
           }
         }
         // Start workers if keyProvider available
+        let workersStarted = 0;
         if (this.keyProviderFn) {
-          await this.syncWorkers(this.keyProviderFn);
+          try {
+            workersStarted = await this.syncWorkers(this.keyProviderFn);
+          } catch (err) {
+            process.stderr.write(`[MainAgent] Failed to start workers: ${(err as Error).message}\n`);
+          }
         }
-        // Re-process original task
         const task = this.projectInitializer.pendingTask;
         this.projectInitializer.pendingTask = null;
         this.projectInitializer.pendingProposal = null;
-        return this.handleMessageCognitive(task);
+
+        // Return success with team summary — don't re-process original task
+        // (re-processing causes the LLM to propose a second team)
+        const agentList = newAgents.join(', ');
+        return {
+          text: `Team configured! ${newAgents.length} agents ready (${agentList}).${workersStarted > 0 ? ` ${workersStarted} workers started.` : ''}\n\nYou can now:\n- Type your task naturally (e.g., "${task}")\n- Use /dispatch <agent> <task> for specific agents\n- Use /help for all commands`,
+          status: 'done',
+          agents: newAgents,
+        };
       }
       if (choiceValue === 'modify') {
         // Keep pendingTask so next message re-triggers init with modifications
