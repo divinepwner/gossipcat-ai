@@ -35,66 +35,19 @@ async function renderResponse(
     console.log(response.text);
   }
 
-  // Show interactive choices if present
+  // Show interactive choices if present — use simple numbered prompt
+  // (NOT @clack/prompts which breaks readline state)
   if (response.choices && response.choices.options.length > 0) {
+    const options = response.choices.options;
+    console.log('');
+    for (let i = 0; i < options.length; i++) {
+      const hint = options[i].hint ? ` ${c.dim}(${options[i].hint})${c.reset}` : '';
+      console.log(`  ${c.cyan}${i + 1}.${c.reset} ${options[i].label}${hint}`);
+    }
     console.log('');
 
-    const options = response.choices.options.map(opt => ({
-      value: opt.value,
-      label: opt.label,
-      hint: opt.hint,
-    }));
-
-    // Add custom input option if allowed
-    if (response.choices.allowCustom) {
-      options.push({
-        value: '__custom__',
-        label: 'Let me explain what I want...',
-        hint: 'Type a custom response',
-      });
-    }
-
-    if (response.choices.type === 'confirm') {
-      const confirmed = await p.confirm({
-        message: response.choices.message,
-      });
-      if (p.isCancel(confirmed)) return;
-      const choice = confirmed ? 'yes' : 'no';
-      const followUp = await mainAgent.handleChoice(originalMessage, choice);
-      await renderResponse(followUp, originalMessage, mainAgent);
-
-    } else if (response.choices.type === 'multiselect') {
-      const selected = await p.multiselect({
-        message: response.choices.message,
-        options,
-        required: true,
-      });
-      if (p.isCancel(selected)) return;
-      const choice = (selected as string[]).join(', ');
-      const followUp = await mainAgent.handleChoice(originalMessage, choice);
-      await renderResponse(followUp, originalMessage, mainAgent);
-
-    } else {
-      // Default: single select
-      const selected = await p.select({
-        message: response.choices.message,
-        options,
-      });
-      if (p.isCancel(selected)) return;
-
-      if (selected === '__custom__') {
-        const custom = await p.text({
-          message: 'What do you want instead?',
-          placeholder: 'Describe your preferred approach...',
-        });
-        if (p.isCancel(custom)) return;
-        const followUp = await mainAgent.handleChoice(originalMessage, custom as string);
-        await renderResponse(followUp, originalMessage, mainAgent);
-      } else {
-        const followUp = await mainAgent.handleChoice(originalMessage, selected as string);
-        await renderResponse(followUp, originalMessage, mainAgent);
-      }
-    }
+    // Store choices for the next line input to resolve
+    pendingChoices = { options, originalMessage, mainAgent };
   }
 
   console.log('');
@@ -459,12 +412,57 @@ ${c.dim}"exit" to quit.${c.reset}
   };
 
   let activeWriteMode: { mode: 'sequential' | 'scoped' | 'worktree'; scope?: string } | null = null;
+  let pendingChoices: { options: Array<{ value: string; label: string; hint?: string }>; originalMessage: string; mainAgent: MainAgent } | null = null;
 
   rl.on('line', async (line) => {
     const input = line.trim();
     if (!input) { rl.prompt(); return; }
     if (input === 'exit' || input === 'quit') {
       await shutdown(relay, toolServer, mainAgent, rl);
+      return;
+    }
+
+    // ── Pending choice selection (number or label) ────────────────────────
+    if (pendingChoices) {
+      const choices = pendingChoices;
+      pendingChoices = null;
+
+      // Match by number (1, 2, 3...) or by label/value
+      const num = parseInt(input, 10);
+      let selectedValue: string | undefined;
+      if (!isNaN(num) && num >= 1 && num <= choices.options.length) {
+        selectedValue = choices.options[num - 1].value;
+      } else {
+        // Match by label or value (case-insensitive)
+        const lower = input.toLowerCase();
+        const match = choices.options.find(o =>
+          o.value.toLowerCase() === lower || o.label.toLowerCase() === lower
+        );
+        selectedValue = match?.value;
+      }
+
+      if (!selectedValue) {
+        console.log(`${c.yellow}  Invalid choice. Pick a number (1-${choices.options.length}) or type the option name.${c.reset}\n`);
+        // Re-show choices
+        for (let i = 0; i < choices.options.length; i++) {
+          console.log(`  ${c.cyan}${i + 1}.${c.reset} ${choices.options[i].label}`);
+        }
+        pendingChoices = choices; // restore
+        console.log('');
+        rl.prompt();
+        return;
+      }
+
+      try {
+        process.stdout.write(`${c.dim}  processing...${c.reset}`);
+        const followUp = await choices.mainAgent.handleChoice(choices.originalMessage, selectedValue);
+        process.stdout.write('\r\x1b[K');
+        await renderResponse(followUp, choices.originalMessage, choices.mainAgent);
+      } catch (err) {
+        process.stdout.write('\r\x1b[K');
+        console.log(`${c.yellow}  Error: ${err instanceof Error ? err.message : 'Unknown'}${c.reset}\n`);
+      }
+      rl.prompt();
       return;
     }
 
