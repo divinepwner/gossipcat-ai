@@ -105,7 +105,7 @@ describe('MainAgent bootstrapPrompt', () => {
       bootstrapPrompt: '## Bootstrap Context\nTeam info here.',
     });
 
-    await mainAgent.handleMessage('do something');
+    await mainAgent.handleMessage('do something', { mode: 'decompose' });
 
     // The system prompt used in the unassigned path should contain bootstrapPrompt + CHAT_SYSTEM_PROMPT
     expect(systemMessages.length).toBeGreaterThan(0);
@@ -136,7 +136,7 @@ describe('MainAgent bootstrapPrompt', () => {
       llm: mockLLM,
     });
 
-    await mainAgent.handleMessage('do something');
+    await mainAgent.handleMessage('do something', { mode: 'decompose' });
 
     const lastSystem = systemMessages[systemMessages.length - 1];
     expect(lastSystem).toBe('You are a developer assistant powering Gossip Mesh. Be concise and direct.\n\nWhen you want to present the developer with choices, use this format in your response:\n\n[CHOICES]\nmessage: Your question here?\n- option_value | Display Label | Optional hint text\n- option_value | Display Label | Optional hint\n[/CHOICES]\n\nExamples of when to use choices:\n- Multiple approaches to a task (refactor in-place vs extract vs rewrite)\n- Confirming a destructive action (delete files, reset branch)\n- Selecting which files/modules to work on\n- Choosing between trade-offs (speed vs thoroughness)\n\nOnly present choices when there\'s a genuine decision. Don\'t use them for simple yes/no — just ask directly.\nWhen there\'s a clear best option, recommend it but still offer alternatives.');
@@ -191,7 +191,7 @@ describe('MainAgent handleMessage → pipeline integration', () => {
     };
     mainAgent.setWorkers(new Map([['reviewer', mockWorker as any]]));
 
-    const response = await mainAgent.handleMessage('review the code');
+    const response = await mainAgent.handleMessage('review the code', { mode: 'decompose' });
     expect(response.status).toBe('done');
     expect(executeTaskCalls).toContain('review the code');
   });
