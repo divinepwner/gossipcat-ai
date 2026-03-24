@@ -508,7 +508,10 @@ ${c.dim}"exit" to quit.${c.reset}
           console.log(`\n${c.yellow}  Error: ${r?.error || 'Unknown'}${c.reset}\n`);
         }
       } else {
-        process.stdout.write(`${c.dim}  thinking...${c.reset}`);
+        // Show appropriate spinner based on state
+        const hasAgents = configToAgentConfigs(config).length > 0;
+        const spinnerText = hasAgents ? 'thinking...' : 'analyzing project and proposing team...';
+        process.stdout.write(`${c.dim}  ${spinnerText}${c.reset}`);
         const response = await mainAgent.handleMessage(input);
         process.stdout.write('\r\x1b[K');
         await renderResponse(response, input, mainAgent);
