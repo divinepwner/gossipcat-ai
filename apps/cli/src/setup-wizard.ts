@@ -98,7 +98,7 @@ export async function runSetupWizard(): Promise<void> {
   }
 
   const selectedProviders = await p.multiselect({
-    message: 'Which providers do you want to use?',
+    message: 'Which providers do you want to use? (space to toggle, enter to confirm)',
     options: providerOptions,
     required: true,
   });
