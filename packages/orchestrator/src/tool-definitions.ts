@@ -89,9 +89,13 @@ export function buildToolSystemPrompt(
     return `- **${name}**${args} — ${schema.description}`;
   });
 
-  return `## Available Tools
+  // Build explicit agent ID list so LLM uses exact IDs
+  const agentList = _agents.length > 0
+    ? `\n\nYour agents (use these EXACT IDs for dispatch):\n${_agents.map(a => `- **${a.id}** (${a.preset || 'custom'}) — skills: ${a.skills.join(', ')}`).join('\n')}`
+    : '\n\nNo agents configured yet. Use init_project to set up a team.';
 
-See the team context above for available agents.
+  return `## Available Tools
+${agentList}
 
 ${toolLines.join('\n')}
 

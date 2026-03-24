@@ -6929,9 +6929,12 @@ function buildToolSystemPrompt(_agents) {
     const args = schema.requiredArgs.length ? ` (${schema.requiredArgs.join(", ")}${schema.optionalArgs ? ", " + schema.optionalArgs.map((a) => `${a}?`).join(", ") : ""})` : schema.optionalArgs ? ` (${schema.optionalArgs.map((a) => `${a}?`).join(", ")})` : "";
     return `- **${name}**${args} \u2014 ${schema.description}`;
   });
-  return `## Available Tools
+  const agentList = _agents.length > 0 ? `
 
-See the team context above for available agents.
+Your agents (use these EXACT IDs for dispatch):
+${_agents.map((a) => `- **${a.id}** (${a.preset || "custom"}) \u2014 skills: ${a.skills.join(", ")}`).join("\n")}` : "\n\nNo agents configured yet. Use init_project to set up a team.";
+  return `## Available Tools
+${agentList}
 
 ${toolLines.join("\n")}
 

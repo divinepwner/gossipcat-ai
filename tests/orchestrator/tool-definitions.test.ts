@@ -73,8 +73,10 @@ describe('Tool Definitions', () => {
       expect(prompt).toContain('[CHOICES]');
     });
 
-    it('references team context instead of duplicating agent list', () => {
-      expect(prompt).toContain('See the team context above');
+    it('lists agent IDs explicitly for dispatch', () => {
+      expect(prompt).toContain('reviewer');
+      expect(prompt).toContain('writer');
+      expect(prompt).toContain('EXACT IDs');
     });
   });
 });
