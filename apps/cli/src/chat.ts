@@ -169,6 +169,8 @@ export async function startChat(config: GossipConfig): Promise<void> {
     input: process.stdin,
     output: process.stdout,
     prompt: `${c.cyan}>${c.reset} `,
+    historySize: 100,
+    terminal: true,
   });
   rl.prompt();
 
