@@ -367,13 +367,28 @@ export class MainAgent {
         this.projectInitializer.pendingTask = null;
         this.projectInitializer.pendingProposal = null;
 
-        // Show team confirmation — user types their next command
+        // Show team confirmation with option to start working
         const agentList = newAgents.join(', ');
+        const taskHint = task ? `\nReady to start working on: "${task}"` : '';
         return {
-          text: `Team ready! ${newAgents.length} agents online (${agentList}).\n\nNow tell me what to build — I'll plan and dispatch to your agents.`,
+          text: `Team ready! ${newAgents.length} agents online (${agentList}).${taskHint}`,
           status: 'done',
           agents: newAgents,
+          choices: task ? {
+            message: 'Start building?',
+            options: [
+              { value: 'start', label: `Start: ${task.slice(0, 60)}${task.length > 60 ? '...' : ''}` },
+              { value: 'different', label: 'Do something else first' },
+            ],
+          } : undefined,
         };
+      }
+      if (choiceValue === 'start') {
+        // User wants to proceed with the original task
+        return this.handleMessageCognitive(originalMessage);
+      }
+      if (choiceValue === 'different') {
+        return { text: 'What would you like to do?', status: 'done' };
       }
       if (choiceValue === 'modify') {
         // Keep pendingTask so next message re-triggers init with modifications

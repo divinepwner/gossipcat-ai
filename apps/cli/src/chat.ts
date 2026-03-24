@@ -26,17 +26,20 @@ let pendingChoices: { options: Array<{ value: string; label: string; hint?: stri
  * Temporarily takes over stdin in raw mode, renders a selectable list,
  * returns the selected value. Restores stdin state after.
  */
+// Keep a reference to the readline interface so inlineSelect can pause/resume it
+let _rl: Interface | null = null;
+
 function inlineSelect(options: Array<{ value: string; label: string; hint?: string }>): Promise<string | null> {
   return new Promise((resolve) => {
     let selected = 0;
     const stdin = process.stdin;
     const wasRaw = stdin.isRaw;
 
+    // Pause readline to prevent history interference
+    if (_rl) _rl.pause();
+
     function render() {
-      // Move cursor up to redraw (clear previous render)
-      if (selected >= 0) {
-        process.stdout.write(`\x1b[${options.length}A`); // move up N lines
-      }
+      process.stdout.write(`\x1b[${options.length}A`); // move up N lines
       for (let i = 0; i < options.length; i++) {
         const prefix = i === selected ? `${c.cyan}  > ` : '    ';
         const label = i === selected ? `${c.bold}${options[i].label}${c.reset}` : `${c.dim}${options[i].label}${c.reset}`;
@@ -45,10 +48,8 @@ function inlineSelect(options: Array<{ value: string; label: string; hint?: stri
       }
     }
 
-    // Initial render
-    for (const opt of options) {
-      console.log(''); // reserve lines
-    }
+    // Reserve lines and do initial render
+    for (let i = 0; i < options.length; i++) console.log('');
     render();
 
     stdin.setRawMode(true);
@@ -83,6 +84,8 @@ function inlineSelect(options: Array<{ value: string; label: string; hint?: stri
     function cleanup() {
       stdin.removeListener('data', onData);
       stdin.setRawMode(wasRaw ?? false);
+      // Resume readline
+      if (_rl) _rl.resume();
     }
 
     stdin.on('data', onData);
@@ -200,6 +203,7 @@ export async function startChat(config: GossipConfig): Promise<void> {
     historySize: 100,
     terminal: true,
   });
+  _rl = rl; // Store reference for inlineSelect to pause/resume
   rl.prompt();
 
   // Track pending task IDs for /collect
