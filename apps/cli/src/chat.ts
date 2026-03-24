@@ -98,8 +98,8 @@ async function renderResponse(
   originalMessage: string,
   mainAgent: MainAgent,
 ): Promise<void> {
-  // Show agent attribution if multiple agents contributed
-  if (response.agents && response.agents.length > 1) {
+  // Show agent attribution only when agents actually did work (not system messages)
+  if (response.agents && response.agents.length > 1 && !response.choices) {
     console.log(`${c.dim}  Agents: ${response.agents.join(', ')}${c.reset}`);
   }
 

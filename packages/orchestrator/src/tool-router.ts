@@ -587,6 +587,10 @@ export class ToolExecutor {
     if (!this.initializer) {
       return { text: 'Project initialization not available in this context.' };
     }
+    // Don't re-init if agents already exist
+    if (this.registry.getAll().length > 0) {
+      return { text: `Project already has ${this.registry.getAll().length} agents configured. Use update_team to modify the team.` };
+    }
     const description = String(args.description);
     const signals = this.initializer.scanDirectory(this.config.projectRoot);
     this.initializer.pendingTask = description;
