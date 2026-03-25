@@ -132,7 +132,10 @@ export class ProgressTree {
 
   /** Update agent state from a TaskProgressEvent */
   update(agentId: string, event: TaskProgressEvent): void {
-    const state = this.agents.find(a => a.agentId === agentId);
+    // Match by taskIndex (not agentId) — the same agent can handle multiple sequential tasks
+    const state = event.taskIndex != null && event.taskIndex < this.agents.length
+      ? this.agents[event.taskIndex]
+      : this.agents.find(a => a.agentId === agentId);
     if (!state) return;
 
     switch (event.status) {
