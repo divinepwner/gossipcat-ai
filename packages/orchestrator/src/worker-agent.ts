@@ -106,7 +106,11 @@ export class WorkerAgent {
 
 3. **Budget: ${MAX_TOOL_TURNS} tool turns.** Each LLM response that includes tool calls costs 1 turn, regardless of how many tools you call in that response. Use multiple tool calls per turn.
 
-4. **Signal completion.** When you're done, respond with a concise summary (no tool calls) listing: files created/modified, technology choices made, and what the next step should be.`,
+4. **Signal completion.** When you're done, respond with a concise summary (no tool calls) listing: files created/modified, technology choices made, and what the next step should be.
+
+5. **If you're stuck, simplify.** If you hit errors you can't resolve after 2-3 attempts (e.g. TypeScript type errors, build tool config issues, dependency conflicts), STOP trying to fix them. Instead:
+   - Fall back to a simpler approach (plain JavaScript instead of TypeScript, CDN scripts instead of npm/bundler)
+   - Or stop and report what's blocking you — don't burn your remaining turns on the same error`,
       },
       { role: 'user', content: task },
     ];
@@ -116,6 +120,7 @@ export class WorkerAgent {
       const FINAL_AT = MAX_TOOL_TURNS - 1;    // last turn: force finish
       let lastToolSig = '';   // signature of last tool call for repetition detection
       let repeatCount = 0;    // consecutive identical tool calls
+      let consecutiveErrors = 0; // consecutive turns where ALL tool calls return errors
 
       for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
         // Inject any pending gossip before the next LLM turn
@@ -175,6 +180,7 @@ export class WorkerAgent {
         });
 
         // Execute each tool call via relay RPC
+        let turnErrors = 0;
         for (const toolCall of response.toolCalls) {
           let result: string;
           try {
@@ -182,6 +188,7 @@ export class WorkerAgent {
           } catch (err) {
             result = `Error: ${(err as Error).message}`;
           }
+          if (result.startsWith('Error:')) turnErrors++;
           messages.push({
             role: 'tool',
             content: result,
@@ -196,6 +203,20 @@ export class WorkerAgent {
             currentTool: toolCall.name,
             turn,
           });
+        }
+
+        // Detect error loops — if 3 consecutive turns have ALL tool calls failing,
+        // the agent is stuck (e.g. fighting unresolvable build errors)
+        if (turnErrors === response.toolCalls.length) {
+          consecutiveErrors++;
+          if (consecutiveErrors >= 3) {
+            return {
+              result: response.text || 'Task incomplete — agent stuck in error loop. Simplify the approach or check the error messages above.',
+              inputTokens: totalInputTokens, outputTokens: totalOutputTokens,
+            };
+          }
+        } else {
+          consecutiveErrors = 0;
         }
       }
 

@@ -432,6 +432,26 @@ export class MainAgent {
       toolCall = { tool: toolName, args: native.arguments };
     }
 
+    // If the response contains [TOOL_CALL] but parsing failed, the LLM produced
+    // malformed tool call syntax. Retry once with a correction prompt.
+    if (!toolCall && response.text.includes('[TOOL_CALL]')) {
+      const retryMessages: LLMMessage[] = [
+        ...messages,
+        { role: 'assistant', content: response.text },
+        { role: 'user', content: 'Your previous response contained a [TOOL_CALL] block that could not be parsed. Please re-emit the tool call in valid JSON format:\n[TOOL_CALL]\n{"tool": "tool_name", "args": {"key": "value"}}\n[/TOOL_CALL]' },
+      ];
+      try {
+        const retry = await this.llm.generate(retryMessages, hasAgents ? { temperature: 0 } : undefined);
+        toolCall = ToolRouter.parseToolCall(retry.text);
+        if (!toolCall && retry.toolCalls?.length) {
+          const native = retry.toolCalls[0];
+          let toolName = native.name;
+          if (toolName.startsWith('gossip_')) toolName = toolName.replace(/^gossip_/, '');
+          toolCall = { tool: toolName, args: native.arguments };
+        }
+      } catch { /* retry failed — proceed without tool call */ }
+    }
+
     // If the LLM wants to use tools but no agents exist yet, trigger team proposal.
     // This happens naturally after brainstorming: the user describes a project,
     // the orchestrator brainstorms ideas, and when it's ready to act (plan/dispatch),
