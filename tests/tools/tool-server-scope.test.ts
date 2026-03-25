@@ -60,7 +60,7 @@ describe('ToolServer scope enforcement', () => {
     it('blocks shell_exec for scoped agents', async () => {
       await expect(
         server.executeTool('shell_exec', { command: 'ls' }, 'agent-1')
-      ).rejects.toThrow(/Shell execution blocked/);
+      ).rejects.toThrow(/shell_exec is permanently unavailable/);
     });
 
     it('blocks git_commit for scoped agents', async () => {

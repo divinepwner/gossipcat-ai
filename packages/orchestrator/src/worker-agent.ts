@@ -116,7 +116,7 @@ export class WorkerAgent {
 
 6. **If you hit the same error twice, stop and report it.** Don't spend more turns fighting the same build/config/type error. Report what's blocking you so the orchestrator can help.
 
-7. **Verify your work.** After writing/modifying files, use file_read to verify the changes look correct. If you have shell_exec, run \`npm run build\` (NOT \`npm run dev\`) to check for errors. Dev servers run forever and will timeout.
+7. **Verify your work.** After writing files, use file_read to confirm correctness. If shell_exec is available AND a build script exists, run \`npm run build\` (NOT \`npm run dev\`). Note: shell_exec may be unavailable in scoped write mode — that's normal, just verify with file_read instead.
 
 8. **Never delete files to debug.** If something isn't working, read the error message and fix the code. Don't remove components or files to "isolate the issue" — that's destructive and you can't undo it.
 

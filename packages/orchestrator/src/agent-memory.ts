@@ -40,13 +40,20 @@ export class AgentMemoryReader {
       const filePath = join(knowledgeDir, file);
       const content = readFileSync(filePath, 'utf-8');
       const frontmatter = this.parseFrontmatter(content);
-      if (!frontmatter) continue;
 
-      const warmth = this.calculateWarmth(frontmatter.importance, frontmatter.lastAccessed);
-      const relevance = this.calculateRelevance(frontmatter.description, lower);
-
-      if (relevance > 0) {
-        scored.push({ path: filePath, score: warmth * relevance });
+      if (frontmatter) {
+        // File with frontmatter: score by warmth × relevance
+        const warmth = this.calculateWarmth(frontmatter.importance, frontmatter.lastAccessed);
+        const relevance = this.calculateRelevance(frontmatter.description, lower);
+        if (relevance > 0) {
+          scored.push({ path: filePath, score: warmth * relevance });
+        }
+      } else {
+        // Agent-written file without frontmatter: score by content relevance
+        // These are plain .md files written by agents managing their own memory
+        const relevance = this.calculateRelevance(content.slice(0, 500), lower);
+        // Always include recent agent-written files (high base score)
+        scored.push({ path: filePath, score: Math.max(relevance, 0.3) });
       }
     }
 

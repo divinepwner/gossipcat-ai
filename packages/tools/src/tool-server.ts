@@ -167,7 +167,7 @@ export class ToolServer {
     if (toolName === 'shell_exec') {
       // Block shell entirely for scoped agents (can't constrain arbitrary commands)
       if (scope) {
-        throw new Error('Shell execution blocked for scoped write agents');
+        throw new Error('shell_exec is permanently unavailable in scoped write mode. Use file_read to verify your work instead. Do not retry.');
       }
       // Worktree agents: block dangerous patterns
       if (root) {
