@@ -400,7 +400,7 @@ export class MainAgent {
 
     // If the response contains [TOOL_CALL] but parsing failed, the LLM produced
     // malformed tool call syntax. Retry once with a correction prompt.
-    if (!toolCall && response.text.includes('[TOOL_CALL]')) {
+    if (!toolCall && (response.text.includes('[TOOL_CALL]') || response.text.includes('[TOOL_CODE]'))) {
       const retryMessages: LLMMessage[] = [
         ...messages,
         { role: 'assistant', content: response.text },

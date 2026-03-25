@@ -154,30 +154,31 @@ function parseYamlLikeToolCall(content: string): { tool: string; args: Record<st
 
   return { tool, args };
 }
-// Match both [TOOL_CALL]...[/TOOL_CALL] and ```\n[TOOL_CALL]...\n``` formats
-const BLOCK_RE = /\[TOOL_CALL\]([\s\S]*?)\[\/TOOL_CALL\]/g;
-const BLOCK_IN_FENCE_RE = /```[^\n]*\n\[TOOL_CALL\]([\s\S]*?)(?:\[\/TOOL_CALL\])?\s*```/g;
+// Match [TOOL_CALL], [TOOL_CODE], and fenced variants
+const TAG_PATTERN = 'TOOL_CALL|TOOL_CODE';
+const BLOCK_RE = new RegExp(`\\[(?:${TAG_PATTERN})\\]([\\s\\S]*?)\\[\\/(?:${TAG_PATTERN})\\]`, 'g');
+const BLOCK_IN_FENCE_RE = new RegExp(`\`\`\`[^\\n]*\\n\\[(?:${TAG_PATTERN})\\]([\\s\\S]*?)(?:\\[\\/(?:${TAG_PATTERN})\\])?\\s*\`\`\``, 'g');
 
 export class ToolRouter {
-  /** Parse the FIRST [TOOL_CALL] block from LLM text. Returns null on any failure. */
+  /** Parse the FIRST [TOOL_CALL] or [TOOL_CODE] block from LLM text. Returns null on any failure. */
   static parseToolCall(text: string): ToolCall | null {
     try {
-      // Try spec format first: [TOOL_CALL]...[/TOOL_CALL]
-      let match = /\[TOOL_CALL\]([\s\S]*?)\[\/TOOL_CALL\]/.exec(text);
+      // Try spec format first: [TOOL_CALL]...[/TOOL_CALL] or [TOOL_CODE]...[/TOOL_CODE]
+      let match = new RegExp(`\\[(?:${TAG_PATTERN})\\]([\\s\\S]*?)\\[\\/(?:${TAG_PATTERN})\\]`).exec(text);
 
-      // Fallback: [TOOL_CALL] inside markdown code fences (common LLM behavior)
+      // Fallback: inside markdown code fences
       if (!match) {
-        match = /```[^\n]*\n\[TOOL_CALL\]([\s\S]*?)(?:\[\/TOOL_CALL\])?\s*```/.exec(text);
+        match = new RegExp(`\`\`\`[^\\n]*\\n\\[(?:${TAG_PATTERN})\\]([\\s\\S]*?)(?:\\[\\/(?:${TAG_PATTERN})\\])?\\s*\`\`\``).exec(text);
       }
 
-      // Fallback: [TOOL_CALL] without closing tag, ends at double newline or fence
+      // Fallback: [TOOL_CALL] or [TOOL_CODE] without closing tag
       if (!match) {
-        match = /\[TOOL_CALL\]\s*([\s\S]*?)(?:\n\n|\n```)/.exec(text);
+        match = new RegExp(`\\[(?:${TAG_PATTERN})\\]\\s*([\\s\\S]*?)(?:\\n\\n|\\n\`\`\`)`).exec(text);
       }
 
-      // Fallback: [TOOL_CALL] at end of text (no closing tag, no trailing content)
+      // Fallback: at end of text (no closing tag, no trailing content)
       if (!match) {
-        match = /\[TOOL_CALL\]\s*([\s\S]+)$/.exec(text);
+        match = new RegExp(`\\[(?:${TAG_PATTERN})\\]\\s*([\\s\\S]+)$`).exec(text);
       }
 
       if (!match) return null;
@@ -244,6 +245,23 @@ export class ToolRouter {
         }
       }
 
+      // Normalize LLM-invented aliases to real tool names
+      if (typeof tool === 'string' && !TOOL_SCHEMAS[tool]) {
+        const aliases: Record<string, string> = {
+          dispatch_agent: 'dispatch', send_task: 'dispatch',
+          create_plan: 'plan', make_plan: 'plan',
+          list_agents: 'agents', show_agents: 'agents',
+          init: 'init_project', initialize: 'init_project',
+        };
+        if (aliases[tool]) tool = aliases[tool];
+      }
+
+      // Normalize args: LLM may use 'instructions' or 'goal' instead of 'task'
+      if (args.instructions && !args.task) args.task = args.instructions;
+      if (args.goal && !args.task) args.task = args.goal;
+      // 'agent_name' → 'agent_id'
+      if (args.agent_name && !args.agent_id) args.agent_id = args.agent_name;
+
       if (typeof tool !== 'string' || !TOOL_SCHEMAS[tool]) {
         log(`unknown tool: ${tool}`);
         return null;
@@ -300,8 +318,8 @@ export class ToolRouter {
     if (rawMatches) {
       result = result.replace(BLOCK_RE, '');
     }
-    // Strip [TOOL_CALL] at end of text (no closing tag)
-    result = result.replace(/\[TOOL_CALL\][\s\S]*$/, '');
+    // Strip [TOOL_CALL] or [TOOL_CODE] at end of text (no closing tag)
+    result = result.replace(new RegExp(`\\[(?:${TAG_PATTERN})\\][\\s\\S]*$`), '');
     const totalMatches = (fencedMatches?.length ?? 0) + (rawMatches?.length ?? 0);
     if (totalMatches > 1) {
       log(`warning: ${totalMatches} tool call blocks found, stripping all`);
