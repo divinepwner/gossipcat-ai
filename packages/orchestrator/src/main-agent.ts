@@ -272,6 +272,9 @@ export class MainAgent {
   setOverlapDetector(detector: any): void { this.pipeline.setOverlapDetector(detector); }
   setLensGenerator(generator: any): void { this.pipeline.setLensGenerator(generator); }
 
+  /** Health check for active tasks — diagnostics for "is it working?" */
+  getActiveTasksHealth() { return this.pipeline.getActiveTasksHealth(); }
+
   /** Convenience: number of registered agents */
   getAgentCount(): number { return this.registry.getAll().length; }
   /** Convenience: whether any agents are registered */

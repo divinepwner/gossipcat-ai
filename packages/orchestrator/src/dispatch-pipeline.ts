@@ -339,6 +339,26 @@ export class DispatchPipeline {
     };
   }
 
+  /** Get a health summary of all active tasks — for diagnostics when user asks "is it working?" */
+  getActiveTasksHealth(): Array<{
+    id: string; agentId: string; task: string; status: string;
+    elapsedMs: number; toolCalls: number; isLikelyStuck: boolean;
+  }> {
+    const now = Date.now();
+    return Array.from(this.tasks.values())
+      .filter(t => t.status === 'running')
+      .map(t => ({
+        id: t.id,
+        agentId: t.agentId,
+        task: t.task.slice(0, 80),
+        status: t.status,
+        elapsedMs: now - t.startedAt,
+        toolCalls: t.toolCalls ?? 0,
+        // A task running >120s with 0 tool calls is likely stuck
+        isLikelyStuck: (now - t.startedAt > 120_000) && (t.toolCalls ?? 0) === 0,
+      }));
+  }
+
   registerPlan(plan: PlanState): void {
     this.plans.set(plan.id, plan);
   }

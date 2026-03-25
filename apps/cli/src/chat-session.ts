@@ -447,6 +447,7 @@ export class ChatSession {
     plan: 'Plan a task',
     write: 'Set write mode',
     init: 'Initialize project team',
+    health: 'Check if agents are running or stuck',
     image: 'Send clipboard image',
   };
 
@@ -767,6 +768,20 @@ export class ChatSession {
         throw err;
       }
       return true;
+    },
+
+    health: async () => {
+      const activeTasks = this.mainAgent.getActiveTasksHealth();
+      if (activeTasks.length === 0) {
+        this.renderer.info('No active tasks.');
+        return;
+      }
+      const lines = activeTasks.map(t => {
+        const elapsed = (t.elapsedMs / 1000).toFixed(1);
+        const stuck = t.isLikelyStuck ? ' \x1b[31m⚠ LIKELY STUCK\x1b[0m' : '';
+        return `${t.agentId} [${t.id}]: ${t.task} — ${elapsed}s, ${t.toolCalls} tool calls${stuck}`;
+      });
+      this.renderer.section(`Active Tasks (${activeTasks.length})`, lines);
     },
 
     image: async (args: string) => {

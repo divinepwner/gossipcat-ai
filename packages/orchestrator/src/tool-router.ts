@@ -413,8 +413,11 @@ export class ToolExecutor {
             this.onTaskProgress?.({ taskIndex: i, totalTasks: tasks.length, agentId: r.agentId, taskDescription: tasks[i].task, status: 'done', result: r.result });
             lines.push(r.result || '(no output)');
           } else {
-            this.onTaskProgress?.({ taskIndex: i, totalTasks: tasks.length, agentId: r.agentId, taskDescription: tasks[i].task, status: 'error', error: r.error });
-            lines.push(`ERROR: ${r.error || 'unknown'}`);
+            const errorMsg = r.status === 'running'
+              ? `Timed out — agent may be stuck`
+              : (r.error || 'Task failed with no error message');
+            this.onTaskProgress?.({ taskIndex: i, totalTasks: tasks.length, agentId: r.agentId, taskDescription: tasks[i].task, status: 'error', error: errorMsg });
+            lines.push(`ERROR (${r.agentId}): ${errorMsg}`);
           }
         }
 
@@ -478,9 +481,12 @@ export class ToolExecutor {
           results.push(`[${t.agentId}] ${entry.result || '(no output)'}`);
           priorSummaries.push(`- Task ${i + 1} (${t.agentId}): ${(entry.result || '').slice(0, 300)}`);
         } else {
-          this.onTaskProgress?.({ taskIndex: i, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'error', error: entry?.error });
-          results.push(`[${t.agentId}] ERROR: ${entry?.error || 'unknown'}`);
-          priorSummaries.push(`- Task ${i + 1} (${t.agentId}): FAILED — ${entry?.error || 'unknown'}`);
+          const errorMsg = entry?.status === 'running'
+            ? `Timed out after 120s — agent may be stuck`
+            : (entry?.error || 'Task failed with no error message');
+          this.onTaskProgress?.({ taskIndex: i, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'error', error: errorMsg });
+          results.push(`[${t.agentId}] ERROR: ${errorMsg}`);
+          priorSummaries.push(`- Task ${i + 1} (${t.agentId}): FAILED — ${errorMsg}`);
         }
       }
 
@@ -597,8 +603,15 @@ Be concise — 10-15 lines max. The developer has already seen the progress bars
     const collectResult: CollectResultLike = await this.pipeline.collect([taskId], 120_000);
     const entry = collectResult.results[0];
 
-    if (!entry || entry.status === 'failed') {
-      return { text: `Tool error: ${entry?.error ?? 'task failed'}`, agents: [agentId] };
+    if (!entry) {
+      return { text: `Tool error: task ${taskId} returned no result. The agent may have crashed or the relay disconnected.`, agents: [agentId] };
+    }
+    if (entry.status === 'failed') {
+      return { text: `Agent ${agentId} failed: ${entry.error || 'unknown error'}`, agents: [agentId] };
+    }
+    if (entry.status !== 'completed') {
+      // Task still running after timeout — likely hung
+      return { text: `Agent ${agentId} timed out after 120s. The task may be too complex or the agent is stuck. Task: "${task.slice(0, 100)}"`, agents: [agentId] };
     }
 
     return { text: entry.result ?? '', agents: [agentId] };
@@ -624,9 +637,11 @@ Be concise — 10-15 lines max. The developer has already seen the progress bars
     }
 
     const collectResult: CollectResultLike = await this.pipeline.collect(taskIds, 120_000);
-    const lines = collectResult.results.map(r =>
-      `[${r.agentId}] ${r.status === 'completed' ? r.result : `ERROR: ${r.error}`}`
-    );
+    const lines = collectResult.results.map(r => {
+      if (r.status === 'completed') return `[${r.agentId}] ${r.result}`;
+      if (r.status === 'running') return `[${r.agentId}] ERROR: Timed out — agent may be stuck`;
+      return `[${r.agentId}] ERROR: ${r.error || 'failed with no error message'}`;
+    });
 
     return { text: lines.join('\n\n'), agents };
   }
