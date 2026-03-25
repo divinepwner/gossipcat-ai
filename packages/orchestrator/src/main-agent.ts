@@ -466,18 +466,25 @@ export class MainAgent {
     // This ensures the LLM brainstorms at least once rather than jumping straight to
     // team proposal on the first message.
     if (toolCall && !hasAgents && this.conversationHistory.length >= 2) {
-      // Summarize the conversation for the team proposal
+      // Extract the original project description from the first user message in history,
+      // not the current text which may be a choice passthrough like 'I chose: "X". Proceed.'
+      const firstUserMsg = this.conversationHistory.find(m => m.role === 'user');
+      const projectDescription = firstUserMsg && typeof firstUserMsg.content === 'string'
+        ? firstUserMsg.content
+        : text;
+
+      // Build context summary for the LLM (not shown to user)
       const conversationSummary = this.conversationHistory
         .filter(m => m.role === 'user' || m.role === 'assistant')
         .map(m => `${m.role}: ${typeof m.content === 'string' ? m.content.slice(0, 300) : '[media]'}`)
         .join('\n');
-      const taskForProposal = conversationSummary
-        ? `${text}\n\n[Brainstorming context]\n${conversationSummary}`
-        : text;
 
       const signals = this.projectInitializer.scanDirectory(this.projectRoot);
-      this.projectInitializer.pendingTask = text;
-      const proposal = await this.projectInitializer.proposeTeam(taskForProposal, signals);
+      this.projectInitializer.pendingTask = projectDescription;
+      const proposal = await this.projectInitializer.proposeTeam(
+        `${projectDescription}\n\n[Brainstorming context]\n${conversationSummary}`,
+        signals,
+      );
 
       // Record in history
       this.conversationHistory.push(
@@ -485,8 +492,10 @@ export class MainAgent {
         { role: 'assistant', content: proposal.text.slice(0, 1500) },
       );
 
+      // Only show the proposal to the user — don't include the LLM's brainstorming text
+      // or internal context summaries
       return {
-        text: ToolRouter.stripToolCallBlocks(response.text) + '\n\n' + proposal.text,
+        text: proposal.text,
         choices: proposal.choices,
         status: 'done',
       };
