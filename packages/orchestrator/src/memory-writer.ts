@@ -90,16 +90,17 @@ export class MemoryWriter {
     const combined = `${task}\n${result}`;
     const lines: string[] = [];
 
-    // Extract file names mentioned (common patterns from agent output)
-    // Allows articles/prepositions between verb and filename: "created the `index.html`"
-    const filePatterns = combined.match(/(?:created?|modified?|updated?|wrote?|saved?)\s+(?:the\s+|a\s+|an\s+)?(?:new\s+|placeholder\s+|main\s+|core\s+)?[`"']?([a-zA-Z0-9_/.:-]+\.\w{1,5})[`"']?/gi) || [];
-    // Also catch backtick-quoted filenames standalone ("`src/app.js`")
-    const backtickFiles = combined.match(/`([a-zA-Z0-9_/.:-]+\.\w{1,5})`/g) || [];
-    const allMatches = [...filePatterns, ...backtickFiles];
-    const files = [...new Set(allMatches.map(m => {
-      const match = m.match(/[`"']?([a-zA-Z0-9_/.:-]+\.\w{1,5})[`"']?$/);
-      return match ? match[1] : '';
-    }).filter(Boolean))];
+    // Extract file names: find anything that looks like a file path with an extension.
+    // Catches backtick-quoted (`src/app.js`), parenthesized (index.html), and bare paths.
+    const fileRegex = /[`"'(]?([a-zA-Z0-9_/.:-]+\.\w{1,5})[`"')]?/g;
+    const rawMatches: string[] = [];
+    let fm: RegExpExecArray | null;
+    while ((fm = fileRegex.exec(combined)) !== null) rawMatches.push(fm[1]);
+    // Filter: must have a / or start with a letter, exclude common false positives
+    const skipExts = new Set(['e.g', 'i.e', 'etc', 'v1', 'v2', 'No', 'Dr']);
+    const files = [...new Set(rawMatches.filter(f =>
+      f.includes('/') || /^[a-z]/i.test(f) && !skipExts.has(f.split('.')[0])
+    ))];
     if (files.length > 0) {
       lines.push(`Files: ${files.join(', ')}`);
     }
