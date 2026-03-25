@@ -481,10 +481,13 @@ export class MainAgent {
 
       const signals = this.projectInitializer.scanDirectory(this.projectRoot);
       this.projectInitializer.pendingTask = projectDescription;
-      const proposal = await this.projectInitializer.proposeTeam(
-        `${projectDescription}\n\n[Brainstorming context]\n${conversationSummary}`,
-        signals,
-      );
+      // Pass the project description as the user message (shown in proposal prompt)
+      // and the brainstorming context as additional signals (not echoed to user)
+      const enrichedSignals = {
+        ...signals,
+        brainstormContext: conversationSummary,
+      };
+      const proposal = await this.projectInitializer.proposeTeam(projectDescription, enrichedSignals);
 
       // Record in history
       this.conversationHistory.push(

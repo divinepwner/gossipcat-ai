@@ -95,7 +95,7 @@ export class ProjectInitializer {
     // Build explicit model tiers per available provider
     const MODEL_TIERS: Record<string, { best: string; fast: string; cheapest: string }> = {
       google: { best: 'gemini-2.5-pro', fast: 'gemini-2.5-flash', cheapest: 'gemini-2.5-flash' },
-      anthropic: { best: 'claude-sonnet-4-6', fast: 'claude-sonnet-4-6', cheapest: 'claude-haiku-4-5' },
+      anthropic: { best: 'claude-opus-4-6', fast: 'claude-sonnet-4-6', cheapest: 'claude-haiku-4-5' },
       openai: { best: 'gpt-4o', fast: 'gpt-4o', cheapest: 'gpt-4o-mini' },
     };
     const availableModels = providers.map(p => {
@@ -104,10 +104,11 @@ export class ProjectInitializer {
       return `${p}: ${tiers.best} (best), ${tiers.fast} (fast), ${tiers.cheapest} (cheapest)`;
     }).join('\n');
 
+    const brainstormCtx = (signals as any).brainstormContext;
     const systemPrompt = `You are configuring an agent team for a software project.
 
 Project description: "${userMessage}"
-Detected signals: ${summary}
+Detected signals: ${summary}${brainstormCtx ? `\n\nBrainstorming context (use for better team composition, do NOT echo this in your response):\n${brainstormCtx}` : ''}
 
 Available providers and models (use ONLY these exact model names):
 ${availableModels}
@@ -115,14 +116,41 @@ ${availableModels}
 Candidate archetypes (pick one, blend, or customize):
 ${JSON.stringify(candidateData, null, 2)}
 
-Rules:
+## Available Skills (use ONLY these exact names)
+
+Each skill name maps to a real instruction file that gets injected into the agent's prompt.
+
+| Skill name | What it teaches the agent |
+|------------|--------------------------|
+| implementation | TDD, small functions, error handling, <300 line files |
+| typescript | Strict typing, interface-first, discriminated unions, type safety |
+| testing | AAA pattern, unit/integration/e2e, mocking, deterministic tests |
+| code_review | Bug finding, edge cases, naming, structure, error handling |
+| security_audit | OWASP Top 10, injection, auth, secrets, path traversal |
+| debugging | Reproduce, isolate, hypothesize, test, fix, verify |
+| research | Source prioritization, triangulation, BLUF answers |
+| documentation | API docs, guides, ADRs, README, changelog |
+| api_design | REST conventions, HTTP verbs, status codes, pagination |
+| system_design | Components, data flow, failure modes, trade-offs |
+| verification | Evidence-based analysis, quote exact code, no hallucination |
+
+## Preset base skills (always include these for the preset)
+
+- **implementer**: always include "implementation". Add "typescript" for TS projects.
+- **reviewer**: always include "code_review", "verification". Add "security_audit" if relevant.
+- **tester**: always include "testing", "debugging".
+- **researcher**: always include "research". Add "documentation" if the project needs docs.
+
+You may add additional skills from the table above based on project needs. Do NOT invent skill names — only use the exact names from the table.
+
+## Rules
 - Pick the best archetype and customize roles for this specific project
-- Add project-specific skills beyond the defaults
-- Use ONLY the exact model names listed above — never use old or outdated model names
-- Choose models based on project complexity: simple projects can use "fast" for all roles, complex projects should use "best" for critical roles
+- Use ONLY the exact model names listed above
+- Choose models based on project complexity: simple → "fast" for all, complex → "best" for critical roles
 - For the main_agent (orchestrator), use the "best" model from the primary provider
 - Do NOT include agent IDs — the system generates them automatically
-- Max 5 agents
+- **Scale team size to project complexity.** Simple (single-page app, script, simple game) → 1-2 agents. Medium → 2-3. Complex multi-module → 4-5. NEVER duplicate roles.
+- Max 5 agents, prefer fewer. Every agent costs money.
 - If the description is too vague, respond with a [CHOICES] block asking what kind of project
 
 Respond with JSON:
@@ -130,7 +158,7 @@ Respond with JSON:
   "archetype": "archetype-id",
   "reason": "why this archetype fits",
   "main_agent": { "provider": "...", "model": "..." },
-  "agents": [{ "provider": "...", "model": "...", "preset": "...", "skills": [...] }]
+  "agents": [{ "provider": "...", "model": "...", "preset": "...", "skills": ["implementation", "typescript", ...] }]
 }`;
 
     const messages: LLMMessage[] = [
