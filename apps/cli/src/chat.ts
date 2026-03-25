@@ -4,9 +4,10 @@
  * then delegates all interaction to ChatSession.
  */
 
-import { MainAgent, MainAgentConfig, BootstrapGenerator } from '@gossip/orchestrator';
+import { MainAgent, MainAgentConfig, BootstrapGenerator, createProvider, OverlapDetector, LensGenerator, GossipPublisher } from '@gossip/orchestrator';
 import { RelayServer } from '@gossip/relay';
 import { ToolServer } from '@gossip/tools';
+import { GossipAgent } from '@gossip/client';
 import { GossipConfig, configToAgentConfigs } from './config';
 import { Keychain } from './keychain';
 import { ChatSession } from './chat-session';
@@ -67,6 +68,35 @@ export async function startChat(config: GossipConfig): Promise<void> {
 
   const mainAgent = new MainAgent(mainAgentConfig);
   await mainAgent.start();
+
+  // ── Wire agent coordination (same as MCP path) ───────────────────
+
+  // Overlap detection + focus lenses for co-dispatched agents
+  try {
+    const llmForLens = createProvider(config.main_agent.provider, config.main_agent.model, mainKey || undefined);
+    mainAgent.setOverlapDetector(new OverlapDetector());
+    mainAgent.setLensGenerator(new LensGenerator(llmForLens));
+  } catch (err) {
+    process.stderr.write(`[gossipcat] Lens generator failed: ${(err as Error).message}\n`);
+  }
+
+  // Gossip publisher — real-time summaries between parallel agents
+  try {
+    const publisherAgent = new GossipAgent({
+      agentId: 'gossip-publisher',
+      relayUrl: relay.url,
+      reconnect: true,
+    });
+    await publisherAgent.connect();
+    const llmForGossip = createProvider(config.main_agent.provider, config.main_agent.model, mainKey || undefined);
+    const gossipPublisher = new GossipPublisher(
+      llmForGossip,
+      { publishToChannel: (channel: string, data: unknown) => publisherAgent.sendChannel(channel, data as Record<string, unknown>) },
+    );
+    mainAgent.setGossipPublisher(gossipPublisher);
+  } catch (err) {
+    process.stderr.write(`[gossipcat] Gossip publisher failed: ${(err as Error).message}\n`);
+  }
 
   spinner.stop();
 
