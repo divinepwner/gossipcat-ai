@@ -61,7 +61,9 @@ When you DO split:
 
 ## Task descriptions
 
-Describe WHAT to build, not HOW. The agent decides implementation details (components, hooks, file structure). Good: "Build a music grid app with audio playback and scale selection using React + Vite." Bad: "Create an App component with useState for grid state, a Grid component using useRef for canvas..."
+Describe WHAT to build, not HOW. The agent decides implementation details.
+Good: "Build X with Y tech stack. It should support A, B, and C features."
+Bad: "Create a FooComponent with useBar hook, a BazService class with getData method..."
 
 ## Response format
 
