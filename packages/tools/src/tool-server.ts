@@ -207,7 +207,7 @@ export class ToolServer {
       if (!this.agentScopes.has(callerId) && !this.agentRoots.has(callerId)) {
         throw new Error(`Agent ${callerId} is a write agent but has no scope/root registered — rejecting (fail-closed)`);
       }
-      const writableTools = ['file_write', 'shell_exec', 'git_commit', 'git_branch'];
+      const writableTools = ['file_write', 'file_delete', 'shell_exec', 'git_commit', 'git_branch'];
       if (writableTools.includes(name)) {
         this.enforceWriteScope(name, args, callerId);
       }
@@ -234,6 +234,8 @@ export class ToolServer {
         }
         return result;
       }
+      case 'file_delete':
+        return this.fileTools.fileDelete(args as { path: string });
       case 'file_search':
         return this.fileTools.fileSearch(args as { pattern: string });
       case 'file_grep':
@@ -279,8 +281,9 @@ export class ToolServer {
       // Include untracked (new) files — git diff doesn't show them
       const untracked = paths ? await this.gitTools.gitUntrackedDiff(paths) : '';
       fullDiff = [diff, staged, untracked].filter(Boolean).join('\n');
-    } catch (err) {
-      console.warn(`[ToolServer] verify_write git diff failed: ${(err as Error).message}`);
+    } catch {
+      // Silently skip — git diff can fail on new projects with no commits,
+      // untracked directories, or other edge cases. Not critical for verify_write.
     }
 
     if (!fullDiff.trim()) {

@@ -27,6 +27,17 @@ export const FILE_TOOLS: ToolDefinition[] = [
     }
   },
   {
+    name: 'file_delete',
+    description: 'Delete a file',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path relative to project root' }
+      },
+      required: ['path']
+    }
+  },
+  {
     name: 'file_search',
     description: 'Search for files by name pattern (glob-style)',
     parameters: {

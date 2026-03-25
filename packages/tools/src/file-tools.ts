@@ -1,4 +1,4 @@
-import { readFile, writeFile, readdir, stat, mkdir } from 'fs/promises';
+import { readFile, writeFile, readdir, stat, mkdir, unlink } from 'fs/promises';
 import { resolve, relative, join } from 'path';
 import { Sandbox } from './sandbox';
 
@@ -23,6 +23,12 @@ export class FileTools {
     await mkdir(dir, { recursive: true });
     await writeFile(absPath, args.content, 'utf-8');
     return `Written ${args.content.length} bytes to ${args.path}`;
+  }
+
+  async fileDelete(args: { path: string }): Promise<string> {
+    const absPath = this.sandbox.validatePath(args.path);
+    await unlink(absPath);
+    return `Deleted ${args.path}`;
   }
 
   async fileSearch(args: { pattern: string }): Promise<string> {
