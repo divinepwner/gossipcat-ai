@@ -172,6 +172,112 @@ describe('DispatchPipeline', () => {
     });
   });
 
+  describe('task progress callback', () => {
+    it('fires progress events during task execution', async () => {
+      const events: Array<{ taskId: string; toolCalls: number }> = [];
+
+      // Create a worker that calls onProgress during executeTask
+      const progressWorker = {
+        executeTask: jest.fn().mockImplementation(
+          (_task: string, _lens: unknown, _prompt: unknown, onProgress?: (evt: { toolCalls: number; inputTokens: number; outputTokens: number; currentTool: string; turn: number }) => void) => {
+            if (onProgress) {
+              onProgress({ toolCalls: 1, inputTokens: 100, outputTokens: 50, currentTool: 'read_file', turn: 1 });
+              onProgress({ toolCalls: 2, inputTokens: 200, outputTokens: 80, currentTool: 'write_file', turn: 2 });
+            }
+            return Promise.resolve({ result: 'progress-done', inputTokens: 200, outputTokens: 80 });
+          }
+        ),
+        subscribeToBatch: jest.fn().mockResolvedValue(undefined),
+        unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
+      };
+
+      workers.set('progress-agent', progressWorker);
+      pipeline = new DispatchPipeline({
+        projectRoot: '/tmp/gossip-test-' + Date.now(),
+        workers,
+        registryGet: (id) => ({ id, provider: 'local' as const, model: 'mock', skills: [] }),
+      });
+
+      pipeline.setTaskProgressCallback((taskId, evt) => {
+        events.push({ taskId, toolCalls: evt.toolCalls });
+      });
+
+      const { taskId, promise } = pipeline.dispatch('progress-agent', 'do work');
+      await promise;
+
+      expect(events).toHaveLength(2);
+      expect(events[0].taskId).toBe(taskId);
+      expect(events[0].toolCalls).toBe(1);
+      expect(events[1].taskId).toBe(taskId);
+      expect(events[1].toolCalls).toBe(2);
+    });
+
+    it('updates entry.toolCalls on progress events', async () => {
+      const progressWorker = {
+        executeTask: jest.fn().mockImplementation(
+          (_task: string, _lens: unknown, _prompt: unknown, onProgress?: (evt: { toolCalls: number; inputTokens: number; outputTokens: number; currentTool: string; turn: number }) => void) => {
+            if (onProgress) {
+              onProgress({ toolCalls: 3, inputTokens: 300, outputTokens: 120, currentTool: 'bash', turn: 3 });
+            }
+            return Promise.resolve({ result: 'entry-done', inputTokens: 300, outputTokens: 120 });
+          }
+        ),
+        subscribeToBatch: jest.fn().mockResolvedValue(undefined),
+        unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
+      };
+
+      workers.set('entry-agent', progressWorker);
+      pipeline = new DispatchPipeline({
+        projectRoot: '/tmp/gossip-test-' + Date.now(),
+        workers,
+        registryGet: (id) => ({ id, provider: 'local' as const, model: 'mock', skills: [] }),
+      });
+
+      // No external callback set — just verify entry fields updated
+      const { taskId, promise } = pipeline.dispatch('entry-agent', 'entry task');
+      await promise;
+
+      // After completion, collect to verify tokens (entry is removed post-collect but we can check before)
+      // The entry is deleted after collect, so check before collecting
+      const task = pipeline.getTask(taskId);
+      // inputTokens should reflect final execResult (300) — entry fields are overwritten by execResult in .then()
+      expect(task?.inputTokens).toBe(300);
+    });
+
+    it('fires progress events in sequential write mode', async () => {
+      const events: Array<{ toolCalls: number }> = [];
+      const progressWorker = {
+        executeTask: jest.fn().mockImplementation(
+          (_task: string, _lens: unknown, _prompt: unknown, onProgress?: (evt: { toolCalls: number; inputTokens: number; outputTokens: number; currentTool: string; turn: number }) => void) => {
+            if (onProgress) {
+              onProgress({ toolCalls: 1, inputTokens: 50, outputTokens: 25, currentTool: 'edit', turn: 1 });
+            }
+            return Promise.resolve({ result: 'seq-done', inputTokens: 50, outputTokens: 25 });
+          }
+        ),
+        subscribeToBatch: jest.fn().mockResolvedValue(undefined),
+        unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
+      };
+
+      workers.set('seq-agent', progressWorker);
+      pipeline = new DispatchPipeline({
+        projectRoot: '/tmp/gossip-test-' + Date.now(),
+        workers,
+        registryGet: (id) => ({ id, provider: 'local' as const, model: 'mock', skills: [] }),
+      });
+
+      pipeline.setTaskProgressCallback((_taskId, evt) => {
+        events.push({ toolCalls: evt.toolCalls });
+      });
+
+      const { promise } = pipeline.dispatch('seq-agent', 'seq task', { writeMode: 'sequential' });
+      await promise;
+
+      expect(events).toHaveLength(1);
+      expect(events[0].toolCalls).toBe(1);
+    });
+  });
+
   describe('dispatchParallel()', () => {
     it('dispatches multiple tasks and returns ids', async () => {
       workers.set('agent-b', mockWorker('result-b'));

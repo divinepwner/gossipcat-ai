@@ -21,11 +21,12 @@ import { LensGenerator } from './lens-generator';
 import { ConsensusEngine } from './consensus-engine';
 import { PerformanceWriter } from './performance-writer';
 import { CollectResult } from './consensus-types';
+import { WorkerProgressCallback } from './worker-agent';
 
 const log = (msg: string) => process.stderr.write(`[gossipcat] ${msg}\n`);
 
 interface WorkerLike {
-  executeTask(task: string, lens?: string, promptContent?: string): Promise<TaskExecutionResult>;
+  executeTask(task: string, lens?: string, promptContent?: string, onProgress?: WorkerProgressCallback): Promise<TaskExecutionResult>;
   subscribeToBatch?(batchId: string): Promise<void>;
   unsubscribeFromBatch?(batchId: string): Promise<void>;
 }
@@ -80,6 +81,11 @@ export class DispatchPipeline {
   private lensGenerator: LensGenerator | null = null;
   private bootWarningShown = false;
 
+  private taskProgressCallback: ((taskId: string, event: { toolCalls: number; inputTokens: number; outputTokens: number; currentTool: string; turn: number }) => void) | null = null;
+
+  setTaskProgressCallback(cb: typeof this.taskProgressCallback): void {
+    this.taskProgressCallback = cb;
+  }
 
   constructor(config: DispatchPipelineConfig) {
     this.projectRoot = config.projectRoot;
@@ -197,8 +203,14 @@ export class DispatchPipeline {
 
     // 8. Execute (with write-mode awareness)
     if (options?.writeMode === 'sequential') {
+      const progressCb: WorkerProgressCallback = (evt) => {
+        entry.toolCalls = evt.toolCalls;
+        entry.inputTokens = evt.inputTokens;
+        entry.outputTokens = evt.outputTokens;
+        this.taskProgressCallback?.(taskId, evt);
+      };
       entry.promise = this.enqueueSequential(() =>
-        worker.executeTask(task, undefined, promptContent)
+        worker.executeTask(task, undefined, promptContent, progressCb)
       ).then((execResult: TaskExecutionResult) => {
         entry.status = 'completed';
         entry.result = execResult.result;
@@ -218,7 +230,13 @@ export class DispatchPipeline {
       }
       this.scopeTracker.register(options.scope, taskId);
       this.toolServer?.assignScope(agentId, options.scope);
-      entry.promise = worker.executeTask(task, undefined, promptContent)
+      const progressCb: WorkerProgressCallback = (evt) => {
+        entry.toolCalls = evt.toolCalls;
+        entry.inputTokens = evt.inputTokens;
+        entry.outputTokens = evt.outputTokens;
+        this.taskProgressCallback?.(taskId, evt);
+      };
+      entry.promise = worker.executeTask(task, undefined, promptContent, progressCb)
         .then((execResult: TaskExecutionResult) => {
           entry.status = 'completed';
           entry.result = execResult.result;
@@ -235,10 +253,16 @@ export class DispatchPipeline {
           throw err;
         });
     } else if (options?.writeMode === 'worktree') {
+      const progressCb: WorkerProgressCallback = (evt) => {
+        entry.toolCalls = evt.toolCalls;
+        entry.inputTokens = evt.inputTokens;
+        entry.outputTokens = evt.outputTokens;
+        this.taskProgressCallback?.(taskId, evt);
+      };
       entry.promise = this.worktreeManager.create(taskId).then(({ path, branch }) => {
         entry.worktreeInfo = { path, branch };
         this.toolServer?.assignRoot(agentId, path);
-        return worker.executeTask(task, undefined, promptContent);
+        return worker.executeTask(task, undefined, promptContent, progressCb);
       }).then((execResult: TaskExecutionResult) => {
         entry.status = 'completed';
         entry.result = execResult.result;
@@ -254,7 +278,13 @@ export class DispatchPipeline {
       });
     } else {
       // Default: fire-and-forget (read-only)
-      entry.promise = worker.executeTask(task, undefined, promptContent)
+      const progressCb: WorkerProgressCallback = (evt) => {
+        entry.toolCalls = evt.toolCalls;
+        entry.inputTokens = evt.inputTokens;
+        entry.outputTokens = evt.outputTokens;
+        this.taskProgressCallback?.(taskId, evt);
+      };
+      entry.promise = worker.executeTask(task, undefined, promptContent, progressCb)
         .then((execResult: TaskExecutionResult) => {
           entry.status = 'completed';
           entry.result = execResult.result;
