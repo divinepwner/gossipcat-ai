@@ -4,7 +4,7 @@
  * then delegates all interaction to ChatSession.
  */
 
-import { MainAgent, MainAgentConfig, BootstrapGenerator, createProvider, OverlapDetector, LensGenerator, GossipPublisher } from '@gossip/orchestrator';
+import { MainAgent, MainAgentConfig, BootstrapGenerator, createProvider, OverlapDetector, LensGenerator, GossipPublisher, AgentConfig } from '@gossip/orchestrator';
 import { RelayServer } from '@gossip/relay';
 import { ToolServer } from '@gossip/tools';
 import { GossipAgent } from '@gossip/client';
@@ -12,6 +12,61 @@ import { GossipConfig, configToAgentConfigs } from './config';
 import { Keychain } from './keychain';
 import { ChatSession } from './chat-session';
 import { Spinner } from './spinner';
+import { existsSync, readFileSync, readdirSync } from 'fs';
+import { join } from 'path';
+
+/** Load project context from agent memory and task history for session continuity */
+function loadProjectContext(projectRoot: string, agents: AgentConfig[]): { summary: string; details: string } | null {
+  const parts: string[] = [];
+
+  // Read config for project archetype
+  try {
+    const configPath = join(projectRoot, '.gossip', 'config.json');
+    if (existsSync(configPath)) {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+      if (config.project?.archetype) parts.push(`Type: ${config.project.archetype}`);
+    }
+  } catch { /* skip */ }
+
+  // Read recent tasks from the first agent's memory
+  for (const agent of agents) {
+    try {
+      const tasksPath = join(projectRoot, '.gossip', 'agents', agent.id, 'memory', 'tasks.jsonl');
+      if (!existsSync(tasksPath)) continue;
+      const lines = readFileSync(tasksPath, 'utf-8').trim().split('\n').filter(Boolean);
+      const recent = lines.slice(-3).reverse();
+      for (const line of recent) {
+        try {
+          const entry = JSON.parse(line);
+          parts.push(entry.task?.slice(0, 100) || '');
+        } catch { /* skip */ }
+      }
+      break; // only need one agent's history
+    } catch { /* skip */ }
+  }
+
+  // Read knowledge files for tech/file info
+  for (const agent of agents) {
+    try {
+      const knowledgeDir = join(projectRoot, '.gossip', 'agents', agent.id, 'memory', 'knowledge');
+      if (!existsSync(knowledgeDir)) continue;
+      const files = readdirSync(knowledgeDir).filter(f => f.endsWith('.md')).slice(-3);
+      for (const file of files) {
+        const content = readFileSync(join(knowledgeDir, file), 'utf-8');
+        // Extract the body (after frontmatter)
+        const bodyMatch = content.match(/---\n[\s\S]*?\n---\n([\s\S]*)/);
+        if (bodyMatch) parts.push(bodyMatch[1].trim().slice(0, 200));
+      }
+      break;
+    } catch { /* skip */ }
+  }
+
+  if (parts.length === 0) return null;
+
+  const summary = parts[0]?.slice(0, 80) || 'Project in progress';
+  const details = parts.filter(Boolean).join('\n');
+  return { summary, details };
+}
 
 export async function startChat(config: GossipConfig): Promise<void> {
   // Register early so boot errors don't crash without cleanup
@@ -138,6 +193,14 @@ export async function startChat(config: GossipConfig): Promise<void> {
     console.log('  \x1b[2mType / + Enter for commands, Tab to autocomplete\x1b[0m\n');
   } else {
     console.log(`Ready — ${agentCount} agent${agentCount !== 1 ? 's' : ''} online (${orchestratorLabel}, relay :${relay.port})`);
+
+    // Load project context from previous sessions
+    const projectContext = loadProjectContext(process.cwd(), configToAgentConfigs(config));
+    if (projectContext) {
+      console.log(`\n  \x1b[2mProject: ${projectContext.summary}\x1b[0m`);
+      // Seed the orchestrator so it knows what the project is about
+      mainAgent.seedContext(`This is a returning session. Here's what we've been working on:\n${projectContext.details}`);
+    }
     console.log('  \x1b[2mType / + Enter for commands, Tab to autocomplete\x1b[0m\n');
   }
 

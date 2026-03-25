@@ -193,6 +193,14 @@ export class MainAgent {
   /** Health check for active tasks — diagnostics for "is it working?" */
   getActiveTasksHealth() { return this.pipeline.getActiveTasksHealth(); }
 
+  /** Seed conversation history with project context from a prior session */
+  seedContext(context: string): void {
+    this.conversationHistory.push(
+      { role: 'user', content: 'What is this project about?' },
+      { role: 'assistant', content: context },
+    );
+  }
+
   /** Convenience: number of registered agents */
   getAgentCount(): number { return this.registry.getAll().length; }
   /** Convenience: whether any agents are registered */
