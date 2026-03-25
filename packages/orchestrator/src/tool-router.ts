@@ -4,7 +4,7 @@
  */
 
 import { TOOL_SCHEMAS, PLAN_CHOICES, PENDING_PLAN_CHOICES } from './tool-definitions';
-import type { ToolCall, ToolResult, DispatchPlan, PlannedTask } from './types';
+import type { ToolCall, ToolResult, DispatchPlan, PlannedTask, TaskProgressEvent } from './types';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -260,10 +260,39 @@ export class ToolExecutor {
     }
   }
 
+  /**
+   * Progress callback for plan execution.
+   * Called for init, start, progress, done, error, and finish events.
+   */
+  onTaskProgress: ((event: TaskProgressEvent) => void) | null = null;
+
   async executePlan(pending: { plan: DispatchPlan; tasks: PlannedTask[] }): Promise<ToolResult> {
     try {
       const { plan, tasks } = pending;
-      const agents: string[] = [];
+      const agentSet = new Set<string>();
+
+      // Emit init event
+      this.onTaskProgress?.({
+        taskIndex: 0, totalTasks: tasks.length,
+        agentId: '', taskDescription: '',
+        status: 'init',
+        agents: tasks.map(t => ({ agentId: t.agentId, task: t.task })),
+      });
+
+      // Wire pipeline progress callback
+      const taskIdToIndex = new Map<string, number>();
+      this.pipeline.setTaskProgressCallback?.((taskId: string, evt: any) => {
+        const idx = taskIdToIndex.get(taskId);
+        if (idx != null) {
+          this.onTaskProgress?.({
+            taskIndex: idx, totalTasks: tasks.length,
+            agentId: tasks[idx].agentId, taskDescription: tasks[idx].task,
+            status: 'progress',
+            toolCalls: evt.toolCalls, inputTokens: evt.inputTokens,
+            outputTokens: evt.outputTokens, currentTool: evt.currentTool, turn: evt.turn,
+          });
+        }
+      });
 
       if (plan.strategy === 'parallel') {
         const taskDefs = tasks.map(t => ({
@@ -271,33 +300,76 @@ export class ToolExecutor {
           task: t.task,
           options: t.writeMode ? { writeMode: t.writeMode, scope: t.scope } : undefined,
         }));
-        const { taskIds, errors } = await this.pipeline.dispatchParallel(taskDefs);
-        if (errors.length > 0) {
-          const taskSummary = tasks.map(t => `  - [${t.agentId}] ${t.task}`).join('\n');
-          return { text: `Plan execution failed.\n\nErrors:\n${errors.map((e: string) => `  - ${e}`).join('\n')}\n\nPlanned tasks:\n${taskSummary}` };
+
+        for (const t of tasks) {
+          agentSet.add(t.agentId);
+          this.onTaskProgress?.({ taskIndex: 0, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'start' });
         }
-        const collectResult: CollectResultLike = await this.pipeline.collect(taskIds, 120_000);
-        const lines = collectResult.results.map(r =>
-          `[${r.agentId}] ${r.status === 'completed' ? r.result : `ERROR: ${r.error}`}`
-        );
-        agents.push(...tasks.map(t => t.agentId));
-        return { text: lines.join('\n\n'), agents };
+
+        const { taskIds, errors } = await this.pipeline.dispatchParallel(taskDefs);
+        for (let i = 0; i < taskIds.length; i++) {
+          taskIdToIndex.set(taskIds[i], i);
+        }
+        if (errors.length > 0) {
+          return { text: `Plan execution failed.\n\nErrors:\n${errors.map((e: string) => `  - ${e}`).join('\n')}` };
+        }
+        const collectResult: CollectResultLike = await this.pipeline.collect(taskIds, 300_000);
+        const lines: string[] = [];
+        for (let i = 0; i < collectResult.results.length; i++) {
+          const r = collectResult.results[i];
+          agentSet.add(r.agentId);
+          if (r.status === 'completed') {
+            this.onTaskProgress?.({ taskIndex: i + 1, totalTasks: tasks.length, agentId: r.agentId, taskDescription: tasks[i].task, status: 'done', result: r.result });
+            lines.push(r.result || '(no output)');
+          } else {
+            this.onTaskProgress?.({ taskIndex: i + 1, totalTasks: tasks.length, agentId: r.agentId, taskDescription: tasks[i].task, status: 'error', error: r.error });
+            lines.push(`ERROR: ${r.error || 'unknown'}`);
+          }
+        }
+
+        // Emit finish event
+        this.onTaskProgress?.({
+          taskIndex: tasks.length, totalTasks: tasks.length,
+          agentId: '', taskDescription: '', status: 'finish',
+        });
+
+        return { text: lines.join('\n\n'), agents: [...agentSet] };
       }
 
-      // Sequential: dispatch one by one
+      // Sequential: dispatch one by one with progress
       const results: string[] = [];
-      for (const t of tasks) {
+      for (let i = 0; i < tasks.length; i++) {
+        const t = tasks[i];
+        agentSet.add(t.agentId);
+        this.onTaskProgress?.({ taskIndex: i + 1, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'start' });
+
         const opts = t.writeMode ? { writeMode: t.writeMode, scope: t.scope } : undefined;
         const { taskId } = this.pipeline.dispatch(t.agentId, t.task, opts);
+        taskIdToIndex.set(taskId, i);
         const collectResult: CollectResultLike = await this.pipeline.collect([taskId], 120_000);
         const entry = collectResult.results[0];
-        results.push(`[${t.agentId}] ${entry?.status === 'completed' ? entry.result : `ERROR: ${entry?.error}`}`);
-        agents.push(t.agentId);
+
+        if (entry?.status === 'completed') {
+          this.onTaskProgress?.({ taskIndex: i + 1, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'done', result: entry.result });
+          results.push(`[${t.agentId}] ${entry.result || '(no output)'}`);
+        } else {
+          this.onTaskProgress?.({ taskIndex: i + 1, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'error', error: entry?.error });
+          results.push(`[${t.agentId}] ERROR: ${entry?.error || 'unknown'}`);
+        }
       }
-      return { text: results.join('\n\n'), agents };
+
+      // Emit finish event
+      this.onTaskProgress?.({
+        taskIndex: tasks.length, totalTasks: tasks.length,
+        agentId: '', taskDescription: '', status: 'finish',
+      });
+
+      return { text: results.join('\n\n'), agents: [...agentSet] };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       return { text: `Tool error: ${message}` };
+    } finally {
+      this.pipeline.setTaskProgressCallback?.(null);
     }
   }
 

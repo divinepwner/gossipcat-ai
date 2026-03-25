@@ -582,3 +582,90 @@ describe('ToolExecutor', () => {
     expect(result.agents).toEqual(['reviewer', 'writer']);
   });
 });
+
+describe('ToolExecutor plan progress events', () => {
+  it('emits init, start, done, and finish events during sequential executePlan', async () => {
+    const events: Array<{ status: string; agentId?: string }> = [];
+    const mockPipeline = {
+      dispatch: jest.fn().mockReturnValue({ taskId: 'task-1' }),
+      collect: jest.fn().mockResolvedValue({
+        results: [{ agentId: 'impl', status: 'completed', result: 'done' }],
+      }),
+      setTaskProgressCallback: jest.fn(),
+    };
+    const mockRegistry = { get: jest.fn().mockReturnValue({ id: 'impl' }) };
+    const executor = new ToolExecutor({
+      pipeline: mockPipeline,
+      registry: mockRegistry,
+      projectRoot: '/tmp/test',
+    });
+
+    executor.onTaskProgress = (event: any) => {
+      events.push({ status: event.status, agentId: event.agentId || undefined });
+    };
+
+    await executor.executePlan({
+      plan: { originalTask: 'test', strategy: 'sequential', subTasks: [] },
+      tasks: [{ agentId: 'impl', task: 'build it', access: 'write' as const }],
+    });
+
+    const statuses = events.map(e => e.status);
+    expect(statuses[0]).toBe('init');
+    expect(statuses).toContain('start');
+    expect(statuses).toContain('done');
+    expect(statuses[statuses.length - 1]).toBe('finish');
+  });
+
+  it('emits init event with agents list', async () => {
+    const events: any[] = [];
+    const mockPipeline = {
+      dispatch: jest.fn().mockReturnValue({ taskId: 't1' }),
+      collect: jest.fn()
+        .mockResolvedValueOnce({ results: [{ agentId: 'impl', status: 'completed', result: 'built' }] })
+        .mockResolvedValueOnce({ results: [{ agentId: 'review', status: 'completed', result: 'reviewed' }] }),
+      setTaskProgressCallback: jest.fn(),
+    };
+    const executor = new ToolExecutor({
+      pipeline: mockPipeline,
+      registry: { get: jest.fn().mockReturnValue({ id: 'a' }) },
+      projectRoot: '/tmp',
+    });
+    executor.onTaskProgress = (e: any) => events.push(e);
+
+    await executor.executePlan({
+      plan: { originalTask: 'test', strategy: 'sequential', subTasks: [] },
+      tasks: [
+        { agentId: 'impl', task: 'build', access: 'write' as const },
+        { agentId: 'review', task: 'review', access: 'read' as const },
+      ],
+    });
+
+    const init = events.find(e => e.status === 'init');
+    expect(init.agents).toEqual([
+      { agentId: 'impl', task: 'build' },
+      { agentId: 'review', task: 'review' },
+    ]);
+  });
+
+  it('cleans up pipeline callback in finally block', async () => {
+    const mockPipeline = {
+      dispatch: jest.fn().mockReturnValue({ taskId: 't1' }),
+      collect: jest.fn().mockRejectedValue(new Error('boom')),
+      setTaskProgressCallback: jest.fn(),
+    };
+    const executor = new ToolExecutor({
+      pipeline: mockPipeline,
+      registry: { get: jest.fn().mockReturnValue({ id: 'a' }) },
+      projectRoot: '/tmp',
+    });
+
+    await executor.executePlan({
+      plan: { originalTask: 'test', strategy: 'sequential', subTasks: [] },
+      tasks: [{ agentId: 'a', task: 'x', access: 'write' as const }],
+    });
+
+    // setTaskProgressCallback should have been called with null in finally
+    const calls = mockPipeline.setTaskProgressCallback.mock.calls;
+    expect(calls[calls.length - 1][0]).toBeNull();
+  });
+});

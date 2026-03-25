@@ -9,7 +9,7 @@ import { ILLMProvider, createProvider } from './llm-client';
 import { AgentRegistry } from './agent-registry';
 import { TaskDispatcher } from './task-dispatcher';
 import { WorkerAgent } from './worker-agent';
-import { AgentConfig, DispatchOptions, PlanState, TaskResult, ChatResponse, HandleMessageOptions } from './types';
+import { AgentConfig, DispatchOptions, PlanState, TaskResult, ChatResponse, HandleMessageOptions, TaskProgressEvent } from './types';
 import { ALL_TOOLS } from '@gossip/tools';
 import { ContentBlock, TextContent, MessageType, MessageEnvelope, Message, LLMMessage } from '@gossip/types';
 import { GossipAgent } from '@gossip/client';
@@ -279,15 +279,7 @@ export class MainAgent {
   getAgentList(): AgentConfig[] { return this.registry.getAll(); }
 
   /** Set a progress callback for plan execution */
-  onTaskProgress(cb: (event: {
-    taskIndex: number;
-    totalTasks: number;
-    agentId: string;
-    taskDescription: string;
-    status: 'start' | 'done' | 'error';
-    result?: string;
-    error?: string;
-  }) => void): void {
+  onTaskProgress(cb: (event: TaskProgressEvent) => void): void {
     this.toolExecutor.onTaskProgress = cb;
   }
 
