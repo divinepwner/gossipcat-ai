@@ -112,7 +112,9 @@ export class WorkerAgent {
 
 6. **If you hit the same error twice, stop and report it.** Don't spend more turns fighting the same build/config/type error. Report what's blocking you so the orchestrator can help.
 
-7. **Verify your work.** After writing/modifying files, use file_read to verify the changes look correct. If you have shell_exec, run the build or open the file to check for syntax errors. Don't assume your code is correct — check it.`,
+7. **Verify your work.** After writing/modifying files, use file_read to verify the changes look correct. If you have shell_exec, run \`npm run build\` (NOT \`npm run dev\`) to check for errors. Dev servers run forever and will timeout.
+
+8. **Never delete files to debug.** If something isn't working, read the error message and fix the code. Don't remove components or files to "isolate the issue" — that's destructive and you can't undo it.`,
       },
       { role: 'user', content: task },
     ];

@@ -77,7 +77,7 @@ export const FILE_TOOLS: ToolDefinition[] = [
 export const SHELL_TOOLS: ToolDefinition[] = [
   {
     name: 'shell_exec',
-    description: 'Execute a shell command in the project directory',
+    description: 'Execute a shell command (60s timeout). Use for: npm install, npm run build, npx tsc --noEmit, etc. NEVER run dev servers (npm run dev, npm start) — they run forever and will timeout.',
     parameters: {
       type: 'object',
       properties: {
