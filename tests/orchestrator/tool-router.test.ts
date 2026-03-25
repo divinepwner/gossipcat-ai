@@ -617,9 +617,12 @@ describe('ToolExecutor', () => {
     expect(mockPipeline.dispatch).toHaveBeenCalledTimes(2);
     expect(mockPipeline.dispatchParallel).not.toHaveBeenCalled();
 
-    // First dispatch with reviewer, second with writer
+    // First dispatch with reviewer (no prior context), second with writer (has context from task 1)
     expect(mockPipeline.dispatch).toHaveBeenNthCalledWith(1, 'reviewer', 'review first', undefined);
-    expect(mockPipeline.dispatch).toHaveBeenNthCalledWith(2, 'writer', 'write second', undefined);
+    const secondCall = mockPipeline.dispatch.mock.calls[1];
+    expect(secondCall[0]).toBe('writer');
+    expect(secondCall[1]).toContain('write second');
+    expect(secondCall[1]).toContain('Context from prior tasks'); // injected context from task 1
 
     // collect called once per task sequentially
     expect(mockPipeline.collect).toHaveBeenCalledTimes(2);

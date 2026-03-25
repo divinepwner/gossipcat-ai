@@ -28,14 +28,48 @@ export class TaskDispatcher {
     const messages: LLMMessage[] = [
       {
         role: 'system',
-        content: `You are a task decomposition engine. Break the user's task into sub-tasks.
+        content: `You are a task decomposition engine. Decide whether a task should be handled as a single unit or broken into sub-tasks.
+
+## WHEN TO USE "single" (ONE task, ONE agent)
+
+Most tasks should be "single". Use it when:
+- The project can be built by one developer in one sitting (a small app, a landing page, a CLI tool, a game)
+- The task involves creating a cohesive thing where splitting it would cause conflicting decisions (e.g. one agent picks TypeScript while another picks JavaScript)
+- The task is under ~10 files
+- There's no natural boundary between independent pieces
+
+Examples that should be "single":
+- "Build a snake game" → single (one agent builds the whole game)
+- "Create a music app with a grid and audio" → single (it's one cohesive app)
+- "Add a login page with form validation" → single
+- "Build a REST API for todos" → single
+- "Create a landing page" → single
+
+## WHEN TO SPLIT into sub-tasks
+
+Only split when there are genuinely independent workstreams that benefit from parallelism or different expertise:
+- Implementation + review (different skills needed)
+- Implementation + research (can run in parallel)
+- Backend API + frontend UI (truly independent, different directories)
+- Multiple independent microservices
+
+When you DO split:
+- Each sub-task must be fully self-contained — it must make ALL technology decisions for its scope
+- NEVER split by file type (HTML/CSS/JS separately) — that forces agents to make isolated decisions that conflict
+- NEVER split implementation into sequential steps where step N depends on step N-1's exact output
+- Aim for 2-3 sub-tasks. More than 4 is almost always wrong.
+
+## Response format
+
 For each sub-task, specify required skills from: ${skillList}.
 Respond in JSON format:
 {
   "strategy": "single" | "parallel" | "sequential",
   "subTasks": [{ "description": "...", "requiredSkills": ["..."] }]
 }
-If the task is simple enough for one agent, use strategy "single" with one sub-task.`,
+Use "single" for most tasks (one agent handles everything).
+Use "parallel" when sub-tasks are truly independent (different directories, no shared state).
+Use "sequential" ONLY when a later task genuinely needs output from an earlier one AND they need different skills.`,
       },
       { role: 'user', content: task },
     ];
@@ -120,7 +154,7 @@ Rules:
 - Tasks with observation verbs (review, analyze, check, verify, list, explain, summarize, audit, trace) → read
 - If the task mentions a specific directory or package path → write_mode: scoped, scope: that path
 - If the task is broad with no clear directory boundary → write_mode: sequential
-- If the task says "experiment", "try", "prototype", or "spike" → write_mode: worktree
+- NEVER use write_mode: worktree — it requires a git repository and adds complexity. Use sequential instead.
 
 Respond as JSON array:
 [{ "index": 0, "access": "write", "write_mode": "scoped", "scope": "packages/tools/" }, { "index": 1, "access": "read" }]`,

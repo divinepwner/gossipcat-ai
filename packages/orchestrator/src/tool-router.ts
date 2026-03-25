@@ -408,10 +408,10 @@ export class ToolExecutor {
           const r = collectResult.results[i];
           agentSet.add(r.agentId);
           if (r.status === 'completed') {
-            this.onTaskProgress?.({ taskIndex: i + 1, totalTasks: tasks.length, agentId: r.agentId, taskDescription: tasks[i].task, status: 'done', result: r.result });
+            this.onTaskProgress?.({ taskIndex: i, totalTasks: tasks.length, agentId: r.agentId, taskDescription: tasks[i].task, status: 'done', result: r.result });
             lines.push(r.result || '(no output)');
           } else {
-            this.onTaskProgress?.({ taskIndex: i + 1, totalTasks: tasks.length, agentId: r.agentId, taskDescription: tasks[i].task, status: 'error', error: r.error });
+            this.onTaskProgress?.({ taskIndex: i, totalTasks: tasks.length, agentId: r.agentId, taskDescription: tasks[i].task, status: 'error', error: r.error });
             lines.push(`ERROR: ${r.error || 'unknown'}`);
           }
         }
@@ -425,25 +425,37 @@ export class ToolExecutor {
         return { text: lines.join('\n\n'), agents: [...agentSet] };
       }
 
-      // Sequential: dispatch one by one with progress
+      // Sequential: dispatch one by one with progress.
+      // Each subsequent task gets a summary of what prior tasks did, so agents
+      // don't make conflicting decisions (e.g. one picks TypeScript, another JS).
       const results: string[] = [];
+      const priorContext: string[] = [];
       for (let i = 0; i < tasks.length; i++) {
         const t = tasks[i];
         agentSet.add(t.agentId);
-        this.onTaskProgress?.({ taskIndex: i + 1, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'start' });
+        this.onTaskProgress?.({ taskIndex: i, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'start' });
+
+        // Inject prior task results as context so sequential agents don't conflict
+        let taskWithContext = t.task;
+        if (priorContext.length > 0) {
+          taskWithContext = `${t.task}\n\n[Context from prior tasks — follow the same technology choices and file structure]\n${priorContext.join('\n')}`;
+        }
 
         const opts = t.writeMode ? { writeMode: t.writeMode, scope: t.scope } : undefined;
-        const { taskId } = this.pipeline.dispatch(t.agentId, t.task, opts);
+        const { taskId } = this.pipeline.dispatch(t.agentId, taskWithContext, opts);
         taskIdToIndex.set(taskId, i);
         const collectResult: CollectResultLike = await this.pipeline.collect([taskId], 120_000);
         const entry = collectResult.results[0];
 
         if (entry?.status === 'completed') {
-          this.onTaskProgress?.({ taskIndex: i + 1, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'done', result: entry.result });
+          this.onTaskProgress?.({ taskIndex: i, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'done', result: entry.result });
+          const summary = (entry.result || '').slice(0, 500);
           results.push(`[${t.agentId}] ${entry.result || '(no output)'}`);
+          priorContext.push(`- Task ${i + 1} (${t.agentId}): ${summary}`);
         } else {
-          this.onTaskProgress?.({ taskIndex: i + 1, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'error', error: entry?.error });
+          this.onTaskProgress?.({ taskIndex: i, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'error', error: entry?.error });
           results.push(`[${t.agentId}] ERROR: ${entry?.error || 'unknown'}`);
+          priorContext.push(`- Task ${i + 1} (${t.agentId}): FAILED — ${entry?.error || 'unknown'}`);
         }
       }
 
