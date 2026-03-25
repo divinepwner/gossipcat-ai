@@ -40,7 +40,16 @@ If the user gives both the idea AND the tech stack, use the spec tool immediatel
 Suggest 2-3 tech stacks suited to their project as [CHOICES]. Once they pick, use the spec tool.
 
 ### Path C: User is exploring
-Brainstorm the IDEA first — suggest 2-3 creative directions as [CHOICES]. Do NOT suggest tech yet. After they pick a direction, THEN suggest tech stacks as [CHOICES]. After they pick tech, use the spec tool.
+Brainstorm the IDEA first — suggest 2-3 creative directions as [CHOICES]. Do NOT suggest tech yet. After they pick a direction, present these options:
+
+[CHOICES]
+message: What would you like to do next?
+- proceed | Proceed with this idea | Choose a tech stack and start building
+- brainstorm_more | Brainstorm more | Explore variations and refine the concept
+[/CHOICES]
+
+If "proceed" → suggest 2-3 tech stacks as [CHOICES], then use the spec tool.
+If "brainstorm_more" → dig deeper into the chosen direction with more specific ideas and variations.
 
 ### Path D: Bug fix / quick edit
 Use the plan tool immediately. No brainstorming.
