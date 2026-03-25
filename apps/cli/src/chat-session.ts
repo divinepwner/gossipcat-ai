@@ -154,8 +154,11 @@ export class ChatSession {
       this.shutdown().catch(() => process.exit(1));
     });
 
-    // Ctrl+C: cancel current operation or exit if idle
-    this.rl.on('SIGINT', () => {
+    // Ctrl+C: cancel current operation or exit if idle.
+    // Use process.on('SIGINT') as the primary handler — rl.on('SIGINT') only
+    // fires when readline is active, but ProgressTree pauses readline during
+    // plan execution, making Ctrl+C unresponsive.
+    const handleSigint = () => {
       if (this.progressTree?.isActive()) this.progressTree.finish();
       if (this.state === 'processing' && this.currentAbort) {
         // Cancel current operation
@@ -176,7 +179,9 @@ export class ChatSession {
         // Idle — exit
         this.shutdown().catch(() => process.exit(0));
       }
-    });
+    };
+    this.rl.on('SIGINT', handleSigint);
+    process.on('SIGINT', handleSigint);
 
     this.prompt();
   }
