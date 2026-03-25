@@ -644,7 +644,7 @@ export class ChatSession {
     collect: async (args: string) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const ids = parts[0] ? parts[0].split(',') : (this.lastTaskIds.length > 0 ? this.lastTaskIds : undefined);
-      const timeout = parts[1] ? parseInt(parts[1], 10) : 120_000;
+      const timeout = parts[1] ? parseInt(parts[1], 10) : 600_000;
 
       this.spinner.start(`collecting${ids ? ` ${ids.length} tasks` : ' all'}...`);
       try {

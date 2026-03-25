@@ -330,7 +330,7 @@ interface AgentLike {
 }
 
 interface CollectResultLike {
-  results: Array<{ agentId: string; status: string; result?: string; error?: string }>;
+  results: Array<{ agentId: string; status: string; result?: string; error?: string; toolCalls?: number }>;
   consensus?: { summary: string };
 }
 
@@ -525,11 +525,15 @@ export class ToolExecutor {
           priorSummaries.push(`- Task ${i + 1} (${t.agentId}): ${(entry.result || '').slice(0, 300)}`);
         } else {
           const errorMsg = entry?.status === 'running'
-            ? `Timed out after 600s — agent may be stuck`
+            ? `Timed out — agent was still working (${entry.toolCalls ?? '?'} tool calls made)`
             : (entry?.error || 'Task failed with no error message');
           this.onTaskProgress?.({ taskIndex: i, totalTasks: tasks.length, agentId: t.agentId, taskDescription: t.task, status: 'error', error: errorMsg });
           results.push(`[${t.agentId}] ERROR: ${errorMsg}`);
-          priorSummaries.push(`- Task ${i + 1} (${t.agentId}): FAILED — ${errorMsg}`);
+          // Stop sequential execution on failure — next task likely depends on this one
+          if (i < tasks.length - 1) {
+            results.push(`Stopped: ${tasks.length - i - 1} remaining task(s) skipped due to failure above.`);
+          }
+          break;
         }
       }
 
@@ -654,7 +658,7 @@ Be concise — 10-15 lines max. The developer has already seen the progress bars
     }
     if (entry.status !== 'completed') {
       // Task still running after timeout — likely hung
-      return { text: `Agent ${agentId} timed out after 120s. The task may be too complex or the agent is stuck. Task: "${task.slice(0, 100)}"`, agents: [agentId] };
+      return { text: `Agent ${agentId} timed out. The task may be too complex or the agent is stuck. Task: "${task.slice(0, 100)}"`, agents: [agentId] };
     }
 
     // Synthesize the result if LLM is available — concise summary instead of raw agent output

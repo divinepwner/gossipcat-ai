@@ -356,8 +356,8 @@ export class DispatchPipeline {
         status: t.status,
         elapsedMs: now - t.startedAt,
         toolCalls: t.toolCalls ?? 0,
-        // A task running >120s with 0 tool calls is likely stuck
-        isLikelyStuck: (now - t.startedAt > 120_000) && (t.toolCalls ?? 0) === 0,
+        // Stuck = no progress in a long time. Slow but progressing = not stuck.
+        isLikelyStuck: (now - t.startedAt > 180_000) && (t.toolCalls ?? 0) === 0,
       }));
   }
 
