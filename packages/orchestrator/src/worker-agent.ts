@@ -114,7 +114,9 @@ export class WorkerAgent {
 
 7. **Verify your work.** After writing/modifying files, use file_read to verify the changes look correct. If you have shell_exec, run \`npm run build\` (NOT \`npm run dev\`) to check for errors. Dev servers run forever and will timeout.
 
-8. **Never delete files to debug.** If something isn't working, read the error message and fix the code. Don't remove components or files to "isolate the issue" — that's destructive and you can't undo it.`,
+8. **Never delete files to debug.** If something isn't working, read the error message and fix the code. Don't remove components or files to "isolate the issue" — that's destructive and you can't undo it.
+
+9. **Don't git commit unless asked.** The orchestrator manages git. Don't run git init, git add, or git commit on your own.`,
       },
       { role: 'user', content: task },
     ];

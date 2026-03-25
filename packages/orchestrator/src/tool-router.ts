@@ -657,7 +657,18 @@ Be concise — 10-15 lines max. The developer has already seen the progress bars
       return { text: `Agent ${agentId} timed out after 120s. The task may be too complex or the agent is stuck. Task: "${task.slice(0, 100)}"`, agents: [agentId] };
     }
 
-    return { text: entry.result ?? '', agents: [agentId] };
+    // Synthesize the result if LLM is available — concise summary instead of raw agent output
+    const rawResult = entry.result ?? '';
+    if (this.llm && rawResult.length > 300) {
+      try {
+        const synthesized = await this.llm.generate([
+          { role: 'system', content: 'Summarize this agent\'s work concisely for the developer. Include: what was done, files changed, any issues. 5-8 lines max.' },
+          { role: 'user', content: `Task: ${task}\n\nAgent output:\n${rawResult.slice(0, 2000)}` },
+        ]);
+        return { text: synthesized.text, agents: [agentId] };
+      } catch { /* fall through to raw */ }
+    }
+    return { text: rawResult, agents: [agentId] };
   }
 
   private async handleDispatchParallel(args: Record<string, unknown>): Promise<ToolResult> {
