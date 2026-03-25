@@ -113,6 +113,19 @@ args:
       expect(result!.args.task).toBe('review this PR');
     });
 
+    it('parses function-call syntax gossip_plan({...})', () => {
+      const text = `[TOOL_CALL]
+gossip_plan({
+  "title": "Build the Foundation",
+  "description": "Set up the project with Svelte and PixiJS"
+})
+[/TOOL_CALL]`;
+      const result = ToolRouter.parseToolCall(text);
+      expect(result).not.toBeNull();
+      expect(result!.tool).toBe('plan');
+      expect(result!.args.task).toBe('Set up the project with Svelte and PixiJS');
+    });
+
     it('parses YAML with quoted multiword task values', () => {
       const text = `[TOOL_CALL]
 tool: dispatch

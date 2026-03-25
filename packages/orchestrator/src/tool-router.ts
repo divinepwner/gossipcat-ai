@@ -195,14 +195,34 @@ export class ToolRouter {
         tool = parsed.tool;
         args = parsed.args ?? {};
       } catch {
-        // Fallback: parse YAML-like format (tool: X, args:\n  key: value)
+        // Fallback 1: parse YAML-like format (tool: X, args:\n  key: value)
         const yamlResult = parseYamlLikeToolCall(content);
-        if (!yamlResult) {
-          log(`failed to parse tool call content: ${content.slice(0, 200)}`);
-          return null;
+        if (yamlResult) {
+          tool = yamlResult.tool;
+          args = yamlResult.args;
+        } else {
+          // Fallback 2: function-call syntax — gossip_plan({...}) or plan({...})
+          const funcMatch = content.match(/^([\w_]+)\s*\(\s*([\s\S]*)\)\s*$/);
+          if (funcMatch) {
+            tool = funcMatch[1];
+            try {
+              const jsonBody = funcMatch[2].trim();
+              const parsed = JSON.parse(jsonBody.replace(/,\s*([}\]])/g, '$1'));
+              // For plan tool: if LLM passed a complex object, extract just the description as task
+              if (typeof parsed === 'object' && !parsed.task && (parsed.description || parsed.title)) {
+                args = { task: parsed.description || parsed.title };
+              } else {
+                args = typeof parsed === 'object' ? parsed : {};
+              }
+            } catch {
+              // If JSON inside parens fails, treat the whole content after tool name as task
+              args = { task: funcMatch[2].trim().slice(0, 2000) };
+            }
+          } else {
+            log(`failed to parse tool call content: ${content.slice(0, 200)}`);
+            return null;
+          }
         }
-        tool = yamlResult.tool;
-        args = yamlResult.args;
       }
 
       // Normalize MCP-style tool names (gossip_plan → plan, gossip_dispatch → dispatch)
