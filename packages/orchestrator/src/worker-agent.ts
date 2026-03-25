@@ -108,9 +108,9 @@ export class WorkerAgent {
 
 4. **Signal completion.** When you're done, respond with a concise summary (no tool calls) listing: files created/modified, technology choices made, and what the next step should be.
 
-5. **If you're stuck, simplify.** If you hit errors you can't resolve after 2-3 attempts (e.g. TypeScript type errors, build tool config issues, dependency conflicts), STOP trying to fix them. Instead:
-   - Fall back to a simpler approach (plain JavaScript instead of TypeScript, CDN scripts instead of npm/bundler)
-   - Or stop and report what's blocking you — don't burn your remaining turns on the same error`,
+5. **Don't overengineer.** Use the simplest tech that works. If the task doesn't specify TypeScript, use plain JavaScript. If it doesn't specify a bundler, use CDN scripts or plain ES modules. If it doesn't specify a framework, use vanilla code. Don't add build complexity (npm, webpack, TypeScript config) unless explicitly requested.
+
+6. **If you hit the same error twice, stop and report it.** Don't spend more turns fighting the same build/config/type error. Report what's blocking you so the orchestrator can help.`,
       },
       { role: 'user', content: task },
     ];
