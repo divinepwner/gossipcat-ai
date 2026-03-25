@@ -149,12 +149,14 @@ Use "sequential" ONLY when a later task genuinely needs output from an earlier o
 Rules:
 - Tasks with action verbs (fix, implement, add, create, refactor, update, delete, write, build, migrate) → write
 - Tasks with observation verbs (review, analyze, check, verify, list, explain, summarize, audit, trace) → read
-- If the task mentions a specific directory or package path → write_mode: scoped, scope: that path
-- If the task is broad with no clear directory boundary → write_mode: sequential
-- NEVER use write_mode: worktree — it requires a git repository and adds complexity. Use sequential instead.
+- Research/investigation tasks → read (even if they save a report)
+- If the task mentions a specific directory → write_mode: scoped, scope: that directory
+- If the task is broad (full project) → write_mode: scoped, scope: "./"
+- NEVER use write_mode: sequential for parallel plans — it will fail
+- NEVER use write_mode: worktree
 
 Respond as JSON array:
-[{ "index": 0, "access": "write", "write_mode": "scoped", "scope": "packages/tools/" }, { "index": 1, "access": "read" }]`,
+[{ "index": 0, "access": "write", "write_mode": "scoped", "scope": "./" }, { "index": 1, "access": "read" }]`,
         },
         { role: 'user', content: `Sub-tasks:\n${subTaskList}` },
       ];

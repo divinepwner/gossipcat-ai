@@ -450,11 +450,20 @@ export class ToolExecutor {
       });
 
       if (plan.strategy === 'parallel') {
-        const taskDefs = tasks.map(t => ({
-          agentId: t.agentId,
-          task: t.task,
-          options: t.writeMode ? { writeMode: t.writeMode, scope: t.scope } : undefined,
-        }));
+        // Safety: auto-fix sequential write mode to scoped for parallel plans
+        const taskDefs = tasks.map(t => {
+          let writeMode = t.writeMode;
+          let scope = t.scope;
+          if (writeMode === 'sequential') {
+            writeMode = 'scoped';
+            scope = scope || './';
+          }
+          return {
+            agentId: t.agentId,
+            task: t.task,
+            options: writeMode ? { writeMode, scope } : undefined,
+          };
+        });
 
         for (let i = 0; i < tasks.length; i++) {
           agentSet.add(tasks[i].agentId);
