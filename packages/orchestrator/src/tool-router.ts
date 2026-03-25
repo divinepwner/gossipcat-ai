@@ -382,6 +382,7 @@ export class ToolExecutor {
         case 'read_task_history':
           return this.handleReadTaskHistory(toolCall.args);
         case 'init_project':
+        case 'setup':
           return await this.handleInitProject(toolCall.args);
         case 'update_team':
           return this.handleUpdateTeam(toolCall.args);

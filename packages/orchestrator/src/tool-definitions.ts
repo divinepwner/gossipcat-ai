@@ -55,6 +55,11 @@ export const TOOL_SCHEMAS: Record<string, ToolSchema> = {
     requiredArgs: ['description'],
     optionalArgs: ['archetype'],
   },
+  setup: {
+    description: 'Alias for init_project. Set up or re-propose the agent team for this project.',
+    requiredArgs: ['description'],
+    optionalArgs: ['archetype'],
+  },
   update_team: {
     description: 'Add, remove, or modify an agent in the team (requires developer confirmation). Actions: "add" creates a new agent with a preset and skills, "remove" removes an agent by ID, "modify" changes skills or preset of an existing agent.',
     requiredArgs: ['action'],

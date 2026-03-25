@@ -326,20 +326,6 @@ export class MainAgent {
       ? userMessage
       : userMessage.filter(b => b.type === 'text').map(b => (b as TextContent).text).join(' ') || 'Describe this image.';
 
-    // If no agents and user expresses acceptance intent with a pending task,
-    // re-trigger team proposal (handles "let's proceed" after choosing "Modify")
-    if (!hasAgents && this.projectInitializer.pendingTask) {
-      const acceptIntent = /(?:proceed|accept|let'?s (?:go|do it|build|start)|yes|looks good|go ahead)/i.test(text);
-      if (acceptIntent) {
-        const signals = this.projectInitializer.scanDirectory(this.projectRoot);
-        const proposal = await this.projectInitializer.proposeTeam(this.projectInitializer.pendingTask, signals);
-        this.conversationHistory.push(
-          { role: 'user', content: text },
-          { role: 'assistant', content: proposal.text.slice(0, 1500) },
-        );
-        return { text: proposal.text, choices: proposal.choices, status: 'done' };
-      }
-    }
 
     // Build system prompt — with or without tool definitions depending on agent availability
     const agents = this.registry.getAll();
