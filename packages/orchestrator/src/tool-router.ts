@@ -733,12 +733,23 @@ Be concise — 10-15 lines max. The developer has already seen the progress bars
 
     this.pendingPlan = { plan: assigned, tasks };
 
-    const planLines = tasks.map((t, i) =>
-      `${i + 1}. [${t.agentId}] ${t.task}${t.writeMode ? ` (${t.writeMode}${t.scope ? `: ${t.scope}` : ''})` : ''}`
-    );
+    // Format plan for display
+    const warnings = assigned.warnings?.length
+      ? `\n⚠ ${assigned.warnings.join('\n⚠ ')}\n`
+      : '';
+
+    const taskLines = tasks.map((t, i) => {
+      const icon = t.access === 'write' ? '✏' : '👁';
+      const mode = t.writeMode ? ` [${t.writeMode}${t.scope ? `: ${t.scope}` : ''}]` : '';
+      return `  ${icon} ${i + 1}. ${t.agentId} → ${t.task}${mode}`;
+    });
+
+    const strategyLabel = assigned.strategy === 'single' ? 'Single agent'
+      : assigned.strategy === 'parallel' ? 'Parallel execution'
+      : 'Sequential execution';
 
     return {
-      text: `## Plan: ${task}\n\nStrategy: ${assigned.strategy}\n\n${planLines.join('\n')}`,
+      text: `## Plan: ${task}\n\n${strategyLabel} · ${tasks.length} task${tasks.length !== 1 ? 's' : ''}${warnings}\n\n${taskLines.join('\n')}`,
       choices: {
         message: 'How would you like to proceed?',
         options: [

@@ -612,9 +612,9 @@ describe('ToolExecutor', () => {
     expect(planExecutor.pendingPlan).not.toBeNull();
     expect(planExecutor.pendingPlan!.tasks).toHaveLength(2);
     expect(result.text).toContain('Plan: refactor auth module');
-    expect(result.text).toContain('Strategy: sequential');
-    expect(result.text).toContain('[reviewer]');
-    expect(result.text).toContain('[writer]');
+    expect(result.text).toContain('Sequential execution');
+    expect(result.text).toContain('reviewer →');
+    expect(result.text).toContain('writer →');
     expect(result.text).toContain('sequential: src/auth');
     expect(result.choices).toBeDefined();
     expect(result.choices!.options.some((o: any) => o.value === 'plan_execute')).toBe(true);
