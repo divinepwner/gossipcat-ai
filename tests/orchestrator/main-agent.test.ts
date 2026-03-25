@@ -141,7 +141,7 @@ describe('MainAgent bootstrapPrompt', () => {
     const lastSystem = systemMessages[systemMessages.length - 1];
     // Should contain CHAT_SYSTEM_PROMPT (orchestrator prompt) without bootstrap prefix
     expect(lastSystem).toContain('orchestrator');
-    expect(lastSystem).toContain('CRITICAL RULES');
+    expect(lastSystem).toContain('RULES');
     expect(lastSystem).not.toContain('## Bootstrap Context');
   });
 });

@@ -11,51 +11,52 @@ export interface ToolSchema {
 
 export const TOOL_SCHEMAS: Record<string, ToolSchema> = {
   dispatch: {
-    description: 'Send a task to a specific agent.',
+    description: 'Send a task to one agent and wait for the result. Use for single-agent work: quick implementations, file reads, running tests, simple lookups. Pass write_mode ("sequential"|"scoped"|"worktree") and scope (directory path) when the agent needs to modify files.',
     requiredArgs: ['agent_id', 'task'],
+    optionalArgs: ['write_mode', 'scope'],
   },
   dispatch_parallel: {
-    description: 'Send tasks to multiple agents in parallel.',
+    description: 'Fan out tasks to multiple agents simultaneously and collect all results. Use for: code reviews (split by concern), security audits (split by package), bug investigation (one hypothesis per agent), feature implementation (split by module with scoped write modes). Each task item is { agent_id, task, write_mode?, scope? }.',
     requiredArgs: ['tasks'],
   },
   dispatch_consensus: {
-    description: 'Send a task for cross-review consensus among agents.',
+    description: 'Dispatch the same task to multiple agents, then cross-review their findings for consensus. Each agent reviews peer output and produces agree/disagree/new judgments. Returns a tagged report (CONFIRMED/DISPUTED/UNIQUE/NEW). Use for: code reviews, security audits, architecture reviews — any task where cross-validation catches what single reviewers miss. Defaults to all agents if agent_ids not specified.',
     requiredArgs: ['task'],
     optionalArgs: ['agent_ids'],
   },
   plan: {
-    description: 'Create an execution plan for a complex task.',
+    description: 'Decompose a complex task into agent-dispatchable subtasks with write-mode suggestions. Returns a structured plan with task assignments, execution order (sequential/parallel), and recommended write modes. Present the plan to the developer for approval before dispatching. Use this BEFORE dispatching any non-trivial implementation work.',
     requiredArgs: ['task'],
   },
   agents: {
-    description: 'List all registered agents and their skills.',
+    description: 'List all registered agents with their provider, model, role, and skills. Use to check who is available before dispatching.',
     requiredArgs: [],
   },
   agent_status: {
-    description: 'Get the current status of a specific agent.',
+    description: 'Get recent task history and current state for a specific agent. Shows last 5 tasks with warmth scores. Use to check if an agent is idle or overloaded.',
     requiredArgs: ['agent_id'],
   },
   agent_performance: {
-    description: 'Show performance metrics for all agents.',
+    description: 'Show consensus performance signals for all agents — agreement rates, disputed findings, unique contributions. Use to understand agent strengths and inform future dispatch decisions.',
     requiredArgs: [],
   },
   update_instructions: {
-    description: 'Update runtime instructions for one or more agents.',
+    description: 'Update runtime instructions for one or more agents (requires developer confirmation). Use to steer agent behavior mid-session: add coding standards, focus areas, or constraints. Mode: "append" (default) adds to existing instructions, "replace" overwrites them.',
     requiredArgs: ['agent_ids', 'instruction'],
     optionalArgs: ['mode'],
   },
   read_task_history: {
-    description: 'Read past task results for an agent.',
+    description: 'Read past task results for an agent. Returns task descriptions, warmth scores, and timestamps. Use to understand what an agent has been working on and how well it performed.',
     requiredArgs: ['agent_id'],
     optionalArgs: ['limit'],
   },
   init_project: {
-    description: 'Initialize project with a tailored agent team based on project type',
+    description: 'Initialize this project with a tailored agent team. Scans the project directory for language, framework, and structure signals, then proposes an archetype-matched team (e.g., game-dev, web-app, library). Use when no agents are configured yet. Requires developer confirmation before applying.',
     requiredArgs: ['description'],
     optionalArgs: ['archetype'],
   },
   update_team: {
-    description: 'Add, remove, or modify an agent in the team (requires confirmation)',
+    description: 'Add, remove, or modify an agent in the team (requires developer confirmation). Actions: "add" creates a new agent with a preset and skills, "remove" removes an agent by ID, "modify" changes skills or preset of an existing agent.',
     requiredArgs: ['action'],
     optionalArgs: ['agent_id', 'preset', 'skills'],
   },
@@ -91,44 +92,14 @@ export function buildToolSystemPrompt(
 
   // Build explicit agent ID list so LLM uses exact IDs
   const agentList = _agents.length > 0
-    ? `\n\nYour agents (use these EXACT IDs for dispatch):\n${_agents.map(a => `- **${a.id}** (${a.preset || 'custom'}) — skills: ${a.skills.join(', ')}`).join('\n')}`
-    : '\n\nNo agents configured yet. Use init_project to set up a team.';
+    ? _agents.map(a => `- **${a.id}** (${a.preset || 'custom'}) — skills: ${a.skills.join(', ')}`).join('\n')
+    : 'No agents configured yet. Use init_project to set up a team.';
 
-  return `## Available Tools
+  return `## Agents
 ${agentList}
 
+## Tools
 ${toolLines.join('\n')}
 
-init_project(description: string, archetype?: string)
-  Initialize this project with a tailored agent team. Scans directory for signals,
-  proposes agents based on project type. Use when no agents are configured.
-
-update_team(action: "add" | "remove" | "modify", agent_id?: string, preset?: string, skills?: string[])
-  Modify the agent team. Requires user confirmation before applying.
-  Use when user wants to add, remove, or change an agent.
-
-## How to Call Tools
-
-When you need to use a tool, emit a tool call block:
-
-\`\`\`
-[TOOL_CALL]
-tool: <tool_name>
-args:
-  key: value
-\`\`\`
-
-## When Uncertain
-
-If you are unsure which action to take, present options using:
-
-\`\`\`
-[CHOICES]
-message: "<question for the developer>"
-options:
-  - value: "option_a"
-    label: "Option A"
-  - value: "option_b"
-    label: "Option B"
-\`\`\``;
+Call format: [TOOL_CALL]{"tool":"name","args":{"key":"value"}}[/TOOL_CALL]`;
 }

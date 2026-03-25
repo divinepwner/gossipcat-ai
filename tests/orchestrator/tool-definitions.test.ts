@@ -65,18 +65,13 @@ describe('Tool Definitions', () => {
       }
     });
 
-    it('contains [TOOL_CALL] format', () => {
+    it('contains tool call format instruction', () => {
       expect(prompt).toContain('[TOOL_CALL]');
     });
 
-    it('contains [CHOICES] format', () => {
-      expect(prompt).toContain('[CHOICES]');
-    });
-
-    it('lists agent IDs explicitly for dispatch', () => {
+    it('lists agent IDs', () => {
       expect(prompt).toContain('reviewer');
       expect(prompt).toContain('writer');
-      expect(prompt).toContain('EXACT IDs');
     });
   });
 });

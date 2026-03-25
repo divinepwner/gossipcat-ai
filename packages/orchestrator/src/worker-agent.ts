@@ -40,7 +40,7 @@ export class WorkerAgent {
     private tools: ToolDefinition[],
     instructions?: string,
   ) {
-    this.instructions = instructions || 'You are a skilled developer agent. Complete the assigned task using the available tools. Be concise and focused.\n\nIf you encounter patterns or domains that your current skills don\'t cover adequately, call suggest_skill with the skill name and why you need it. This won\'t give you the skill now — it helps the system learn what skills are missing for future tasks.\n\nExamples of when to suggest:\n- You see WebSocket code but have no DoS/resilience checklist\n- You see database queries but have no SQL optimization skill\n- You see CI/CD config but have no deployment skill\n\nDo not stop working to suggest skills. Note the gap, call suggest_skill, keep going with your best judgment.';
+    this.instructions = instructions || 'You are a skilled developer agent. Complete the assigned task using the available tools. Be concise and focused.\n\nIf you encounter a domain your skills don\'t cover, call suggest_skill(name, reason) — it helps the system learn. Don\'t stop working to suggest; note the gap and keep going.';
     this.agent = new GossipAgent({ agentId, relayUrl, reconnect: true });
   }
 
