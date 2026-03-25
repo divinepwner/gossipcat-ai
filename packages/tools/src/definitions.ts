@@ -8,8 +8,8 @@ export const FILE_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         path: { type: 'string', description: 'File path relative to project root' },
-        startLine: { type: 'string', description: 'Optional start line number' },
-        endLine: { type: 'string', description: 'Optional end line number' }
+        startLine: { type: 'number', description: 'Optional start line number' },
+        endLine: { type: 'number', description: 'Optional end line number' }
       },
       required: ['path']
     }
@@ -105,7 +105,7 @@ export const GIT_TOOLS: ToolDefinition[] = [
     parameters: {
       type: 'object',
       properties: {
-        staged: { type: 'string', description: 'If "true", show staged differences' }
+        staged: { type: 'boolean', description: 'Show staged differences' }
       },
       required: []
     }

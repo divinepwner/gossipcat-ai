@@ -11,7 +11,10 @@ export class AgentMemoryReader {
     if (!existsSync(indexPath)) return null;
 
     const parts: string[] = [];
-    parts.push(readFileSync(indexPath, 'utf-8'));
+    // Cap MEMORY.md to first 200 lines (matching Claude Code's limit)
+    const indexContent = readFileSync(indexPath, 'utf-8');
+    const indexLines = indexContent.split('\n');
+    parts.push(indexLines.length > 200 ? indexLines.slice(0, 200).join('\n') + '\n[Truncated]' : indexContent);
 
     const knowledgeDir = join(memDir, 'knowledge');
     if (existsSync(knowledgeDir)) {

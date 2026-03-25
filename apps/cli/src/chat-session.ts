@@ -161,11 +161,12 @@ export class ChatSession {
     const handleSigint = () => {
       if (this.progressTree?.isActive()) this.progressTree.finish();
       if (this.state === 'processing' && this.currentAbort) {
-        // Cancel current operation
+        // Cancel current operation + clean up zombie tasks
         this.currentAbort.abort();
         this.currentAbort = null;
         this.spinner.stop();
-        this.renderer.info('Cancelled.');
+        const cancelled = this.mainAgent.cancelRunningTasks();
+        this.renderer.info(`Cancelled.${cancelled > 0 ? ` (${cancelled} running task${cancelled > 1 ? 's' : ''} stopped)` : ''}`);
         this.state = 'idle';
         this.prompt();
       } else if (this.state === 'choice') {

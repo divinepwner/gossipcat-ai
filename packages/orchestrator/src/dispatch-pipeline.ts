@@ -361,6 +361,20 @@ export class DispatchPipeline {
       }));
   }
 
+  /** Mark all running tasks as cancelled and remove from tracking. Prevents zombie tasks after Ctrl+C. */
+  cancelRunningTasks(): number {
+    let cancelled = 0;
+    for (const [, task] of this.tasks.entries()) {
+      if (task.status === 'running') {
+        task.status = 'failed';
+        task.error = 'Cancelled by user';
+        task.completedAt = Date.now();
+        cancelled++;
+      }
+    }
+    return cancelled;
+  }
+
   registerPlan(plan: PlanState): void {
     this.plans.set(plan.id, plan);
   }

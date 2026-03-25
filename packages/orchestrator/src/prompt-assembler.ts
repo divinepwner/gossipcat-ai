@@ -123,5 +123,14 @@ This section will be used for cross-review with peer agents.
     blocks.push(`\n\n--- SPEC REVIEW ---\n${parts.specReviewContext}\n--- END SPEC REVIEW ---`);
   }
 
-  return blocks.join('');
+  let assembled = blocks.join('');
+
+  // Cap total prompt size to prevent context window overflow.
+  // ~30K chars ≈ ~8K tokens — leaves room for system prompt + task + tool results.
+  const MAX_PROMPT_CHARS = 30_000;
+  if (assembled.length > MAX_PROMPT_CHARS) {
+    assembled = assembled.slice(0, MAX_PROMPT_CHARS) + '\n\n[Context truncated to fit budget]';
+  }
+
+  return assembled;
 }

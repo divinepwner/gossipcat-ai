@@ -7,14 +7,21 @@ export class FileTools {
 
   async fileRead(args: { path: string; startLine?: number; endLine?: number }): Promise<string> {
     const absPath = this.sandbox.validatePath(args.path);
-    const content = await readFile(absPath, 'utf-8');
-    if (args.startLine !== undefined || args.endLine !== undefined) {
-      const lines = content.split('\n');
-      const start = (args.startLine || 1) - 1;
-      const end = args.endLine || lines.length;
-      return lines.slice(start, end).join('\n');
+    try {
+      const content = await readFile(absPath, 'utf-8');
+      if (args.startLine !== undefined || args.endLine !== undefined) {
+        const lines = content.split('\n');
+        const start = (args.startLine || 1) - 1;
+        const end = args.endLine || lines.length;
+        return lines.slice(start, end).join('\n');
+      }
+      return content;
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes('ENOENT')) throw new Error(`File not found: ${args.path}`);
+      if (msg.includes('encoding') || msg.includes('invalid')) throw new Error(`Cannot read ${args.path} — it may be a binary file`);
+      throw err;
     }
-    return content;
   }
 
   async fileWrite(args: { path: string; content: string }): Promise<string> {
