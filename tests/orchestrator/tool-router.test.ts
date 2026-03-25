@@ -388,7 +388,7 @@ describe('ToolExecutor', () => {
     const result = await executor.execute({ tool: 'dispatch', args: { agent_id: 'reviewer', task: 'review code' } });
 
     expect(mockPipeline.dispatch).toHaveBeenCalledWith('reviewer', 'review code');
-    expect(mockPipeline.collect).toHaveBeenCalledWith(['task-1'], 300_000);
+    expect(mockPipeline.collect).toHaveBeenCalledWith(['task-1'], 600_000);
     expect(result.text).toBe('Looks good');
     expect(result.agents).toEqual(['reviewer']);
   });
@@ -427,7 +427,7 @@ describe('ToolExecutor', () => {
       ]),
       { consensus: true },
     );
-    expect(mockPipeline.collect).toHaveBeenCalledWith(['task-1', 'task-2'], 300_000, { consensus: true });
+    expect(mockPipeline.collect).toHaveBeenCalledWith(['task-1', 'task-2'], 600_000, { consensus: true });
     expect(result.text).toContain('Review done');
     expect(result.text).toContain('Consensus Report');
     expect(result.text).toContain('Both agents agree');
@@ -466,7 +466,7 @@ describe('ToolExecutor', () => {
     });
 
     expect(mockPipeline.dispatchParallel).toHaveBeenCalled();
-    expect(mockPipeline.collect).toHaveBeenCalledWith(['task-1', 'task-2'], 300_000);
+    expect(mockPipeline.collect).toHaveBeenCalledWith(['task-1', 'task-2'], 600_000);
     expect(result.text).toContain('[reviewer]');
     expect(result.text).toContain('[writer]');
     expect(result.agents).toEqual(['reviewer', 'writer']);
@@ -757,8 +757,8 @@ describe('ToolExecutor', () => {
 
     // collect called once per task sequentially
     expect(mockPipeline.collect).toHaveBeenCalledTimes(2);
-    expect(mockPipeline.collect).toHaveBeenNthCalledWith(1, ['seq-task-1'], 300_000);
-    expect(mockPipeline.collect).toHaveBeenNthCalledWith(2, ['seq-task-2'], 300_000);
+    expect(mockPipeline.collect).toHaveBeenNthCalledWith(1, ['seq-task-1'], 600_000);
+    expect(mockPipeline.collect).toHaveBeenNthCalledWith(2, ['seq-task-2'], 600_000);
 
     expect(result.text).toContain('[reviewer] Review complete');
     expect(result.text).toContain('[writer] Write complete');
