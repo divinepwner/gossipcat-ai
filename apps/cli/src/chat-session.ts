@@ -158,6 +158,7 @@ export class ChatSession {
     // Use process.on('SIGINT') as the primary handler — rl.on('SIGINT') only
     // fires when readline is active, but ProgressTree pauses readline during
     // plan execution, making Ctrl+C unresponsive.
+    let lastSigintTime = 0;
     const handleSigint = () => {
       if (this.progressTree?.isActive()) this.progressTree.finish();
       if (this.state === 'processing' && this.currentAbort) {
@@ -177,8 +178,15 @@ export class ChatSession {
         this.state = 'idle';
         this.prompt();
       } else {
-        // Idle — exit
-        this.shutdown().catch(() => process.exit(0));
+        // Idle — double Ctrl+C to exit (like Claude Code)
+        const now = Date.now();
+        if (now - lastSigintTime < 1500) {
+          this.shutdown().catch(() => process.exit(0));
+        } else {
+          lastSigintTime = now;
+          this.renderer.info('Press Ctrl+C again to exit, or type "exit".');
+          this.prompt();
+        }
       }
     };
     this.rl.on('SIGINT', handleSigint);
