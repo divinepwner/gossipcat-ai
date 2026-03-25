@@ -28,53 +28,35 @@ export class TaskDispatcher {
     const messages: LLMMessage[] = [
       {
         role: 'system',
-        content: `You are a task decomposition engine. Decide whether a task should be handled as a single unit or broken into sub-tasks.
+        content: `You are a task decomposition engine. Break work into tasks that use the FULL team.
 
-## WHEN TO USE "single" (ONE task, ONE agent)
+## Available skills: ${skillList}
 
-Most tasks should be "single". Use it when:
-- The project can be built by one developer in one sitting (a small app, a landing page, a CLI tool, a game)
-- The task involves creating a cohesive thing where splitting it would cause conflicting decisions (e.g. one agent picks TypeScript while another picks JavaScript)
-- The task is under ~10 files
-- There's no natural boundary between independent pieces
+## Rules
 
-Examples that should be "single":
-- "Build a snake game" → single (one agent builds the whole game)
-- "Create a music app with a grid and audio" → single (it's one cohesive app)
-- "Add a login page with form validation" → single
-- "Build a REST API for todos" → single
-- "Create a landing page" → single
+1. **Implementation is always ONE task.** Never split a cohesive project into sequential implementation steps. One implementer builds the whole thing.
 
-## WHEN TO SPLIT into sub-tasks
+2. **Use the full team in parallel.** If researchers and reviewers are available, give them work alongside the implementer:
+   - Researcher: investigate APIs, find examples, check docs — runs in parallel with implementation
+   - Reviewer: review the completed code — runs after implementation (sequential)
 
-Only split when there are genuinely independent workstreams that benefit from parallelism or different expertise:
-- Implementation + review (different skills needed)
-- Implementation + research (can run in parallel)
-- Backend API + frontend UI (truly independent, different directories)
-- Multiple independent microservices
+3. **Describe WHAT, not HOW.** The agent decides file structure, components, architecture.
 
-When you DO split:
-- Each sub-task must be fully self-contained — it must make ALL technology decisions for its scope
-- NEVER split by file type (HTML/CSS/JS separately) — that forces agents to make isolated decisions that conflict
-- NEVER split implementation into sequential steps where step N depends on step N-1's exact output
-- Aim for 2-3 sub-tasks. More than 4 is almost always wrong.
-
-## Task descriptions
-
-Describe WHAT to build, not HOW. The agent decides implementation details.
-Good: "Build X with Y tech stack. It should support A, B, and C features."
-Bad: "Create a FooComponent with useBar hook, a BazService class with getData method..."
+4. **2-3 tasks max.** Typical patterns:
+   - Implementation only → single
+   - Implementation + research → parallel (2 tasks)
+   - Implementation then review → sequential (2 tasks)
+   - Implementation + research, then review → mixed (3 tasks)
 
 ## Response format
 
-For each sub-task, specify required skills from: ${skillList}.
-Respond in JSON format:
+Respond in JSON:
 {
   "strategy": "single" | "parallel" | "sequential",
   "subTasks": [{ "description": "...", "requiredSkills": ["..."] }]
 }
-Use "single" for most tasks (one agent handles everything).
-Use "parallel" when sub-tasks are truly independent (different directories, no shared state).
+
+"single" = one task. "parallel" = all tasks run at same time. "sequential" = tasks run in order.
 Use "sequential" ONLY when a later task genuinely needs output from an earlier one AND they need different skills.`,
       },
       { role: 'user', content: task },
