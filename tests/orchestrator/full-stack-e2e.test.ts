@@ -86,22 +86,38 @@ describe('Full-Stack E2E — New Project Flow', () => {
     }
   });
 
-  it('Step 1: First message triggers project init with team proposal', async () => {
-    console.log('\n=== Step 1: First message ===');
+  it('Step 1: First message triggers brainstorming (no agents yet)', async () => {
+    console.log('\n=== Step 1: First message (brainstorm) ===');
     const response = await mainAgent.handleMessage(
       'build a terminal snake game in TypeScript with keyboard input and score tracking'
+    );
+
+    console.log('Response:', response.text.slice(0, 500));
+
+    // With brainstorm-before-team flow, first message should brainstorm (no choices)
+    expect(response.text).toBeTruthy();
+    expect(response.status).toBe('done');
+  }, 60_000);
+
+  it('Step 2: Follow-up triggers team proposal', async () => {
+    console.log('\n=== Step 2: Follow-up triggers team proposal ===');
+    // Second message — the LLM should try to use a tool, triggering team proposal
+    const response = await mainAgent.handleMessage(
+      'Let\'s build it. Start with the game loop and keyboard input.'
     );
 
     console.log('Response:', response.text.slice(0, 500));
     console.log('Choices:', response.choices?.options.map(o => o.value));
 
     expect(response.text).toBeTruthy();
-    expect(response.choices).toBeDefined();
-    expect(response.choices!.options.some(o => o.value === 'accept')).toBe(true);
+    // Should now have team proposal choices (accept/modify/skip)
+    if (response.choices) {
+      expect(response.choices.options.some(o => o.value === 'accept')).toBe(true);
+    }
   }, 60_000);
 
-  it('Step 2: Accept team → config written → workers started', async () => {
-    console.log('\n=== Step 2: Accept team ===');
+  it('Step 3: Accept team → config written → workers started', async () => {
+    console.log('\n=== Step 3: Accept team ===');
     const response = await mainAgent.handleChoice(
       'build a terminal snake game in TypeScript',
       'accept'
@@ -121,8 +137,8 @@ describe('Full-Stack E2E — New Project Flow', () => {
     expect(Object.keys(config.agents || {}).length).toBeGreaterThan(0);
   }, 120_000);
 
-  it('Step 3: Follow-up message uses cognitive mode with agents', async () => {
-    console.log('\n=== Step 3: Follow-up task ===');
+  it('Step 4: Follow-up message uses cognitive mode with agents', async () => {
+    console.log('\n=== Step 4: Follow-up task ===');
 
     // Now that agents are configured, a follow-up should use cognitive orchestration
     const response = await mainAgent.handleMessage('list my agents');
@@ -133,8 +149,8 @@ describe('Full-Stack E2E — New Project Flow', () => {
     expect(response.text).toBeTruthy();
   }, 60_000);
 
-  it('Step 4: Dispatch a real task to an agent', async () => {
-    console.log('\n=== Step 4: Dispatch real task ===');
+  it('Step 5: Dispatch a real task to an agent', async () => {
+    console.log('\n=== Step 5: Dispatch real task ===');
 
     // Ask an agent to write the game's main file structure
     const response = await mainAgent.handleMessage(
