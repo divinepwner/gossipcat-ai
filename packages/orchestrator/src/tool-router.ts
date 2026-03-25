@@ -18,6 +18,98 @@ const AGENT_ID_RE = /^[a-zA-Z0-9_-]+$/;
  *     agent_id: gemini-reviewer
  *     task: "review this code"
  */
+/**
+ * Convert a YAML-like args block to a JSON object.
+ * Handles flat key: value pairs, nested objects, and arrays (- item syntax).
+ * This is NOT a full YAML parser — it covers the subset LLMs commonly produce.
+ */
+function yamlToJson(yamlLines: string[], _baseIndent: number): unknown {
+  if (yamlLines.length === 0) return {};
+
+  // Detect if this is an array (first meaningful line starts with "- ")
+  const firstLine = yamlLines[0];
+  const firstTrimmed = firstLine.trimStart();
+  if (firstTrimmed.startsWith('- ')) {
+    // Array mode: split into items by top-level "- " markers
+    const items: string[][] = [];
+    let current: string[] = [];
+    const itemIndent = firstLine.length - firstTrimmed.length;
+
+    for (const line of yamlLines) {
+      const trimmed = line.trimStart();
+      const indent = line.length - trimmed.length;
+      if (indent === itemIndent && trimmed.startsWith('- ')) {
+        if (current.length > 0) items.push(current);
+        // First line of item: strip the "- " prefix, keep as content
+        const afterDash = trimmed.slice(2);
+        current = afterDash ? [' '.repeat(itemIndent + 2) + afterDash] : [];
+      } else {
+        current.push(line);
+      }
+    }
+    if (current.length > 0) items.push(current);
+
+    return items.map(itemLines => {
+      // Single-line scalar item: "- value" with no child lines
+      if (itemLines.length === 1) {
+        const val = itemLines[0].trim();
+        // If it doesn't look like "key: value", treat as scalar
+        if (!/^\w[\w_-]*:\s/.test(val)) {
+          // Strip quotes
+          if (/^["'].*["']$/.test(val)) return val.slice(1, -1);
+          if (/^\d+$/.test(val)) return parseInt(val, 10);
+          if (val === 'true') return true;
+          if (val === 'false') return false;
+          return val;
+        }
+      }
+      return yamlToJson(itemLines, itemIndent + 2);
+    });
+  }
+
+  // Object mode: parse key: value pairs
+  const result: Record<string, unknown> = {};
+  let i = 0;
+  while (i < yamlLines.length) {
+    const line = yamlLines[i];
+    const trimmed = line.trimStart();
+    if (!trimmed) { i++; continue; }
+
+    const kvMatch = trimmed.match(/^(\w[\w_-]*):\s*(.*)/);
+    if (!kvMatch) { i++; continue; }
+
+    const key = kvMatch[1];
+    let rawValue = kvMatch[2].trim();
+
+    if (rawValue) {
+      // Strip quotes
+      if (/^["'].*["']$/.test(rawValue)) rawValue = rawValue.slice(1, -1);
+      // Parse numbers
+      if (/^\d+$/.test(rawValue)) { result[key] = parseInt(rawValue, 10); }
+      else if (rawValue === 'true') { result[key] = true; }
+      else if (rawValue === 'false') { result[key] = false; }
+      else { result[key] = rawValue; }
+      i++;
+    } else {
+      // Value is on subsequent indented lines (nested object or array)
+      const childLines: string[] = [];
+      const keyIndent = line.length - trimmed.length;
+      i++;
+      while (i < yamlLines.length) {
+        const nextLine = yamlLines[i];
+        const nextTrimmed = nextLine.trimStart();
+        if (!nextTrimmed) { i++; continue; }
+        const nextIndent = nextLine.length - nextTrimmed.length;
+        if (nextIndent <= keyIndent) break; // back to same or higher level
+        childLines.push(nextLine);
+        i++;
+      }
+      result[key] = yamlToJson(childLines, keyIndent + 2);
+    }
+  }
+  return result;
+}
+
 function parseYamlLikeToolCall(content: string): { tool: string; args: Record<string, unknown> } | null {
   const lines = content.split('\n').map(l => l.trimEnd());
 
@@ -28,7 +120,6 @@ function parseYamlLikeToolCall(content: string): { tool: string; args: Record<st
   if (!tool) return null;
 
   // Find args
-  const args: Record<string, unknown> = {};
   const argsIdx = lines.findIndex(l => /^args:\s*/.test(l));
   if (argsIdx === -1) {
     // No args section — check if args are inline: args: {}
@@ -36,32 +127,30 @@ function parseYamlLikeToolCall(content: string): { tool: string; args: Record<st
     if (inlineArgs) {
       try { return { tool, args: JSON.parse(`{${inlineArgs[1]}}`) }; } catch { /* continue */ }
     }
-    return { tool, args };
+    return { tool, args: {} };
   }
 
-  // Parse indented key-value pairs after "args:"
+  // Check for inline args: args: { ... }
   const inlineArgsMatch = lines[argsIdx].match(/^args:\s*\{(.*)\}\s*$/);
   if (inlineArgsMatch) {
     try { return { tool, args: JSON.parse(`{${inlineArgsMatch[1]}}`) }; } catch { /* continue */ }
   }
 
+  // Collect all indented lines after "args:"
+  const argLines: string[] = [];
   for (let i = argsIdx + 1; i < lines.length; i++) {
     const line = lines[i];
-    if (!line || /^\S/.test(line)) break; // stop at non-indented line
-    const kvMatch = line.match(/^\s+(\w+):\s*(.+)/);
-    if (kvMatch) {
-      let value: unknown = kvMatch[2].trim();
-      // Strip quotes
-      if (typeof value === 'string' && /^["'].*["']$/.test(value)) {
-        value = (value as string).slice(1, -1);
-      }
-      // Parse numbers
-      if (typeof value === 'string' && /^\d+$/.test(value)) {
-        value = parseInt(value, 10);
-      }
-      args[kvMatch[1]] = value;
-    }
+    if (!line && argLines.length === 0) continue; // skip leading blank lines
+    if (line && /^\S/.test(line)) break; // stop at non-indented line
+    argLines.push(line);
   }
+  // Trim trailing blank lines
+  while (argLines.length > 0 && !argLines[argLines.length - 1].trim()) argLines.pop();
+
+  const parsed = yamlToJson(argLines, 0);
+  const args = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : {};
 
   return { tool, args };
 }

@@ -76,6 +76,55 @@ describe('ToolRouter', () => {
       expect(result!.args.task).toContain('snake game');
     });
 
+    it('parses YAML dispatch_parallel with nested task array', () => {
+      const text = `I'll dispatch now.
+[TOOL_CALL]
+tool: dispatch_parallel
+args:
+  tasks:
+    - agent_id: impl
+      task: "build the app"
+      write_mode: scoped
+      scope: "./"
+    - agent_id: reviewer
+      task: "review code"
+`;
+      const result = ToolRouter.parseToolCall(text);
+      expect(result).not.toBeNull();
+      expect(result!.tool).toBe('dispatch_parallel');
+      expect(result!.args.tasks).toEqual([
+        { agent_id: 'impl', task: 'build the app', write_mode: 'scoped', scope: './' },
+        { agent_id: 'reviewer', task: 'review code' },
+      ]);
+    });
+
+    it('parses YAML dispatch_consensus with agent_ids array', () => {
+      const text = `[TOOL_CALL]
+tool: dispatch_consensus
+args:
+  task: "review this PR"
+  agent_ids:
+    - reviewer-1
+    - reviewer-2
+`;
+      const result = ToolRouter.parseToolCall(text);
+      expect(result).not.toBeNull();
+      expect(result!.tool).toBe('dispatch_consensus');
+      expect(result!.args.task).toBe('review this PR');
+    });
+
+    it('parses YAML with quoted multiword task values', () => {
+      const text = `[TOOL_CALL]
+tool: dispatch
+args:
+  agent_id: gemini-implementer
+  task: "Build a login form with validation"
+`;
+      const result = ToolRouter.parseToolCall(text);
+      expect(result).not.toBeNull();
+      expect(result!.args.task).toBe('Build a login form with validation');
+    });
+
     it('normalizes MCP-style tool names (gossip_plan → plan)', () => {
       const text = '[TOOL_CALL]\ntool: gossip_plan\nargs:\n  task: "test"';
       const result = ToolRouter.parseToolCall(text);
