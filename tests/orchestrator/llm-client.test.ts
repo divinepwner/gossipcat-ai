@@ -191,6 +191,40 @@ describe('Multimodal message formatting', () => {
     expect(userMsg.content[1].type).toBe('text');
   });
 
+  describe('GeminiProvider token usage', () => {
+    it('extracts token usage from Gemini usageMetadata', () => {
+      const provider = new GeminiProvider('gemini-pro', 'test-key');
+      const mockResponse = {
+        candidates: [{
+          content: { parts: [{ text: 'Hello' }] },
+          finishReason: 'STOP',
+        }],
+        usageMetadata: {
+          promptTokenCount: 150,
+          candidatesTokenCount: 42,
+        },
+      };
+
+      const result = (provider as any).parseGeminiResponse(mockResponse);
+
+      expect(result.usage).toEqual({ inputTokens: 150, outputTokens: 42 });
+    });
+
+    it('returns undefined usage when Gemini has no usageMetadata', () => {
+      const provider = new GeminiProvider('gemini-pro', 'test-key');
+      const mockResponse = {
+        candidates: [{
+          content: { parts: [{ text: 'Hello' }] },
+          finishReason: 'STOP',
+        }],
+      };
+
+      const result = (provider as any).parseGeminiResponse(mockResponse);
+
+      expect(result.usage).toBeUndefined();
+    });
+  });
+
   it('GeminiProvider formats multimodal content', async () => {
     let sentBody: any = null;
     global.fetch = jest.fn().mockImplementation(async (_url: string, opts: any) => {

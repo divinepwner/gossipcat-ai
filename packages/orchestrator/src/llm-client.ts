@@ -276,7 +276,9 @@ export class GeminiProvider implements ILLMProvider {
     }
     const candidate = candidates[0];
     const finishReason = candidate.finishReason as string | undefined;
-    if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
+    // STOP = normal, MAX_TOKENS = truncated, tool call reasons = function calling (expected)
+    const expectedReasons = ['STOP', 'MAX_TOKENS', 'TOOL_CALL', 'UNEXPECTED_TOOL_CALL'];
+    if (finishReason && !expectedReasons.includes(finishReason)) {
       process.stderr.write(`[GeminiProvider] Unusual finishReason: ${finishReason}\n`);
     }
     const parts = ((candidate.content as Record<string, unknown>)?.parts || []) as Array<Record<string, unknown>>;
@@ -302,9 +304,18 @@ export class GeminiProvider implements ILLMProvider {
       }
     }
 
+    const usage = data.usageMetadata as {
+      promptTokenCount?: number;
+      candidatesTokenCount?: number;
+    } | undefined;
+
     return {
       text: textParts.join(''),
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      usage: usage?.promptTokenCount != null ? {
+        inputTokens: usage.promptTokenCount ?? 0,
+        outputTokens: usage.candidatesTokenCount ?? 0,
+      } : undefined,
     };
   }
 }

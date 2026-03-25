@@ -21,9 +21,115 @@ import { buildToolSystemPrompt, PLAN_CHOICES, PENDING_PLAN_CHOICES } from './too
 import { ProjectInitializer } from './project-initializer';
 import { TeamManager } from './team-manager';
 
-const CHAT_SYSTEM_PROMPT = `You are a developer assistant powering Gossip Mesh. Be concise and direct.
+const CHAT_SYSTEM_PROMPT = `You are the **orchestrator** of Gossip Mesh — a multi-agent system. You coordinate a team of AI agents to get work done.
 
-When you want to present the developer with choices, use this format in your response:
+## CRITICAL RULES
+
+1. **NEVER output raw code.** You have agents that write files. NEVER tell the user to "save" or "create" files manually.
+2. **NEVER claim you dispatched work unless you emitted a [TOOL_CALL] block.** Saying "I've dispatched" or "agents are working on it" without an actual tool call is a lie. If you want agents to do work, you MUST emit a [TOOL_CALL]. No exceptions.
+3. **Brainstorm ONLY for brand-new ideas.** When the developer first describes a new project or feature, explore the idea before planning. But if you already brainstormed and/or already have a plan in the conversation, do NOT brainstorm again — move forward.
+4. **When the user approves a plan (says "yes", "accept", "looks good", "let's go", "build it", etc.), IMMEDIATELY dispatch it.** Emit a [TOOL_CALL] to \`dispatch_parallel\` (or \`dispatch\` for single tasks) with the plan's tasks. Do NOT re-brainstorm, do NOT ask more questions, do NOT generate a new plan. The user said yes — execute.
+
+## Your Role
+
+You are a **creative technical lead**, not a code monkey. Your job is to:
+- Understand what the developer ACTUALLY wants (not just what they typed)
+- Brainstorm and elevate ideas before jumping to implementation
+- Coordinate your agent team to build production-quality work
+
+## Workflow: From Idea to Execution
+
+### Phase 1: Brainstorm (for new features/projects)
+
+When a developer describes something to build, DON'T immediately plan. First, explore:
+
+1. **Understand the vision** — What's the end goal? Who's it for? What should it feel like?
+2. **Elevate the idea** — Suggest 3-5 production-quality features they haven't thought of. Think about what would make this genuinely impressive, not just functional.
+3. **Clarify scope** — Present options from MVP to full-featured. Let them choose.
+
+Example: "build me a music game" should NOT become "create 3 files." Instead:
+- "What kind of music game? Rhythm-based? Generative? Simon Says?"
+- "Here are some ideas that could make this really fun: [visual feedback, combo systems, procedural music, multiplayer]"
+- "Let's nail the scope — which of these excite you?"
+
+Present ideas as choices so the developer can steer:
+
+[CHOICES]
+message: What kind of experience are you going for?
+- arcade | Arcade Music Maker | Grid of pads with synth sounds, Web Audio API
+- rhythm | Rhythm Game | Notes fall, hit keys in time, scoring system
+- generative | Generative Music Toy | Draw patterns that become melodies
+- simon | Sound Memory Game | Simon Says with escalating difficulty
+[/CHOICES]
+
+Skip brainstorming only for: bug fixes, quick edits, or tasks where the developer has already specified exactly what they want.
+
+### Phase 2: Plan
+
+After the developer has confirmed the direction, use the \`plan\` tool to decompose into agent-dispatchable subtasks:
+
+\`\`\`
+[TOOL_CALL]
+tool: plan
+args:
+  task: "<the agreed-upon task with full context from brainstorming>"
+\`\`\`
+
+After the plan is generated, present it clearly (what each agent will do, in what order, which files), then ALWAYS offer these choices:
+
+[CHOICES]
+message: How would you like to proceed with this plan?
+- accept | Accept and build | Dispatch the plan to agents now
+- modify | Modify the plan | Tell me what to change
+- brainstorm | More brainstorming | Let's rethink the approach
+- cancel | Cancel | Discard the plan
+[/CHOICES]
+
+NEVER auto-execute a plan. ALWAYS present these choices and wait for the developer to decide.
+
+If the developer selects "modify", ask what they want to change, update the plan, and present the choices again.
+If the developer selects "brainstorm", go back to Phase 1 with the new context.
+
+### Phase 3: Execute
+
+After the developer selects "accept", dispatch with a REAL tool call:
+
+\`\`\`
+[TOOL_CALL]
+tool: dispatch_parallel
+args:
+  tasks:
+    - agent_id: "<implementer>"
+      task: "<specific task>"
+      write_mode: "scoped"
+      scope: "<directory>"
+\`\`\`
+
+### When to dispatch vs. chat
+- **Must dispatch**: building features, writing code, fixing bugs, running tests, file modifications, reviews, audits
+- **Chat directly**: answering questions, explaining concepts, brainstorming, clarifying requirements
+
+## Write Modes
+
+Your agents can modify files when dispatched with a write mode:
+- \`sequential\` — one write task at a time (safe default)
+- \`scoped\` — parallel writes locked to non-overlapping directories
+- \`worktree\` — fully isolated git branch per task
+
+## Agent Selection
+
+Match tasks to agent skills:
+- **implementer** agents → writing code, building features, refactoring
+- **reviewer** agents → code review, security audit, architecture review
+- **researcher** agents → documentation, API design, investigation
+- **tester** agents → testing, debugging, verification
+
+For reviews/audits, use \`dispatch_consensus\` for cross-validation.
+For simple single-agent work, use \`dispatch\`.
+
+## Presenting Choices
+
+Use this format to present options:
 
 [CHOICES]
 message: Your question here?
@@ -31,13 +137,8 @@ message: Your question here?
 - option_value | Display Label | Optional hint
 [/CHOICES]
 
-Examples of when to use choices:
-- Multiple approaches to a task (refactor in-place vs extract vs rewrite)
-- Confirming a destructive action (delete files, reset branch)
-- Selecting which files/modules to work on
-- Choosing between trade-offs (speed vs thoroughness)
-
-Only present choices when there's a genuine decision. Don't use them for simple yes/no — just ask directly.
+Use choices for: brainstorming options, plan approval, approach selection, scope decisions.
+Only present choices when there's a genuine decision.
 When there's a clear best option, recommend it but still offer alternatives.`;
 
 export interface MainAgentConfig {
@@ -57,6 +158,8 @@ export interface MainAgentConfig {
 
 export class MainAgent {
   private llm: ILLMProvider;
+  private currentProvider: string;
+  private currentModel: string;
   private registry: AgentRegistry;
   private dispatcher: TaskDispatcher;
   private workers: Map<string, WorkerAgent> = new Map();
@@ -75,6 +178,8 @@ export class MainAgent {
 
   constructor(config: MainAgentConfig) {
     this.llm = config.llm ?? createProvider(config.provider, config.model, config.apiKey);
+    this.currentProvider = config.provider;
+    this.currentModel = config.model;
     this.registry = new AgentRegistry();
     this.dispatcher = new TaskDispatcher(this.llm, this.registry);
     this.relayUrl = config.relayUrl;
@@ -165,6 +270,41 @@ export class MainAgent {
   setGossipPublisher(publisher: any) { this.pipeline.setGossipPublisher(publisher); }
   setOverlapDetector(detector: any): void { this.pipeline.setOverlapDetector(detector); }
   setLensGenerator(generator: any): void { this.pipeline.setLensGenerator(generator); }
+
+  /** Convenience: number of registered agents */
+  getAgentCount(): number { return this.registry.getAll().length; }
+  /** Convenience: whether any agents are registered */
+  hasAgents(): boolean { return this.registry.getAll().length > 0; }
+  /** Convenience: list all registered agent configs */
+  getAgentList(): AgentConfig[] { return this.registry.getAll(); }
+
+  /** Set a progress callback for plan execution */
+  onTaskProgress(cb: (event: {
+    taskIndex: number;
+    totalTasks: number;
+    agentId: string;
+    taskDescription: string;
+    status: 'start' | 'done' | 'error';
+    result?: string;
+    error?: string;
+  }) => void): void {
+    this.toolExecutor.onTaskProgress = cb;
+  }
+
+  /** Get current orchestrator model info */
+  getModel(): { provider: string; model: string } {
+    return { provider: this.currentProvider, model: this.currentModel };
+  }
+
+  /** Switch orchestrator model at runtime */
+  async setModel(provider: string, model: string, apiKey?: string): Promise<void> {
+    const key = apiKey || (this.keyProviderFn ? await this.keyProviderFn(provider) : undefined);
+    this.llm = createProvider(provider, model, key ?? undefined);
+    this.currentProvider = provider;
+    this.currentModel = model;
+    // Clear conversation history since model context may differ
+    this.conversationHistory = [];
+  }
 
   /** Register new agent configs (for hot-reload from config changes) */
   registerAgent(config: AgentConfig): void {
@@ -284,6 +424,12 @@ export class MainAgent {
       }
       const proposal = await this.projectInitializer.proposeTeam(taskForProposal, signals);
 
+      // Record this exchange in conversation history so cognitive mode has context
+      this.conversationHistory.push(
+        { role: 'user', content: text },
+        { role: 'assistant', content: proposal.text.slice(0, 1500) },
+      );
+
       return {
         text: proposal.text,
         choices: proposal.choices,
@@ -309,8 +455,19 @@ export class MainAgent {
     ];
     const response = await this.llm.generate(messages, { temperature: 0 });
 
-    // Parse for tool call — [TOOL_CALL] takes precedence over [CHOICES]
-    const toolCall = ToolRouter.parseToolCall(response.text);
+    // Check for tool calls — native (Gemini/OpenAI function calling) OR text-based [TOOL_CALL]
+    let toolCall = ToolRouter.parseToolCall(response.text);
+
+    // Native tool calls from providers that support function calling (Gemini, OpenAI)
+    if (!toolCall && response.toolCalls?.length) {
+      const native = response.toolCalls[0];
+      // Normalize: strip gossip_ prefix if present
+      let toolName = native.name;
+      if (toolName.startsWith('gossip_')) {
+        toolName = toolName.replace(/^gossip_/, '');
+      }
+      toolCall = { tool: toolName, args: native.arguments };
+    }
 
     let result: ChatResponse;
     if (toolCall) {
@@ -355,10 +512,9 @@ export class MainAgent {
           }
         }
         // Start workers if keyProvider available
-        let workersStarted = 0;
         if (this.keyProviderFn) {
           try {
-            workersStarted = await this.syncWorkers(this.keyProviderFn);
+            await this.syncWorkers(this.keyProviderFn);
           } catch (err) {
             process.stderr.write(`[MainAgent] Failed to start workers: ${(err as Error).message}\n`);
           }
@@ -370,8 +526,16 @@ export class MainAgent {
         // Show team confirmation with option to start working
         const agentList = newAgents.join(', ');
         const taskHint = task ? `\nReady to start working on: "${task}"` : '';
+        const confirmText = `Team ready! ${newAgents.length} agents online (${agentList}).${taskHint}`;
+
+        // Record the accept exchange in history
+        this.conversationHistory.push(
+          { role: 'user', content: 'I accept this team configuration.' },
+          { role: 'assistant', content: confirmText },
+        );
+
         return {
-          text: `Team ready! ${newAgents.length} agents online (${agentList}).${taskHint}`,
+          text: confirmText,
           status: 'done',
           agents: newAgents,
           choices: task ? {
@@ -384,8 +548,31 @@ export class MainAgent {
         };
       }
       if (choiceValue === 'start') {
-        // User wants to proceed with the original task
-        return this.handleMessageCognitive(originalMessage);
+        const task = this.projectInitializer.pendingTask || originalMessage;
+
+        // Find a researcher agent if available
+        const researcher = this.registry.getAll().find(
+          a => a.preset === 'researcher' || a.skills.includes('research')
+        );
+
+        let researchContext = '';
+        if (researcher && this.workers.has(researcher.id)) {
+          const researchTask = `Research creative ideas and approaches for this project: "${task}". Look for: similar projects for inspiration, interesting APIs or libraries that could make it special, unique features that would elevate it beyond a basic implementation. Return 3-5 concrete, specific ideas with brief explanations of why each is interesting.`;
+          const { taskId } = this.pipeline.dispatch(researcher.id, researchTask);
+          try {
+            const { results } = await this.pipeline.collect([taskId], 60_000);
+            const r = results[0];
+            if (r?.status === 'completed') {
+              researchContext = `\n\nResearch findings from my researcher agent:\n${r.result}\n\nUse these findings to inform your brainstorming.`;
+            }
+          } catch { /* research timeout — proceed without it */ }
+        }
+
+        // History already has: user's project description → proposal → accept → team confirmation
+        // Now continue naturally into brainstorming
+        return this.handleMessageCognitive(
+          `Let's brainstorm! Suggest 2-3 creative directions for this project. For each, describe specific features that would make it impressive. Present them as choices.${researchContext}`,
+        );
       }
       if (choiceValue === 'different') {
         return { text: 'What would you like to do?', status: 'done' };
@@ -481,16 +668,9 @@ export class MainAgent {
       return { text: 'Instruction update cancelled.', status: 'done' };
     }
 
-    const systemPrompt = this.bootstrapPrompt
-      ? this.bootstrapPrompt + '\n\n' + CHAT_SYSTEM_PROMPT
-      : CHAT_SYSTEM_PROMPT;
-    const response = await this.llm.generate([
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: originalMessage },
-      { role: 'assistant', content: `I presented options and the developer chose: "${choiceValue}". Proceeding with that approach.` },
-      { role: 'user', content: `Yes, go with "${choiceValue}".` },
-    ]);
-    return this.parseResponse(response.text);
+    // Unhandled choice — pass through to cognitive mode with full conversation history.
+    // Inject the choice as a user message so the LLM knows what was selected.
+    return this.handleMessageCognitive(`I chose: "${choiceValue}". Proceed with that.`);
   }
 
   /**
@@ -503,7 +683,13 @@ export class MainAgent {
    *   [/CHOICES]
    */
   private parseResponse(text: string): ChatResponse {
-    const choiceMatch = text.match(/\[CHOICES\]([\s\S]*?)\[\/CHOICES\]/);
+    // Try with closing tag first, then fallback to unclosed (to end of text)
+    let choiceMatch = text.match(/\[CHOICES\]([\s\S]*?)\[\/CHOICES\]/);
+    let hasClosingTag = true;
+    if (!choiceMatch) {
+      choiceMatch = text.match(/\[CHOICES\]([\s\S]*)$/);
+      hasClosingTag = false;
+    }
     if (!choiceMatch) {
       return { text, status: 'done' };
     }
@@ -512,6 +698,11 @@ export class MainAgent {
     const lines = choiceBlock.split('\n').map(l => l.trim()).filter(Boolean);
     const messageLine = lines.find(l => l.startsWith('message:'));
     const optionLines = lines.filter(l => l.startsWith('- '));
+
+    // If we matched [CHOICES] but found no valid options, treat as plain text
+    if (optionLines.length === 0) {
+      return { text, status: 'done' };
+    }
 
     const message = messageLine?.replace('message:', '').trim() || 'How should I proceed?';
     const options = optionLines.map(line => {
@@ -524,7 +715,9 @@ export class MainAgent {
     });
 
     const textBefore = text.slice(0, text.indexOf('[CHOICES]')).trim();
-    const textAfter = text.slice(text.indexOf('[/CHOICES]') + '[/CHOICES]'.length).trim();
+    const textAfter = hasClosingTag
+      ? text.slice(text.indexOf('[/CHOICES]') + '[/CHOICES]'.length).trim()
+      : '';
     const cleanText = [textBefore, textAfter].filter(Boolean).join('\n\n');
 
     return {
