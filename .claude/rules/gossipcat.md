@@ -36,6 +36,13 @@ gossip_dispatch_parallel(tasks: <plan JSON>)
 gossip_collect(task_ids: [...])
 ```
 
+**Skill Discovery** (after gossip_collect reports skills ready):
+```
+gossip_build_skills()                    → see pending skill gaps with suggestion data
+gossip_build_skills(skills: [{name, content}])  → save generated skill files
+```
+When `gossip_collect` says "🔧 N skill(s) ready to build", call `gossip_build_skills()` to see the gaps, generate skill `.md` files, then call again with the content to save them to `.gossip/skills/`.
+
 ## Available Agents
 - sonnet-reviewer: anthropic/claude-sonnet-4-6 (reviewer)
 - haiku-researcher: anthropic/claude-haiku-4-5 (researcher)
