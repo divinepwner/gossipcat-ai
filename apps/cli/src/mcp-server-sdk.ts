@@ -781,6 +781,15 @@ server.tool(
       output += '\n\n' + consensusReport.summary;
     }
 
+    try {
+      const { SkillGapTracker } = await import('@gossip/orchestrator');
+      const tracker = new SkillGapTracker(process.cwd());
+      const thresholds = tracker.checkThresholds();
+      if (thresholds.count > 0) {
+        output += `\n\n🔧 ${thresholds.count} skill(s) ready to build. Call gossip_build_skills() to generate them.`;
+      }
+    } catch { /* best-effort */ }
+
     return { content: [{ type: 'text' as const, text: output }] };
   }
 );
@@ -1662,6 +1671,100 @@ server.tool(
   }
 );
 
+// ── Build skill files from gap suggestions ────────────────────────────────
+server.tool(
+  'gossip_build_skills',
+  'Build skill files from agent suggestions that hit threshold (3+ suggestions, 2+ agents). Call without skills to discover pending gaps. Call with skills array to save generated content.',
+  {
+    skill_names: z.array(z.string()).optional()
+      .describe('Filter to specific skills. Omit to get all pending.'),
+    skills: z.array(z.object({
+      name: z.string().describe('Skill name (kebab-case)'),
+      content: z.string().describe('Full .md content with frontmatter'),
+    })).optional().describe('Generated skill files to save. Omit for discovery mode.'),
+  },
+  async ({ skill_names, skills }) => {
+    await boot();
+
+    const { SkillGapTracker, parseSkillFrontmatter, normalizeSkillName } = await import('@gossip/orchestrator');
+    const tracker = new SkillGapTracker(process.cwd());
+
+    // Save mode — write generated skill files
+    if (skills && skills.length > 0) {
+      const { writeFileSync, mkdirSync, existsSync, readFileSync } = require('fs');
+      const { join } = require('path');
+      const dir = join(process.cwd(), '.gossip', 'skills');
+      mkdirSync(dir, { recursive: true });
+
+      const results: string[] = [];
+      for (const skill of skills) {
+        const name = normalizeSkillName(skill.name);
+        const filePath = join(dir, `${name}.md`);
+
+        // Overwrite protection
+        if (existsSync(filePath)) {
+          const existing = readFileSync(filePath, 'utf-8');
+          const fm = parseSkillFrontmatter(existing);
+          if (fm) {
+            if (fm.generated_by === 'manual') {
+              results.push(`⚠️ Skipped ${name}: manually created file (generated_by: manual)`);
+              continue;
+            }
+            if (fm.status === 'active') {
+              results.push(`⚠️ Skipped ${name}: already active`);
+              continue;
+            }
+            if (fm.status === 'disabled') {
+              results.push(`⚠️ Skipped ${name}: disabled by user`);
+              continue;
+            }
+          }
+          // No frontmatter = old skeleton template, safe to overwrite
+        }
+
+        writeFileSync(filePath, skill.content);
+        tracker.recordResolution(name);
+        results.push(`✅ Created .gossip/skills/${name}.md`);
+      }
+
+      return { content: [{ type: 'text' as const, text: results.join('\n') }] };
+    }
+
+    // Discovery mode — return pending gap data
+    const thresholds = tracker.checkThresholds();
+    if (thresholds.count === 0) {
+      return { content: [{ type: 'text' as const, text: 'No skills at threshold. Agents need to call suggest_skill() more.' }] };
+    }
+
+    const targetSkills = skill_names
+      ? skill_names.map(s => normalizeSkillName(s)).filter(s => thresholds.pending.includes(s))
+      : thresholds.pending;
+
+    if (targetSkills.length === 0) {
+      return { content: [{ type: 'text' as const, text: `No matching skills at threshold. Pending: ${thresholds.pending.join(', ')}` }] };
+    }
+
+    const gapData = tracker.getGapData(targetSkills);
+    let text = `Skills ready to build: ${gapData.length}\n\n`;
+
+    for (const gap of gapData) {
+      text += `### ${gap.skill}\n`;
+      text += `Suggestions (${gap.suggestions.length} from ${gap.uniqueAgents.length} agents):\n`;
+      for (const s of gap.suggestions) {
+        text += `- ${s.agent}: "${s.reason}" (task: ${s.task_context.slice(0, 80)})\n`;
+      }
+      text += '\n';
+    }
+
+    text += `Generate each skill as a .md file with this frontmatter format:\n`;
+    text += '```\n---\nname: skill-name\ndescription: What this skill does.\nkeywords: [keyword1, keyword2]\ngenerated_by: orchestrator\nsources: N suggestions from agent1, agent2\nstatus: active\n---\n```\n';
+    text += `Body sections: Approach (numbered steps), Output (format), Don't (anti-patterns).\n\n`;
+    text += `Then call gossip_build_skills(skills: [{name: "...", content: "..."}]) to save.`;
+
+    return { content: [{ type: 'text' as const, text }] };
+  }
+);
+
 // ── Tool: list available gossipcat tools ──────────────────────────────────
 server.tool(
   'gossip_tools',
@@ -1684,6 +1787,7 @@ server.tool(
       { name: 'gossip_scores', desc: 'View agent performance scores and dispatch weights' },
       { name: 'gossip_log_finding', desc: 'Log implementation quality finding (observer-only, no scoring)' },
       { name: 'gossip_findings', desc: 'View implementation findings per agent' },
+      { name: 'gossip_build_skills', desc: 'Build skill files from agent gap suggestions' },
       { name: 'gossip_tools', desc: 'List available tools (this command)' },
       { name: 'gossip_bootstrap', desc: 'Generate team context prompt with live agent state' },
       { name: 'gossip_setup', desc: 'Create or update team configuration' },
