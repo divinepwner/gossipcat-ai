@@ -99,4 +99,35 @@ describe('LensGenerator', () => {
     const lenses = await gen.generateLenses(agents, task, sharedSkills);
     expect(lenses).toHaveLength(2);
   });
+
+  it('returns empty when LLM returns non-array JSON', async () => {
+    const llm = mockLLM(JSON.stringify({ error: 'invalid prompt' }));
+    const gen = new LensGenerator(llm);
+    const lenses = await gen.generateLenses(agents, task, sharedSkills);
+    expect(lenses).toHaveLength(0);
+  });
+
+  it('filters out lenses with missing agentId or focus', async () => {
+    const llm = mockLLM(JSON.stringify([
+      { agentId: 'rev', focus: 'Focus on security' },
+      { agentId: 'tst' /* missing focus */ },
+    ]));
+    const gen = new LensGenerator(llm);
+    const lenses = await gen.generateLenses(agents, task, sharedSkills);
+    expect(lenses).toHaveLength(0); // wrong count → rejected
+  });
+
+  it('handles agents with native flag', async () => {
+    const mixedAgents = [
+      { id: 'claude-rev', preset: 'reviewer', skills: ['code_review'] },
+      { id: 'gemini-tst', preset: 'tester', skills: ['code_review'] },
+    ];
+    const llm = mockLLM(JSON.stringify([
+      { agentId: 'claude-rev', focus: 'Focus on logic errors', avoidOverlap: '' },
+      { agentId: 'gemini-tst', focus: 'Focus on edge case testing', avoidOverlap: '' },
+    ]));
+    const gen = new LensGenerator(llm);
+    const lenses = await gen.generateLenses(mixedAgents, task, sharedSkills);
+    expect(lenses).toHaveLength(2);
+  });
 });

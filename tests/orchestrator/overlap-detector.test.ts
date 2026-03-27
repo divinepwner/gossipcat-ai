@@ -93,4 +93,29 @@ describe('OverlapDetector', () => {
     expect(warning).toContain('gpt-rev');
     expect(warning).toContain('code_review');
   });
+
+  it('detects three-way overlaps as separate pairs', () => {
+    const agents = [
+      agent('a', 'reviewer', ['code_review', 'security']),
+      agent('b', 'reviewer', ['code_review', 'typescript']),
+      agent('c', 'tester', ['code_review', 'testing']),
+    ];
+    const result = detector.detect(agents);
+    expect(result.hasOverlaps).toBe(true);
+    expect(result.pairs).toHaveLength(3); // (a,b), (a,c), (b,c)
+  });
+
+  it('handles empty agent list', () => {
+    const result = detector.detect([]);
+    expect(result.hasOverlaps).toBe(false);
+    expect(result.pairs).toHaveLength(0);
+  });
+
+  it('native agents participate in overlap detection', () => {
+    const nativeAgent: AgentConfig = { id: 'claude-rev', provider: 'anthropic', model: 'claude-sonnet-4-6', preset: 'reviewer', skills: ['code_review'], native: true };
+    const customAgent = agent('gemini-rev', 'reviewer', ['code_review']);
+    const result = detector.detect([nativeAgent, customAgent]);
+    expect(result.hasOverlaps).toBe(true);
+    expect(result.pairs[0].type).toBe('redundant');
+  });
 });
