@@ -111,6 +111,17 @@ export class DispatchPipeline {
     this.worktreeManager.pruneOrphans().catch(err => log(`Orphan cleanup failed: ${(err as Error).message}`));
   }
 
+  /** Build chain context string for a plan step (used by native agent bridge) */
+  getChainContext(planId: string, step: number): string {
+    if (step <= 1) return '';
+    const plan = this.plans.get(planId);
+    if (!plan) return '';
+    const priorSteps = plan.steps.filter(s => s.step < step && s.result);
+    if (priorSteps.length === 0) return '';
+    return '[Chain Context — results from prior steps in this plan]\n' +
+      priorSteps.map(s => `Step ${s.step} (${s.agentId}): ${s.result!.slice(0, 1000)}`).join('\n\n');
+  }
+
   private static readonly MAX_TASKS = 500;
 
   dispatch(agentId: string, task: string, options?: DispatchOptions): { taskId: string; promise: Promise<string> } {
@@ -825,6 +836,16 @@ export class DispatchPipeline {
       this.taskGraph.recordFailed(taskId, error, -1);
     } else {
       this.taskGraph.recordCompleted(taskId, (result || '').slice(0, 4000), -1);
+    }
+  }
+
+  /** Record a native task result into the plan so subsequent steps get chain context */
+  recordPlanStepResult(planId: string, step: number, result: string): void {
+    const plan = this.plans.get(planId);
+    if (!plan) return;
+    const planStep = plan.steps.find(s => s.step === step);
+    if (planStep) {
+      planStep.result = (result || '').slice(0, 2000);
     }
   }
 

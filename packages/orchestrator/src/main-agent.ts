@@ -207,6 +207,8 @@ export class MainAgent {
   async collect(taskIds?: string[], timeoutMs?: number, options?: { consensus?: boolean }) { return this.pipeline.collect(taskIds, timeoutMs, options); }
   async dispatchParallel(tasks: Array<{ agentId: string; task: string; options?: DispatchOptions }>, options?: { consensus?: boolean }) { return this.pipeline.dispatchParallel(tasks, options); }
   registerPlan(plan: PlanState): void { this.pipeline.registerPlan(plan); }
+  getChainContext(planId: string, step: number): string { return this.pipeline.getChainContext(planId, step); }
+  recordPlanStepResult(planId: string, step: number, result: string): void { this.pipeline.recordPlanStepResult(planId, step, result); }
   getWorker(agentId: string) { return this.workers.get(agentId); }
   getTask(taskId: string) { return this.pipeline.getTask(taskId); }
   setGossipPublisher(publisher: any) { this.pipeline.setGossipPublisher(publisher); }

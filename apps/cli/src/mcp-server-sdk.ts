@@ -43,7 +43,7 @@ function detectEnvironment(): EnvironmentInfo {
 const env = detectEnvironment();
 
 // Native agent task tracking — results fed back via gossip_relay_result
-const nativeTaskMap: Map<string, { agentId: string; task: string; startedAt: number }> = new Map();
+const nativeTaskMap: Map<string, { agentId: string; task: string; startedAt: number; planId?: string; step?: number }> = new Map();
 const nativeAgentConfigs: Map<string, { model: string; instructions: string; description: string }> = new Map();
 // Collected native results — so gossip_collect can return them alongside relay results
 const nativeResultMap: Map<string, {
@@ -561,14 +561,22 @@ server.tool(
     if (nativeConfig) {
       evictStaleNativeTasks();
       const taskId = randomUUID().slice(0, 8);
-      nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now() });
+      nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), planId: plan_id, step });
 
       // Fix: register in TaskGraph so native tasks are visible to CLI/sync
       try { mainAgent.recordNativeTask(taskId, agent_id, task); } catch { /* best-effort */ }
 
-      const agentPrompt = nativeConfig.instructions
-        ? `${nativeConfig.instructions}\n\n---\n\nTask: ${task}`
-        : task;
+      // Inject chain context from prior plan steps (same as relay agents get)
+      let chainContext = '';
+      if (plan_id && step && step > 1) {
+        chainContext = mainAgent.getChainContext(plan_id, step);
+      }
+
+      const agentPrompt = [
+        nativeConfig.instructions || '',
+        chainContext ? `\n${chainContext}\n` : '',
+        `\n---\n\nTask: ${task}`,
+      ].filter(Boolean).join('').trim();
 
       // Only use worktree if explicitly requested AND project is a git repo
       let useWorktree = write_mode === 'worktree';
@@ -1373,6 +1381,11 @@ server.tool(
 
     // 0. Record in TaskGraph (makes native tasks visible to CLI + Supabase sync)
     try { mainAgent.recordNativeTaskCompleted(task_id, result, error || undefined); } catch { /* best-effort */ }
+
+    // 0b. Record plan step result so subsequent steps get chain context
+    if (taskInfo.planId && taskInfo.step && !error) {
+      try { mainAgent.recordPlanStepResult(taskInfo.planId, taskInfo.step, result); } catch { /* best-effort */ }
+    }
 
     if (!error) {
       // 1. Write task entry to memory
