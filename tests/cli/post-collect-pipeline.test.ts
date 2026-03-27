@@ -213,59 +213,53 @@ describe('SkillGapTracker — surfaces suggestions and generates skeletons', () 
 
   it('returns empty when gap log does not exist', () => {
     const tracker = new SkillGapTracker(testDir);
-    expect(tracker.getPendingSkills()).toEqual([]);
+    expect(tracker.checkThresholds().pending).toEqual([]);
   });
 
-  it('does not trigger skeleton generation below threshold', () => {
+  it('does not trigger at threshold below minimum', () => {
     // Only 2 suggestions from 1 agent — not enough
     writeSuggestions([
       { skill: 'dos_resilience', agent: 'agent-1', reason: 'no rate limiting' },
       { skill: 'dos_resilience', agent: 'agent-1', reason: 'no maxPayload' },
     ]);
     const tracker = new SkillGapTracker(testDir);
-    expect(tracker.shouldGenerate('dos_resilience')).toBe(false);
+    expect(tracker.isAtThreshold('dos_resilience')).toBe(false);
   });
 
-  it('triggers skeleton generation at threshold (3 suggestions, 2 distinct agents)', () => {
+  it('reaches threshold at 3 suggestions from 2 distinct agents', () => {
     writeSuggestions([
       { skill: 'dos_resilience', agent: 'agent-1', reason: 'no rate limiting' },
       { skill: 'dos_resilience', agent: 'agent-2', reason: 'unbounded queue' },
       { skill: 'dos_resilience', agent: 'agent-1', reason: 'no maxPayload' },
     ]);
     const tracker = new SkillGapTracker(testDir);
-    expect(tracker.shouldGenerate('dos_resilience')).toBe(true);
+    expect(tracker.isAtThreshold('dos_resilience')).toBe(true);
   });
 
-  it('generates skeleton file with reasons from suggestions', () => {
+  it('getGapData returns suggestions grouped by skill', () => {
     writeSuggestions([
       { skill: 'dos_resilience', agent: 'agent-1', reason: 'no rate limiting' },
       { skill: 'dos_resilience', agent: 'agent-2', reason: 'unbounded queue' },
       { skill: 'dos_resilience', agent: 'agent-1', reason: 'no maxPayload' },
     ]);
     const tracker = new SkillGapTracker(testDir);
-    const result = tracker.generateSkeleton('dos_resilience');
-
-    expect(result.generated).toBe(true);
-    expect(result.path).toBeDefined();
-    expect(existsSync(result.path!)).toBe(true);
-
-    const content = readFileSync(result.path!, 'utf-8');
-    expect(content).toContain('dos_resilience');
-    expect(content).toContain('REVIEW AND EDIT BEFORE ASSIGNING');
-    expect(content).toContain('no rate limiting');
-    expect(content).toContain('unbounded queue');
+    const data = tracker.getGapData(['dos-resilience']);
+    expect(data).toHaveLength(1);
+    expect(data[0].suggestions).toHaveLength(3);
+    expect(data[0].suggestions.some(s => s.reason === 'no rate limiting')).toBe(true);
+    expect(data[0].suggestions.some(s => s.reason === 'unbounded queue')).toBe(true);
   });
 
-  it('checkAndGenerate returns messages for skills at threshold', () => {
+  it('checkThresholds returns pending skills at threshold', () => {
     writeSuggestions([
       { skill: 'dos_resilience', agent: 'agent-1', reason: 'no rate limiting' },
       { skill: 'dos_resilience', agent: 'agent-2', reason: 'unbounded queue' },
       { skill: 'dos_resilience', agent: 'agent-1', reason: 'no maxPayload' },
     ]);
     const tracker = new SkillGapTracker(testDir);
-    const messages = tracker.checkAndGenerate();
-    expect(messages.length).toBeGreaterThanOrEqual(1);
-    expect(messages[0]).toContain('dos_resilience');
+    const result = tracker.checkThresholds();
+    expect(result.count).toBeGreaterThanOrEqual(1);
+    expect(result.pending).toContain('dos-resilience');
   });
 
   it('getSuggestionsSince filters by agent and timestamp', () => {
