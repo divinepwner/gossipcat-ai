@@ -33,7 +33,8 @@ function parseTextToolCalls(text: string, validTools: Set<string>): Array<{ id: 
   const calls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
 
   // Pattern 1: [TOOL_CALL] or [TOOL_CODE] blocks (most common Gemini fallback)
-  const blockRe = /\[(?:TOOL_CALL|TOOL_CODE)\]([\s\S]*?)(?:\[\/(?:TOOL_CALL|TOOL_CODE)\]|$)/g;
+  // Fix: require closing tag — don't match to EOF (prevents consuming entire response)
+  const blockRe = /\[(?:TOOL_CALL|TOOL_CODE)\]([\s\S]*?)\[\/(?:TOOL_CALL|TOOL_CODE)\]/g;
   let match: RegExpExecArray | null;
   while ((match = blockRe.exec(text)) !== null) {
     const content = match[1].trim();
@@ -43,7 +44,8 @@ function parseTextToolCalls(text: string, validTools: Set<string>): Array<{ id: 
 
   // Pattern 2: ```tool_call or ```json blocks with tool/args structure
   if (calls.length === 0) {
-    const fenceRe = /```(?:tool_call|json)?\s*\n([\s\S]*?)```/g;
+    // Fix: only match ```tool_call fences, not generic ```json (avoids false positives on explanatory JSON)
+    const fenceRe = /```tool_call\s*\n([\s\S]*?)```/g;
     while ((match = fenceRe.exec(text)) !== null) {
       const content = match[1].trim();
       const parsed = parseToolContent(content, validTools);
@@ -51,10 +53,12 @@ function parseTextToolCalls(text: string, validTools: Set<string>): Array<{ id: 
     }
   }
 
-  // Pattern 3: function_name({...}) syntax
-  if (calls.length === 0) {
-    const funcRe = /\b(file_write|file_read|file_delete|file_search|file_tree|shell_exec|git_diff|git_status|suggest_skill|verify_write)\s*\(\s*(\{[\s\S]*?\})\s*\)/g;
+  // Pattern 3: function_name({...}) syntax — dynamic from validTools registry
+  if (calls.length === 0 && validTools.size > 0) {
+    const toolNames = Array.from(validTools).map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    const funcRe = new RegExp(`\\b(${toolNames})\\s*\\(\\s*(\\{[\\s\\S]*?\\})\\s*\\)`, 'g');
     while ((match = funcRe.exec(text)) !== null) {
+      if (!validTools.has(match[1])) continue; // double-check
       try {
         const args = JSON.parse(match[2].replace(/,\s*([}\]])/g, '$1'));
         calls.push({ id: randomUUID().slice(0, 12), name: match[1], arguments: args });
@@ -215,8 +219,8 @@ export class WorkerAgent {
     ];
 
     try {
-      const WRAP_UP_AT = MAX_TOOL_TURNS - 3;  // warn with 3 turns left
-      const FINAL_AT = MAX_TOOL_TURNS - 1;    // last turn: force finish
+      const WRAP_UP_AT = MAX_TOOL_TURNS - 4;  // warn with 4 turns left
+      const FINAL_AT = MAX_TOOL_TURNS - 2;    // second-to-last turn: save all work (turn after this is for summary only)
       let lastToolSig = '';   // signature of last tool call for repetition detection
       let repeatCount = 0;    // consecutive identical tool calls
       let consecutiveErrors = 0; // consecutive turns where ALL tool calls return errors
@@ -275,7 +279,8 @@ export class WorkerAgent {
         }
 
         // Detect repetitive tool calls — if the agent makes the exact same call 3+ times, it's stuck
-        const toolSig = response.toolCalls.map(tc => `${tc.name}:${JSON.stringify(tc.arguments)}`).join('|');
+        // Fix: sort keys for stable signature (JSON.stringify key order is not guaranteed)
+        const toolSig = response.toolCalls.map(tc => `${tc.name}:${JSON.stringify(tc.arguments, Object.keys(tc.arguments || {}).sort())}`).join('|');
         if (toolSig === lastToolSig) {
           repeatCount++;
           if (repeatCount >= 2) {
@@ -380,6 +385,7 @@ export class WorkerAgent {
           reject(new Error(`Tool call ${name} timed out`));
         }
       }, TOOL_CALL_TIMEOUT_MS);
+      timer.unref(); // Fix: don't keep Node process alive for pending tool timeouts
 
       this.pendingToolCalls.set(requestId, {
         resolve: (r) => { clearTimeout(timer); resolve(r); },
@@ -411,10 +417,10 @@ export class WorkerAgent {
       if (
         payload?.type === 'gossip' &&
         payload?.forAgentId === this.agentId &&
-        envelope.sid === 'gossip-publisher'
+        typeof payload?.summary === 'string' && payload.summary.length > 0 // Fix: type-guard gossip payload
       ) {
         if (this.gossipQueue.length < WorkerAgent.MAX_GOSSIP_QUEUE) {
-          this.gossipQueue.push(payload.summary as string);
+          this.gossipQueue.push(payload.summary);
         }
       }
       return;

@@ -4789,7 +4789,7 @@ ${subTaskList}` }
 // packages/orchestrator/src/worker-agent.ts
 function parseTextToolCalls(text, validTools) {
   const calls = [];
-  const blockRe = /\[(?:TOOL_CALL|TOOL_CODE)\]([\s\S]*?)(?:\[\/(?:TOOL_CALL|TOOL_CODE)\]|$)/g;
+  const blockRe = /\[(?:TOOL_CALL|TOOL_CODE)\]([\s\S]*?)\[\/(?:TOOL_CALL|TOOL_CODE)\]/g;
   let match;
   while ((match = blockRe.exec(text)) !== null) {
     const content = match[1].trim();
@@ -4797,16 +4797,18 @@ function parseTextToolCalls(text, validTools) {
     if (parsed) calls.push({ id: (0, import_crypto7.randomUUID)().slice(0, 12), ...parsed });
   }
   if (calls.length === 0) {
-    const fenceRe = /```(?:tool_call|json)?\s*\n([\s\S]*?)```/g;
+    const fenceRe = /```tool_call\s*\n([\s\S]*?)```/g;
     while ((match = fenceRe.exec(text)) !== null) {
       const content = match[1].trim();
       const parsed = parseToolContent(content, validTools);
       if (parsed) calls.push({ id: (0, import_crypto7.randomUUID)().slice(0, 12), ...parsed });
     }
   }
-  if (calls.length === 0) {
-    const funcRe = /\b(file_write|file_read|file_delete|file_search|file_tree|shell_exec|git_diff|git_status|suggest_skill|verify_write)\s*\(\s*(\{[\s\S]*?\})\s*\)/g;
+  if (calls.length === 0 && validTools.size > 0) {
+    const toolNames = Array.from(validTools).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+    const funcRe = new RegExp(`\\b(${toolNames})\\s*\\(\\s*(\\{[\\s\\S]*?\\})\\s*\\)`, "g");
     while ((match = funcRe.exec(text)) !== null) {
+      if (!validTools.has(match[1])) continue;
       try {
         const args = JSON.parse(match[2].replace(/,\s*([}\]])/g, "$1"));
         calls.push({ id: (0, import_crypto7.randomUUID)().slice(0, 12), name: match[1], arguments: args });
@@ -4958,8 +4960,8 @@ ${context}` : ""}
           { role: "user", content: task }
         ];
         try {
-          const WRAP_UP_AT = MAX_TOOL_TURNS - 3;
-          const FINAL_AT = MAX_TOOL_TURNS - 1;
+          const WRAP_UP_AT = MAX_TOOL_TURNS - 4;
+          const FINAL_AT = MAX_TOOL_TURNS - 2;
           let lastToolSig = "";
           let repeatCount = 0;
           let consecutiveErrors = 0;
@@ -5006,7 +5008,7 @@ ${context}` : ""}
               log(this.agentId, `turn ${turn} \u2014 NO tool calls, exiting. Text preview: "${(response.text || "").slice(0, 200)}"`);
               return { result: response.text || "[No response from agent]", inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
             }
-            const toolSig = response.toolCalls.map((tc) => `${tc.name}:${JSON.stringify(tc.arguments)}`).join("|");
+            const toolSig = response.toolCalls.map((tc) => `${tc.name}:${JSON.stringify(tc.arguments, Object.keys(tc.arguments || {}).sort())}`).join("|");
             if (toolSig === lastToolSig) {
               repeatCount++;
               if (repeatCount >= 2) {
@@ -5100,6 +5102,7 @@ ${context}` : ""}
               reject(new Error(`Tool call ${name} timed out`));
             }
           }, TOOL_CALL_TIMEOUT_MS);
+          timer.unref();
           this.pendingToolCalls.set(requestId, {
             resolve: (r) => {
               clearTimeout(timer);
@@ -5129,7 +5132,7 @@ ${context}` : ""}
       handleMessage(data, envelope) {
         if (envelope.t === 2 /* CHANNEL */) {
           const payload = data;
-          if (payload?.type === "gossip" && payload?.forAgentId === this.agentId && envelope.sid === "gossip-publisher") {
+          if (payload?.type === "gossip" && payload?.forAgentId === this.agentId && typeof payload?.summary === "string" && payload.summary.length > 0) {
             if (this.gossipQueue.length < _WorkerAgent.MAX_GOSSIP_QUEUE) {
               this.gossipQueue.push(payload.summary);
             }
