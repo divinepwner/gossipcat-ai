@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, existsSync } from 'fs';
+import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 export interface SuggestSkillArgs {
@@ -49,6 +49,19 @@ export class SkillTools {
 
     appendFileSync(this.gapLogPath, JSON.stringify(entry) + '\n');
 
+    // Truncate if log has grown too large (>5000 lines → keep 1000)
+    this.truncateIfNeeded();
+
     return `Suggestion noted: '${args.skill_name}'. Continue with your current skills.`;
+  }
+
+  private truncateIfNeeded(): void {
+    try {
+      const content = readFileSync(this.gapLogPath, 'utf-8');
+      const lines = content.trim().split('\n').filter(Boolean);
+      if (lines.length > 5000) {
+        writeFileSync(this.gapLogPath, lines.slice(-1000).join('\n') + '\n');
+      }
+    } catch { /* best-effort */ }
   }
 }
