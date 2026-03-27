@@ -26088,9 +26088,9 @@ server.tool(
   "Log implementation quality findings against agents (batch). Observer-only \u2014 does NOT affect dispatch scores. Use after reviewing code written by implementer agents. Supports multiple findings in one call.",
   {
     findings: external_exports.array(external_exports.object({
-      implementer_id: external_exports.string().describe("Agent ID that wrote the code"),
-      reviewer_id: external_exports.string().describe('Agent ID that found the issue (or "user")'),
-      finding: external_exports.string().describe("Description of the bug or quality issue"),
+      implementer_id: external_exports.string().min(1).regex(/^[a-zA-Z0-9_-]+$/).describe("Agent ID that wrote the code"),
+      reviewer_id: external_exports.string().min(1).describe('Agent ID that found the issue (or "user")'),
+      finding: external_exports.string().min(1).max(2e3).describe("Description of the bug or quality issue"),
       severity: external_exports.enum(["critical", "high", "medium", "low"]).describe("Bug severity"),
       category: external_exports.enum(["logic_error", "security", "performance", "type_safety", "missing_tests", "style", "other"]).describe("Finding category"),
       file: external_exports.string().optional().describe("File path"),
@@ -26117,7 +26117,7 @@ server.tool(
       severity: f.severity,
       category: f.category,
       file: f.file || null,
-      line: f.line || null,
+      line: f.line ?? null,
       taskId: f.task_id || null
     })).join("\n") + "\n";
     appendFileSync7(filePath, data);
@@ -26191,7 +26191,7 @@ server.tool(
         `${id}${nativeTag}: ${findings.length} findings
   Severity: ${Object.entries(bySeverity).map(([k, v]) => `${k}=${v}`).join(", ")}
   Category: ${Object.entries(byCategory).map(([k, v]) => `${k}=${v}`).join(", ")}
-  Recent: ${findings.slice(-3).map((f) => `${f.severity} ${f.category}: ${f.finding.slice(0, 60)}`).join("\n          ")}`
+  Recent: ${findings.slice(-3).map((f) => `${f.severity} ${f.category}: ${(f.finding || "N/A").slice(0, 60)}`).join("\n          ")}`
       );
     }
     return { content: [{
@@ -26200,7 +26200,7 @@ server.tool(
 
 ${sections.join("\n\n")}
 
-Total: ${entries.length} findings across ${byAgent.size} agent(s). Data does NOT affect dispatch scores.`
+Total: ${Array.from(byAgent.values()).reduce((s, arr) => s + arr.length, 0)} findings across ${byAgent.size} agent(s). Data does NOT affect dispatch scores.`
     }] };
   }
 );

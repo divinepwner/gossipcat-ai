@@ -1515,9 +1515,9 @@ server.tool(
   'Log implementation quality findings against agents (batch). Observer-only — does NOT affect dispatch scores. Use after reviewing code written by implementer agents. Supports multiple findings in one call.',
   {
     findings: z.array(z.object({
-      implementer_id: z.string().describe('Agent ID that wrote the code'),
-      reviewer_id: z.string().describe('Agent ID that found the issue (or "user")'),
-      finding: z.string().describe('Description of the bug or quality issue'),
+      implementer_id: z.string().min(1).regex(/^[a-zA-Z0-9_-]+$/).describe('Agent ID that wrote the code'),
+      reviewer_id: z.string().min(1).describe('Agent ID that found the issue (or "user")'),
+      finding: z.string().min(1).max(2000).describe('Description of the bug or quality issue'),
       severity: z.enum(['critical', 'high', 'medium', 'low']).describe('Bug severity'),
       category: z.enum(['logic_error', 'security', 'performance', 'type_safety', 'missing_tests', 'style', 'other'])
         .describe('Finding category'),
@@ -1548,7 +1548,7 @@ server.tool(
       severity: f.severity,
       category: f.category,
       file: f.file || null,
-      line: f.line || null,
+      line: f.line ?? null,
       taskId: f.task_id || null,
     })).join('\n') + '\n';
 
@@ -1630,13 +1630,13 @@ server.tool(
         `${id}${nativeTag}: ${findings.length} findings\n` +
         `  Severity: ${Object.entries(bySeverity).map(([k, v]) => `${k}=${v}`).join(', ')}\n` +
         `  Category: ${Object.entries(byCategory).map(([k, v]) => `${k}=${v}`).join(', ')}\n` +
-        `  Recent: ${findings.slice(-3).map(f => `${f.severity} ${f.category}: ${f.finding.slice(0, 60)}`).join('\n          ')}`
+        `  Recent: ${findings.slice(-3).map(f => `${f.severity} ${f.category}: ${(f.finding || 'N/A').slice(0, 60)}`).join('\n          ')}`
       );
     }
 
     return { content: [{ type: 'text' as const, text:
       `Implementation Findings (observer-only):\n\n${sections.join('\n\n')}\n\n` +
-      `Total: ${entries.length} findings across ${byAgent.size} agent(s). Data does NOT affect dispatch scores.`
+      `Total: ${Array.from(byAgent.values()).reduce((s, arr) => s + arr.length, 0)} findings across ${byAgent.size} agent(s). Data does NOT affect dispatch scores.`
     }] };
   }
 );
