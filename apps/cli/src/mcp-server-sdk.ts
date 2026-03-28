@@ -87,6 +87,7 @@ async function getModules() {
     MainAgent: (await import('@gossip/orchestrator')).MainAgent,
     WorkerAgent: (await import('@gossip/orchestrator')).WorkerAgent,
     createProvider: (await import('@gossip/orchestrator')).createProvider,
+    PerformanceWriter: (await import('@gossip/orchestrator')).PerformanceWriter,
     ...(await import('./config')),
     Keychain: (await import('./keychain')).Keychain,
   };
@@ -115,7 +116,10 @@ async function doBoot() {
   relay = new m.RelayServer({ port: 0 });
   await relay.start();
 
-  toolServer = new m.ToolServer({ relayUrl: relay.url, projectRoot: process.cwd() });
+  // Create performance writer for ATI signal collection
+  const perfWriter = new m.PerformanceWriter(process.cwd());
+
+  toolServer = new m.ToolServer({ relayUrl: relay.url, projectRoot: process.cwd(), perfWriter });
   await toolServer.start();
 
   // Create workers before MainAgent to avoid duplicate relay connections.
@@ -145,6 +149,14 @@ async function doBoot() {
     const instructionsPath = join(process.cwd(), '.gossip', 'agents', ac.id, 'instructions.md');
     const instructions = existsSync(instructionsPath) ? readFileSync(instructionsPath, 'utf-8') : undefined;
     const worker = new m.WorkerAgent(ac.id, llm, relay.url, m.ALL_TOOLS, instructions);
+    // Wire meta signal emission for ATI profiling
+    worker.setOnTaskComplete?.((event: { agentId: string; taskId: string; toolCalls: number; durationMs: number }) => {
+      const now = new Date().toISOString();
+      perfWriter.appendSignal({ type: 'meta', signal: 'task_completed', agentId: event.agentId, taskId: event.taskId, value: event.durationMs, timestamp: now });
+      if (event.toolCalls > 0) {
+        perfWriter.appendSignal({ type: 'meta', signal: 'task_tool_turns', agentId: event.agentId, taskId: event.taskId, value: event.toolCalls, timestamp: now });
+      }
+    });
     await worker.start();
     workers.set(ac.id, worker);
   }
