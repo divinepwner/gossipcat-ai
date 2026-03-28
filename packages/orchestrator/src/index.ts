@@ -54,3 +54,5 @@ export { normalizeSkillName } from './skill-name';
 export { parseSkillFrontmatter } from './skill-parser';
 export type { SkillFrontmatter } from './skill-parser';
 export { extractCategories } from './category-extractor';
+export { CompetencyProfiler } from './competency-profiler';
+export type { CompetencyProfile } from './competency-profiler';
