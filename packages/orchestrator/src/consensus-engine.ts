@@ -463,58 +463,55 @@ Return ONLY a JSON array:
 
   /**
    * Verify negative claims in findings (e.g., "no validation", "no sanitization").
-   * Searches cited files for evidence that the claimed-missing code actually exists.
-   * Returns true if the negative claim is false (code exists but finding says it doesn't).
+   * CONSERVATIVE: only returns true when there is HIGH CONFIDENCE the claim is false.
+   * Requires: (1) finding cites a specific file:line, (2) the claimed-missing stem
+   * appears as a function/method name near that line (not in comments or strings).
    */
   async verifyNegativeClaim(finding: string): Promise<boolean> {
     if (!this.config.projectRoot) return false;
 
-    // Detect negative claims about code
-    const negativeClaims = /\b(?:no |lacks? |missing |without |does not |doesn'?t |absent|never )(sanitiz|validat|check|verif|guard|filter|escap|authenti)/i;
+    // Only detect strong negative claims with file:line citations
+    const negativeClaims = /\b(?:no |lacks? |missing |without |does not |doesn'?t )(sanitiz|validat)/i;
     const match = finding.match(negativeClaims);
-    if (!match) return false; // No negative claim detected
+    if (!match) return false;
 
-    const claimedMissing = match[1].toLowerCase(); // e.g., "validat", "sanitiz"
+    const claimedMissing = match[1].toLowerCase(); // "sanitiz" or "validat"
 
-    // Map claimed-missing stems to code patterns that would indicate the behavior exists
-    const codeIndicators: Record<string, string[]> = {
-      sanitiz: ['sanitiz', 'replace(', 'strip', 'escape', 'filter'],
-      validat: ['validat', '.test(', 'throw new error', 'reject', 'invalid', 'known_', 'safe_name'],
-      check: ['check', '.test(', 'if (', 'throw', 'assert'],
-      verif: ['verif', '.test(', 'assert', 'throw'],
-      guard: ['guard', '.test(', 'if (!', 'throw'],
-      filter: ['filter', 'replace(', 'strip', 'sanitiz'],
-      escap: ['escap', 'replace(', 'encode'],
-      authenti: ['authenti', 'auth', 'token', 'credential', 'login'],
-    };
-
-    const indicators = codeIndicators[claimedMissing] || [claimedMissing];
-
-    // Extract file references from the finding
-    const filePattern = /(?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,4})(?::(\d+))?/g;
-    const files: string[] = [];
-    let fileMatch;
-    while ((fileMatch = filePattern.exec(finding)) !== null) {
-      files.push(fileMatch[1]); // capture group 1 = clean filename
+    // Require a specific file:line citation — without it, we can't verify
+    const citationPattern = /(?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,4}):(\d+)/g;
+    const citations: Array<{ file: string; line: number }> = [];
+    let citMatch;
+    while ((citMatch = citationPattern.exec(finding)) !== null) {
+      citations.push({ file: citMatch[1], line: parseInt(citMatch[2], 10) });
     }
 
-    if (files.length === 0) return false; // No files cited — can't verify
+    if (citations.length === 0) return false; // No file:line — can't verify with confidence
 
-    // Search cited files for code that contradicts the negative claim
-    for (const fileRef of files) {
+    for (const citation of citations) {
       try {
-        const filePath = await this.resolveFilePath(fileRef);
+        const filePath = await this.resolveFilePath(citation.file);
         if (!filePath) continue;
 
-        const content = (await readFile(filePath, 'utf-8')).toLowerCase();
+        const content = await readFile(filePath, 'utf-8');
         const lines = content.split('\n');
-        const codeLines = lines.filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*'));
-        const codeContent = codeLines.join('\n');
+        if (citation.line > lines.length) continue;
 
-        // If the file contains indicators of the behavior the finding says is missing, the claim is false
-        const hasIndicator = indicators.some(ind => codeContent.includes(ind));
-        if (hasIndicator) {
-          return true; // Code contradicts the negative claim
+        // Check a ±10 line window around the cited line
+        const start = Math.max(0, citation.line - 11);
+        const end = Math.min(lines.length, citation.line + 10);
+        const window = lines.slice(start, end);
+
+        // Strip comments (single-line // and block /* */) before checking
+        const codeOnly = window
+          .map(l => l.replace(/\/\/.*$/, '').replace(/\/\*[\s\S]*?\*\//g, ''))
+          .join('\n')
+          .toLowerCase();
+
+        // Only match the stem as part of a function/method call pattern
+        // e.g., "validate(", "sanitize(", "this.validate", "SAFE_NAME.test("
+        const funcPattern = new RegExp(`\\b\\w*${claimedMissing}\\w*\\s*[.(]`, 'i');
+        if (funcPattern.test(codeOnly)) {
+          return true; // Found a function/method call with the stem near the cited line
         }
       } catch { continue; }
     }

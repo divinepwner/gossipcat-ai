@@ -211,14 +211,17 @@ describe('ConsensusEngine.verifyNegativeClaim — false negative detection', () 
       [
         'export class SkillGenerator {',
         '  async generate(agentId: string, category: string) {',
+        '    this.validateInputs(agentId, category);',
         '    if (!SAFE_NAME.test(agentId)) {',
         '      throw new Error("Invalid agent_id");',
         '    }',
         '    if (!KNOWN_CATEGORIES.has(category)) {',
         '      throw new Error("Unknown category");',
         '    }',
-        '    // validation passed, proceed',
         '    const template = this.loadTemplate();',
+        '  }',
+        '  private validateInputs(id: string, cat: string) {',
+        '    // sanitize and validate both inputs',
         '  }',
         '}',
       ].join('\n'),
@@ -236,7 +239,7 @@ describe('ConsensusEngine.verifyNegativeClaim — false negative detection', () 
   });
 
   test('detects false negative claim — says no validation but validation exists', async () => {
-    const finding = 'No validation on agent_id and category parameters (skill-generator.ts:2)';
+    const finding = 'No validation on agent_id and category parameters (skill-generator.ts:3)';
     const result = await engine.verifyNegativeClaim(finding);
     expect(result).toBe(true); // claim is false — validation exists
   });
@@ -255,7 +258,7 @@ describe('ConsensusEngine.verifyNegativeClaim — false negative detection', () 
 
   test('mass-agreed false finding gets demoted from confirmed to unique', async () => {
     const results = [
-      { id: 'task-1', agentId: 'agent-a', task: 'review', status: 'completed' as const, result: '## Consensus Summary\n- No validation on inputs (skill-generator.ts:2)', startedAt: Date.now() },
+      { id: 'task-1', agentId: 'agent-a', task: 'review', status: 'completed' as const, result: '## Consensus Summary\n- No validation on inputs (skill-generator.ts:3)', startedAt: Date.now() },
       { id: 'task-2', agentId: 'agent-b', task: 'review', status: 'completed' as const, result: '## Consensus Summary\n- Other finding', startedAt: Date.now() },
     ];
 
@@ -264,7 +267,7 @@ describe('ConsensusEngine.verifyNegativeClaim — false negative detection', () 
         action: 'agree' as const,
         agentId: 'agent-b',
         peerAgentId: 'agent-a',
-        finding: 'No validation on inputs (skill-generator.ts:2)',
+        finding: 'No validation on inputs (skill-generator.ts:3)',
         evidence: 'I confirm there is no validation on the inputs.',
         confidence: 4,
       },

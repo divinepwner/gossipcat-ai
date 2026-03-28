@@ -6811,43 +6811,36 @@ Return ONLY a JSON array:
       }
       /**
        * Verify negative claims in findings (e.g., "no validation", "no sanitization").
-       * Searches cited files for evidence that the claimed-missing code actually exists.
-       * Returns true if the negative claim is false (code exists but finding says it doesn't).
+       * CONSERVATIVE: only returns true when there is HIGH CONFIDENCE the claim is false.
+       * Requires: (1) finding cites a specific file:line, (2) the claimed-missing stem
+       * appears as a function/method name near that line (not in comments or strings).
        */
       async verifyNegativeClaim(finding) {
         if (!this.config.projectRoot) return false;
-        const negativeClaims = /\b(?:no |lacks? |missing |without |does not |doesn'?t |absent|never )(sanitiz|validat|check|verif|guard|filter|escap|authenti)/i;
+        const negativeClaims = /\b(?:no |lacks? |missing |without |does not |doesn'?t )(sanitiz|validat)/i;
         const match = finding.match(negativeClaims);
         if (!match) return false;
         const claimedMissing = match[1].toLowerCase();
-        const codeIndicators = {
-          sanitiz: ["sanitiz", "replace(", "strip", "escape", "filter"],
-          validat: ["validat", ".test(", "throw new error", "reject", "invalid", "known_", "safe_name"],
-          check: ["check", ".test(", "if (", "throw", "assert"],
-          verif: ["verif", ".test(", "assert", "throw"],
-          guard: ["guard", ".test(", "if (!", "throw"],
-          filter: ["filter", "replace(", "strip", "sanitiz"],
-          escap: ["escap", "replace(", "encode"],
-          authenti: ["authenti", "auth", "token", "credential", "login"]
-        };
-        const indicators = codeIndicators[claimedMissing] || [claimedMissing];
-        const filePattern = /(?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,4})(?::(\d+))?/g;
-        const files = [];
-        let fileMatch;
-        while ((fileMatch = filePattern.exec(finding)) !== null) {
-          files.push(fileMatch[1]);
+        const citationPattern = /(?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,4}):(\d+)/g;
+        const citations = [];
+        let citMatch;
+        while ((citMatch = citationPattern.exec(finding)) !== null) {
+          citations.push({ file: citMatch[1], line: parseInt(citMatch[2], 10) });
         }
-        if (files.length === 0) return false;
-        for (const fileRef of files) {
+        if (citations.length === 0) return false;
+        for (const citation of citations) {
           try {
-            const filePath = await this.resolveFilePath(fileRef);
+            const filePath = await this.resolveFilePath(citation.file);
             if (!filePath) continue;
-            const content = (await (0, import_promises3.readFile)(filePath, "utf-8")).toLowerCase();
+            const content = await (0, import_promises3.readFile)(filePath, "utf-8");
             const lines = content.split("\n");
-            const codeLines = lines.filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*"));
-            const codeContent = codeLines.join("\n");
-            const hasIndicator = indicators.some((ind) => codeContent.includes(ind));
-            if (hasIndicator) {
+            if (citation.line > lines.length) continue;
+            const start = Math.max(0, citation.line - 11);
+            const end = Math.min(lines.length, citation.line + 10);
+            const window = lines.slice(start, end);
+            const codeOnly = window.map((l) => l.replace(/\/\/.*$/, "").replace(/\/\*[\s\S]*?\*\//g, "")).join("\n").toLowerCase();
+            const funcPattern = new RegExp(`\\b\\w*${claimedMissing}\\w*\\s*[.(]`, "i");
+            if (funcPattern.test(codeOnly)) {
               return true;
             }
           } catch {
