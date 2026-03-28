@@ -20,6 +20,8 @@ import { OverlapDetector } from './overlap-detector';
 import { LensGenerator } from './lens-generator';
 import { ConsensusEngine } from './consensus-engine';
 import { PerformanceWriter } from './performance-writer';
+import { CompetencyProfiler } from './competency-profiler';
+import { DispatchDifferentiator } from './dispatch-differentiator';
 import { CollectResult } from './consensus-types';
 import { extractCategories } from './category-extractor';
 import { WorkerProgressCallback } from './worker-agent';
@@ -81,6 +83,9 @@ export class DispatchPipeline {
   private overlapDetector: OverlapDetector | null = null;
   private lensGenerator: LensGenerator | null = null;
   private bootWarningShown = false;
+
+  private competencyProfiler: CompetencyProfiler | null = null;
+  private dispatchDifferentiator: DispatchDifferentiator | null = null;
 
   private taskProgressCallback: ((taskId: string, event: { toolCalls: number; inputTokens: number; outputTokens: number; currentTool: string; turn: number }) => void) | null = null;
 
@@ -700,9 +705,24 @@ export class DispatchPipeline {
       }
     }
 
-    // Overlap detection + lens generation (single detect call, reused for both)
+    // Profile-based differentiation (preferred — uses learned competency profiles)
     let lensMap: Map<string, string> | null = null;
-    if (this.overlapDetector) {
+    if (this.competencyProfiler && this.dispatchDifferentiator) {
+      const profiles = taskDefs
+        .map(d => this.competencyProfiler!.getProfile(d.agentId))
+        .filter((p): p is NonNullable<typeof p> => p !== null);
+
+      if (profiles.length >= 2) {
+        const diffMap = this.dispatchDifferentiator.differentiate(profiles, taskDefs[0]?.task || '');
+        if (diffMap.size > 0) {
+          lensMap = diffMap;
+          log(`Applied profile-based differentiation:\n${[...diffMap].map(([id, focus]) => `  ${id} → ${focus.slice(0, 80)}`).join('\n')}`);
+        }
+      }
+    }
+
+    // Overlap detection + lens generation fallback (when profiles unavailable)
+    if (!lensMap && this.overlapDetector) {
       const agentConfigs = taskDefs
         .map(d => this.registryGet(d.agentId))
         .filter((c): c is AgentConfig => c !== undefined);
@@ -841,6 +861,14 @@ export class DispatchPipeline {
 
   setLensGenerator(generator: LensGenerator | null): void {
     this.lensGenerator = generator;
+  }
+
+  setCompetencyProfiler(profiler: CompetencyProfiler): void {
+    this.competencyProfiler = profiler;
+  }
+
+  setDispatchDifferentiator(differ: DispatchDifferentiator): void {
+    this.dispatchDifferentiator = differ;
   }
 
   /** Flush TaskGraph index on shutdown */
