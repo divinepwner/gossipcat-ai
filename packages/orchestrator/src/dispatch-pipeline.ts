@@ -935,3 +935,22 @@ export class DispatchPipeline {
     return (response.text || '').slice(0, 400);
   }
 }
+
+const SECURITY_KEYWORDS = /security|vulnerab|auth|inject|exploit|breach|attack|malicious/i;
+const OBSERVATION_VERBS = /^(summarize|research|analyze|check|verify|list|explain|document|review|audit|trace|investigate)\b/i;
+
+export function shouldSkipConsensus(
+  task: string,
+  agents: Array<{ reviewReliability: number; totalTasks: number }>,
+  costMode: string,
+  agreementHistory: { rate: number; uniquePeerPairings: number },
+): boolean {
+  if (costMode === 'thorough') return false;
+  if (SECURITY_KEYWORDS.test(task)) return false;
+  if (agents.some(a => a.reviewReliability < 0.9)) return false;
+  if (agents.some(a => a.totalTasks < 10)) return false;
+  if (agreementHistory.rate < 0.8 || agreementHistory.uniquePeerPairings < 3) return false;
+  // Low-stakes: first word is an observation verb
+  const firstWord = task.trim().split(/\s+/)[0] || '';
+  return OBSERVATION_VERBS.test(firstWord);
+}
