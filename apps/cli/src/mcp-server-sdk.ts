@@ -1507,8 +1507,11 @@ server.tool(
     if (scope) options.scope = scope;
 
     if (isNative) {
-      // Native agent — dispatch and return instructions for host
-      const { taskId } = mainAgent.dispatch(agent_id, task, options);
+      // Native agent — record task and return instructions for host
+      evictStaleNativeTasks();
+      const taskId = require('crypto').randomUUID().slice(0, 8);
+      nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now() });
+      try { mainAgent.recordNativeTask(taskId, agent_id, task); } catch { /* best-effort */ }
       const config = nativeAgentConfigs.get(agent_id)!;
       const agentConfig = mainAgent.getAgentList?.()?.find((a: any) => a.id === agent_id);
       const preset = agentConfig?.preset || config.description || '';

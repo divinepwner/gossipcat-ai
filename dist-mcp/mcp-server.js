@@ -27287,7 +27287,13 @@ server.tool(
     if (write_mode) options.writeMode = write_mode;
     if (scope) options.scope = scope;
     if (isNative) {
-      const { taskId } = mainAgent.dispatch(agent_id, task, options);
+      evictStaleNativeTasks();
+      const taskId = require("crypto").randomUUID().slice(0, 8);
+      nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now() });
+      try {
+        mainAgent.recordNativeTask(taskId, agent_id, task);
+      } catch {
+      }
       const config2 = nativeAgentConfigs.get(agent_id);
       const agentConfig = mainAgent.getAgentList?.()?.find((a) => a.id === agent_id);
       const preset = agentConfig?.preset || config2.description || "";
