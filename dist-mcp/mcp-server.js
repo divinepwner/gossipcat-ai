@@ -27272,6 +27272,144 @@ The result is now available for gossip_collect and consensus cross-review.` }] }
   }
 );
 server.tool(
+  "gossip_run",
+  "Run a task on a single agent and return the result. For relay agents (Gemini), this is a single call \u2014 dispatches, waits, returns. For native agents (Sonnet/Haiku), returns dispatch instructions with gossip_run_complete callback.",
+  {
+    agent_id: external_exports.string().describe("Agent to run the task on"),
+    task: external_exports.string().describe("Task description. Reference file paths \u2014 the agent will read them."),
+    write_mode: external_exports.enum(["sequential", "scoped", "worktree"]).optional().describe("Write mode for implementation tasks"),
+    scope: external_exports.string().optional().describe("Directory scope for scoped write mode")
+  },
+  async ({ agent_id, task, write_mode, scope }) => {
+    await boot();
+    const isNative = nativeAgentConfigs.has(agent_id);
+    const options = {};
+    if (write_mode) options.writeMode = write_mode;
+    if (scope) options.scope = scope;
+    if (isNative) {
+      const { taskId } = mainAgent.dispatch(agent_id, task, options);
+      const config2 = nativeAgentConfigs.get(agent_id);
+      const agentConfig = mainAgent.getAgentList?.()?.find((a) => a.id === agent_id);
+      const preset = agentConfig?.preset || config2.description || "";
+      const presetPrompts = {
+        reviewer: "You are a senior code reviewer. Focus on logic errors, security vulnerabilities, TypeScript type safety, and performance. Cite file:line for every finding.",
+        researcher: "You are a research agent. Explore codebases, trace execution paths, answer architecture questions. Be concise \u2014 bullet points over paragraphs. Cite file paths.",
+        implementer: "You are an implementation agent. Write clean, tested code. Follow existing patterns. Commit your work.",
+        tester: "You are a testing agent. Write thorough tests, find edge cases, verify behavior. Run tests and report results."
+      };
+      const presetPrompt = presetPrompts[preset] || `You are a ${preset} agent.`;
+      return {
+        content: [{
+          type: "text",
+          text: `Dispatched to ${agent_id} (native). Task ID: ${taskId}
+
+NATIVE_DISPATCH:
+
+Agent(model: "${config2.model}", prompt: "${presetPrompt}\\n\\n---\\n\\nTask: ${task.slice(0, 200)}...")
+  \u2192 then: gossip_run_complete(task_id: "${taskId}", result: "<output>")
+`
+        }]
+      };
+    }
+    try {
+      const { taskId } = mainAgent.dispatch(agent_id, task, options);
+      const collectResult = await mainAgent.collect([taskId], 12e4);
+      const entry = collectResult.results[0];
+      if (!entry) {
+        return { content: [{ type: "text", text: `Task ${taskId} returned no result.` }] };
+      }
+      const elapsed = (entry.completedAt || Date.now()) - (entry.startedAt || Date.now());
+      const output = entry.status === "completed" ? entry.result || "[No response from agent]" : `Error: ${entry.error || "Task failed"}`;
+      return {
+        content: [{ type: "text", text: `[${taskId}] ${agent_id} (${elapsed}ms):
+${output}` }]
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `gossip_run failed: ${err.message}` }]
+      };
+    }
+  }
+);
+server.tool(
+  "gossip_run_complete",
+  "Complete a native agent task dispatched via gossip_run. Relays the result to the mesh, writes memory, and emits signals. Call this after the Agent() tool returns.",
+  {
+    task_id: external_exports.string().describe("Task ID from gossip_run response"),
+    result: external_exports.string().describe("The agent output/result text"),
+    error: external_exports.string().optional().describe("Error message if the agent failed")
+  },
+  async ({ task_id, result, error: error48 }) => {
+    await boot();
+    const taskInfo = nativeTaskMap.get(task_id);
+    if (!taskInfo) {
+      return { content: [{ type: "text", text: `Unknown task ID: ${task_id}. Was it dispatched via gossip_run?` }] };
+    }
+    nativeTaskMap.delete(task_id);
+    const elapsed = Date.now() - taskInfo.startedAt;
+    evictStaleNativeTasks();
+    const agentId = taskInfo.agentId;
+    const agentSkills = (() => {
+      try {
+        return mainAgent.getAgentList().find((a) => a.id === agentId)?.skills || [];
+      } catch {
+        return [];
+      }
+    })();
+    try {
+      mainAgent.recordNativeTaskCompleted(task_id, result, error48 || void 0);
+    } catch {
+    }
+    if (taskInfo.planId && taskInfo.step && !error48) {
+      try {
+        mainAgent.recordPlanStepResult(taskInfo.planId, taskInfo.step, result);
+      } catch {
+      }
+    }
+    if (!error48) {
+      try {
+        const { MemoryWriter: MemoryWriter2, MemoryCompactor: MemoryCompactor2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
+        const memWriter = new MemoryWriter2(process.cwd());
+        await memWriter.writeTaskEntry(agentId, {
+          taskId: task_id,
+          task: taskInfo.task,
+          skills: agentSkills,
+          scores: { relevance: 3, accuracy: 3, uniqueness: 3 }
+        });
+        if (result) {
+          memWriter.writeKnowledgeFromResult(agentId, {
+            taskId: task_id,
+            task: taskInfo.task,
+            result: result.slice(0, 4e3)
+          });
+        }
+        memWriter.rebuildIndex(agentId);
+        const compactor = new MemoryCompactor2(process.cwd());
+        compactor.compactIfNeeded(agentId);
+      } catch (err) {
+        process.stderr.write(`[gossipcat] Memory write failed for ${agentId}: ${err.message}
+`);
+      }
+    }
+    if (!error48) {
+      await mainAgent.publishNativeGossip(agentId, result).catch(() => {
+      });
+    }
+    nativeResultMap.set(task_id, {
+      id: task_id,
+      agentId,
+      task: taskInfo.task,
+      status: error48 ? "failed" : "completed",
+      result: error48 ? void 0 : result,
+      error: error48 || void 0,
+      startedAt: taskInfo.startedAt,
+      completedAt: Date.now()
+    });
+    const status = error48 ? `failed (${elapsed}ms): ${error48}` : `completed (${elapsed}ms)`;
+    return { content: [{ type: "text", text: `\u2705 Result relayed for ${agentId} [${task_id}]: ${status}` }] };
+  }
+);
+server.tool(
   "gossip_record_signals",
   "Record consensus performance signals after cross-referencing agent findings. Call this after gossip_collect_consensus when YOU (Claude Code) synthesize the results. Maps your CONFIRMED/DISPUTED/UNIQUE/NEW tags to agent performance scores that improve future dispatch decisions.",
   {
@@ -27601,6 +27739,8 @@ server.tool(
       { name: "gossip_agents", desc: "List configured agents with provider, model, role, skills" },
       { name: "gossip_status", desc: "Check relay, tool-server, workers status" },
       { name: "gossip_update_instructions", desc: "Update agent instructions (single or batch). Modes: append/replace" },
+      { name: "gossip_run", desc: "Single-call dispatch \u2014 run a task on one agent and get the result (1 call for relay, 2 for native)" },
+      { name: "gossip_run_complete", desc: "Complete a native agent gossip_run \u2014 relays result + signals in one call" },
       { name: "gossip_relay_result", desc: "Feed native Agent tool result back into relay for consensus" },
       { name: "gossip_record_signals", desc: "Record CONFIRMED/DISPUTED/UNIQUE/NEW signals after cross-referencing" },
       { name: "gossip_scores", desc: "View agent performance scores and dispatch weights" },
