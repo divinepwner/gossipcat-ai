@@ -1813,6 +1813,8 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // Eager boot — start relay, workers, and ATI profiler immediately on connect
+  boot().catch(err => process.stderr.write(`[gossipcat] Boot failed: ${err.message}\n`));
 }
 
 main().catch(err => { process.stderr.write(`[gossipcat] Fatal: ${err.message}\n`); process.exit(1); });
