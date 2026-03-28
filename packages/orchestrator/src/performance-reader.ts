@@ -21,14 +21,16 @@ export interface AgentScore {
   hallucinations: number;
 }
 
-const SIGNAL_WEIGHTS = {
+const SIGNAL_WEIGHTS: Record<ConsensusSignal['signal'], { accuracy?: number; uniqueness?: number }> = {
   agreement: { accuracy: 0.1 },
   disagreement: { accuracy: -0.15 },  // losing side; winning side gets bonus via counterpart
+  unverified: { accuracy: -0.03 },    // tiny penalty — couldn't verify, less useful than agree/disagree
   unique_confirmed: { uniqueness: 0.2 },
   unique_unconfirmed: { uniqueness: 0.05 },
   new_finding: { uniqueness: 0.15 },
   hallucination_caught: { accuracy: -0.3 },
   category_confirmed: { accuracy: 0.1 },
+  consensus_verified: { accuracy: 0.15 }, // Judge confirmed a finding
 };
 
 export class PerformanceReader {
@@ -104,10 +106,10 @@ export class PerformanceReader {
       if (!weights) continue;
       agent.totalSignals++;
 
-      if ('accuracy' in weights) {
+      if ('accuracy' in weights && weights.accuracy) {
         agent.accuracy = clamp(agent.accuracy + weights.accuracy, 0, 1);
       }
-      if ('uniqueness' in weights) {
+      if ('uniqueness' in weights && weights.uniqueness) {
         agent.uniqueness = clamp(agent.uniqueness + weights.uniqueness, 0, 1);
       }
 
@@ -119,6 +121,8 @@ export class PerformanceReader {
         case 'unique_unconfirmed':
         case 'new_finding': agent.uniqueFindings++; break;
         case 'hallucination_caught': agent.hallucinations++; break;
+        case 'consensus_verified': break; // just a score change
+        case 'category_confirmed': break; // just a score change
       }
 
       // Counterpart bonus: when agent B gets a 'disagreement' signal (B lost),

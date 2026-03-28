@@ -287,6 +287,53 @@ describe('ConsensusEngine', () => {
         expect(report.disputed.length).toBe(0);
       });
   
+      it('should categorize findings as unverified when peers use UNVERIFIED action', async () => {
+        const crossReview: CrossReviewEntry[] = [
+          { action: 'unverified', agentId: 'agent-2', peerAgentId: 'agent-1', finding: 'Finding A from agent 1', evidence: 'Code snippets do not include line 172, cannot verify', confidence: 2 },
+        ];
+        const report = await engine.synthesize(results, crossReview);
+        expect(report.unverified.length).toBeGreaterThanOrEqual(1);
+        const unvFinding = report.unverified.find(f => f.finding.includes('Finding A'));
+        expect(unvFinding).toBeDefined();
+        expect(unvFinding!.tag).toBe('unverified');
+        expect(unvFinding!.unverifiedBy).toBeDefined();
+        expect(unvFinding!.unverifiedBy![0].agentId).toBe('agent-2');
+      });
+
+      it('should not put unverified findings in disputed bucket', async () => {
+        const crossReview: CrossReviewEntry[] = [
+          { action: 'unverified', agentId: 'agent-2', peerAgentId: 'agent-1', finding: 'Finding A from agent 1', evidence: 'Cannot find the cited line', confidence: 2 },
+        ];
+        const report = await engine.synthesize(results, crossReview);
+        const disputedFindings = report.disputed.filter(f => f.finding.includes('Finding A'));
+        expect(disputedFindings).toHaveLength(0);
+      });
+
+      it('should emit unverified signal with tiny penalty weight', async () => {
+        const crossReview: CrossReviewEntry[] = [
+          { action: 'unverified', agentId: 'agent-2', peerAgentId: 'agent-1', finding: 'Finding A from agent 1', evidence: 'Line 172 not in snippet', confidence: 2 },
+        ];
+        const report = await engine.synthesize(results, crossReview);
+        const unvSignal = report.signals.find(s => s.signal === 'unverified');
+        expect(unvSignal).toBeDefined();
+        expect(unvSignal!.agentId).toBe('agent-2');
+      });
+
+      it('should prefer confirmed over unverified when finding has both agree and unverified', async () => {
+        const threeAgentResults: TaskEntry[] = [
+          ...results,
+          createTaskEntry('agent-3', 'completed', '- Third finding'),
+        ];
+        const crossReview: CrossReviewEntry[] = [
+          { action: 'agree', agentId: 'agent-2', peerAgentId: 'agent-1', finding: 'Finding A from agent 1', evidence: 'Verified at line 10', confidence: 5 },
+          { action: 'unverified', agentId: 'agent-3', peerAgentId: 'agent-1', finding: 'Finding A from agent 1', evidence: 'Cannot check', confidence: 2 },
+        ];
+        const report = await engine.synthesize(threeAgentResults, crossReview);
+        // Should be confirmed because at least one peer agreed (confirmedBy takes precedence)
+        const confirmedA = report.confirmed.find(f => f.finding.includes('Finding A'));
+        expect(confirmedA).toBeDefined();
+      });
+
       it('should correctly handle "new" findings from cross-review', async () => {
         const crossReview: CrossReviewEntry[] = [
           { action: 'new', agentId: 'agent-2', peerAgentId: '', finding: 'A totally new idea', evidence: 'It came to me', confidence: 4 },
@@ -296,6 +343,63 @@ describe('ConsensusEngine', () => {
         expect(report.newFindings[0].finding).toBe('A totally new idea');
         expect(report.newFindings[0].agentId).toBe('agent-2');
       });
+  });
+
+  describe('deduplicateFindings()', () => {
+    const dedup = (map: any) => (engine as any).deduplicateFindings(map);
+    const makeEntry = (agentId: string, finding: string) => ({
+      originalAgentId: agentId,
+      finding,
+      confirmedBy: [] as string[],
+      disputedBy: [],
+      unverifiedBy: [],
+      confidences: [],
+    });
+
+    it('merges findings with very high word overlap (same file, Jaccard > 0.6)', () => {
+      const map = new Map();
+      // Nearly identical wording — should merge
+      map.set('agent-1::prototype pollution vulnerability in skill-index.ts unsanitized agentId modifies object prototype', makeEntry('agent-1', 'prototype pollution vulnerability in skill-index.ts unsanitized agentId modifies object prototype'));
+      map.set('agent-2::prototype pollution vulnerability in skill-index.ts unsanitized agentId corrupts object prototype', makeEntry('agent-2', 'prototype pollution vulnerability in skill-index.ts unsanitized agentId corrupts object prototype'));
+      dedup(map);
+      expect(map.size).toBe(1);
+      const remaining = Array.from(map.values())[0];
+      expect(remaining.confirmedBy.length).toBe(1);
+    });
+
+    it('does not merge same-file findings with moderate overlap (conservative)', () => {
+      const map = new Map();
+      // Same file, related topic, but different enough wording — should NOT merge
+      map.set('agent-1::Prototype pollution vulnerability in skill-index.ts via unsanitized agentId', makeEntry('agent-1', 'Prototype pollution vulnerability in skill-index.ts via unsanitized agentId'));
+      map.set('agent-2::agentId used as raw key in skill-index.ts enables prototype pollution', makeEntry('agent-2', 'agentId used as raw key in skill-index.ts enables prototype pollution'));
+      dedup(map);
+      // Conservative: prefer two entries over a false merge
+      expect(map.size).toBe(2);
+    });
+
+    it('does not merge findings from the same agent', () => {
+      const map = new Map();
+      map.set('agent-1::Prototype pollution in skill-index.ts', makeEntry('agent-1', 'Prototype pollution in skill-index.ts'));
+      map.set('agent-1::TOCTOU race in skill-index.ts save()', makeEntry('agent-1', 'TOCTOU race in skill-index.ts save()'));
+      dedup(map);
+      expect(map.size).toBe(2); // same agent — no merge
+    });
+
+    it('does not merge unrelated findings', () => {
+      const map = new Map();
+      map.set('agent-1::SQL injection in auth.ts query builder', makeEntry('agent-1', 'SQL injection in auth.ts query builder'));
+      map.set('agent-2::Missing rate limiting in api-routes.ts', makeEntry('agent-2', 'Missing rate limiting in api-routes.ts'));
+      dedup(map);
+      expect(map.size).toBe(2); // different files, different topics
+    });
+
+    it('does not merge findings with only generic word overlap', () => {
+      const map = new Map();
+      map.set('agent-1::Finding A from agent 1', makeEntry('agent-1', 'Finding A from agent 1'));
+      map.set('agent-2::Finding C is by agent 2', makeEntry('agent-2', 'Finding C is by agent 2'));
+      dedup(map);
+      expect(map.size).toBe(2); // only generic words match
+    });
   });
 
   describe('findMatchingFinding()', () => {

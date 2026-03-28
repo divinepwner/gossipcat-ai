@@ -3,12 +3,16 @@ export interface ConsensusFinding {
   id: string;
   originalAgentId: string;
   finding: string;
-  tag: 'confirmed' | 'disputed' | 'unique';
+  tag: 'confirmed' | 'disputed' | 'unverified' | 'unique';
   confirmedBy: string[];
   disputedBy: Array<{
     agentId: string;
     reason: string;
     evidence: string;
+  }>;
+  unverifiedBy?: Array<{
+    agentId: string;
+    reason: string;
   }>;
   confidence: number; // 1-5, averaged from cross-review responses
 }
@@ -23,7 +27,7 @@ export interface ConsensusNewFinding {
 
 /** A single cross-review entry from one agent about one peer finding */
 export interface CrossReviewEntry {
-  action: 'agree' | 'disagree' | 'new';
+  action: 'agree' | 'disagree' | 'unverified' | 'new';
   agentId: string;       // the reviewing agent
   peerAgentId: string;   // the agent whose finding is being reviewed
   finding: string;
@@ -37,6 +41,7 @@ export interface ConsensusReport {
   rounds: number;        // always 2 for MVP (phase 1 + phase 2)
   confirmed: ConsensusFinding[];
   disputed: ConsensusFinding[];
+  unverified: ConsensusFinding[];
   unique: ConsensusFinding[];
   newFindings: ConsensusNewFinding[];
   signals: ConsensusSignal[];
@@ -57,6 +62,7 @@ export interface ConsensusSignal {
   signal:
     | 'agreement'
     | 'disagreement'
+    | 'unverified'
     | 'unique_confirmed'
     | 'unique_unconfirmed'
     | 'new_finding'

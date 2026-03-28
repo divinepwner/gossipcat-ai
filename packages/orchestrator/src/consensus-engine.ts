@@ -17,7 +17,7 @@ const SUMMARY_HEADER = '## Consensus Summary';
 const FALLBACK_MAX_LENGTH = 2000;
 const MAX_SUMMARY_LENGTH = 3000;
 const MAX_CROSS_REVIEW_ENTRIES = 50; // DoS prevention
-const VALID_ACTIONS = new Set(['agree', 'disagree', 'new']);
+const VALID_ACTIONS = new Set(['agree', 'disagree', 'unverified', 'new']);
 
 export interface ConsensusEngineConfig {
   llm: ILLMProvider;
@@ -36,11 +36,11 @@ export class ConsensusEngine {
     const idx = result.indexOf(SUMMARY_HEADER);
     if (idx !== -1) {
       const afterHeader = result.slice(idx + SUMMARY_HEADER.length).trimStart();
+      // Only stop at the next markdown header (##), not at blank lines
+      // — summaries often have blank-line-separated bullet points
       const nextHeader = afterHeader.search(/\n##\s/);
-      const nextBlankLine = afterHeader.indexOf('\n\n');
       let end = afterHeader.length;
       if (nextHeader !== -1) end = Math.min(end, nextHeader);
-      if (nextBlankLine !== -1) end = Math.min(end, nextBlankLine);
       // Cap extracted summary to prevent unbounded prompt sizes
       return afterHeader.slice(0, Math.min(end, MAX_SUMMARY_LENGTH)).trim();
     }
@@ -59,7 +59,7 @@ export class ConsensusEngine {
     if (successful.length < 2) {
       return {
         agentCount: 0, rounds: 0,
-        confirmed: [], disputed: [], unique: [], newFindings: [], signals: [],
+        confirmed: [], disputed: [], unverified: [], unique: [], newFindings: [], signals: [],
         summary: 'Consensus skipped: insufficient agents (need ≥2 successful).',
       };
     }
@@ -142,22 +142,26 @@ For each peer finding, you MUST:
 Respond with one of:
 - AGREE: The finding is factually correct — you verified it against the code. Cite your evidence.
 - DISAGREE: The finding is factually incorrect — the code shows otherwise. Cite file:line and what the code actually does.
+- UNVERIFIED: You cannot verify or refute this finding — the cited code is not in the snippets, the line number is wrong, or you lack sufficient context. This is NOT disagreement — it means "I can't confirm or deny."
 - NEW: Something ALL agents missed that you now realize after seeing peer work.
+
+IMPORTANT: Use DISAGREE only when you have evidence the finding is WRONG. Use UNVERIFIED when you simply cannot check it. "I can't find line 172" is UNVERIFIED, not DISAGREE.
 
 Return ONLY a JSON array:
 [
-  { "action": "agree"|"disagree"|"new", "agentId": "peer_id", "finding": "summary", "evidence": "your reasoning with file:line references", "confidence": 1-5 }
+  { "action": "agree"|"disagree"|"unverified"|"new", "agentId": "peer_id", "finding": "summary", "evidence": "your reasoning with file:line references", "confidence": 1-5 }
 ]`;
 
     const messages: LLMMessage[] = [
-      { role: 'system', content: `You are a code reviewer performing cross-review. You are a SKEPTIC — your job is to catch errors in peer findings, not rubber-stamp them.
+      { role: 'system', content: `You are a code reviewer performing cross-review. Your job is to verify peer findings against actual code — catch errors, but also confirm good work.
 
-CRITICAL RULES:
-- Do NOT agree with a finding just because it sounds plausible
-- If a finding claims code "does not validate", "lacks sanitization", "has no check" — verify this is actually true before agreeing
-- If a finding cites a specific file:line, your evidence MUST reference what the code actually does at that location
+VERIFICATION RULES:
+- If a finding cites a specific file:line, check the REFERENCED CODE section to verify the claim
+- AGREE only if you can confirm the claim is factually correct — cite your evidence
+- DISAGREE only if you have concrete evidence the finding is WRONG — the code contradicts the claim
+- UNVERIFIED if the cited code is not in the snippets, the line number is wrong, or you lack context to check. First try to reason about the claim's plausibility from what you CAN see. Only use UNVERIFIED as a last resort when you truly cannot assess the claim.
+- Do NOT agree with a finding just because it sounds plausible — verify it
 - Agreeing without verification is WORSE than disagreeing — a false confirmation poisons the system
-- When in doubt, respond with DISAGREE and explain what you couldn't verify
 
 Return only valid JSON.` },
       { role: 'user', content: userContent },
@@ -189,6 +193,7 @@ Return only valid JSON.` },
       finding: string;
       confirmedBy: string[];
       disputedBy: Array<{ agentId: string; reason: string; evidence: string }>;
+      unverifiedBy: Array<{ agentId: string; reason: string }>;
       confidences: number[];
     }>();
 
@@ -204,18 +209,23 @@ Return only valid JSON.` },
           finding,
           confirmedBy: [],
           disputedBy: [],
+          unverifiedBy: [],
           confidences: [],
         });
       }
     }
+
+    // (a.2) Semantic dedup: merge findings across agents that describe the same issue
+    this.deduplicateFindings(findingMap);
 
     // Build taskId lookup from results
     const agentTaskIds = new Map<string, string>();
     for (const r of successful) agentTaskIds.set(r.agentId, r.id);
 
     // (b) Apply cross-review entries
+    const crossReviewTimestamp = new Date().toISOString();
     for (const entry of crossReviewEntries) {
-      const now = new Date().toISOString();
+      const now = crossReviewTimestamp;
 
       if (entry.action === 'new') {
         newFindings.push({
@@ -297,13 +307,37 @@ Return only valid JSON.` },
           }
         }
       }
+
+      if (entry.action === 'unverified') {
+        const matchKey = this.findMatchingFinding(findingMap, entry.peerAgentId, entry.finding);
+        if (matchKey) {
+          const f = findingMap.get(matchKey)!;
+          f.unverifiedBy.push({
+            agentId: entry.agentId,
+            reason: entry.evidence,
+          });
+          f.confidences.push(entry.confidence);
+          // Tiny penalty signal — agent couldn't verify, less useful than agree/disagree
+          signals.push({
+            type: 'consensus',
+            taskId: agentTaskIds.get(entry.agentId) ?? '',
+            signal: 'unverified',
+            agentId: entry.agentId,
+            counterpartId: entry.peerAgentId,
+            evidence: entry.evidence,
+            timestamp: now,
+          });
+        }
+      }
     }
 
     // (c) Tag findings
     const confirmed: ConsensusFinding[] = [];
     const disputed: ConsensusFinding[] = [];
+    const unverified: ConsensusFinding[] = [];
     const unique: ConsensusFinding[] = [];
     let findingIdx = 0;
+    const taggingTimestamp = new Date().toISOString();
 
     for (const [, entry] of findingMap) {
       findingIdx++;
@@ -318,10 +352,11 @@ Return only valid JSON.` },
         tag: 'unique',
         confirmedBy: entry.confirmedBy,
         disputedBy: entry.disputedBy,
+        unverifiedBy: entry.unverifiedBy.length > 0 ? entry.unverifiedBy : undefined,
         confidence: Math.round(avgConfidence),
       };
 
-      const now = new Date().toISOString();
+      const now = taggingTimestamp;
 
       if (entry.disputedBy.length > 0) {
         finding.tag = 'disputed';
@@ -359,6 +394,18 @@ Return only valid JSON.` },
             timestamp: now,
           });
         }
+      } else if (entry.unverifiedBy.length > 0) {
+        // Peers couldn't verify (wrong line number, missing context) — not a refutation
+        finding.tag = 'unverified';
+        unverified.push(finding);
+        signals.push({
+          type: 'consensus',
+          taskId: agentTaskIds.get(entry.originalAgentId) ?? '',
+          signal: 'unique_unconfirmed',
+          agentId: entry.originalAgentId,
+          evidence: entry.finding,
+          timestamp: now,
+        });
       } else {
         finding.tag = 'unique';
         unique.push(finding);
@@ -374,13 +421,14 @@ Return only valid JSON.` },
     }
 
     // (d) Generate formatted report
-    const summary = this.formatReport(confirmed, disputed, unique, newFindings, successful.length);
+    const summary = this.formatReport(confirmed, disputed, unverified, unique, newFindings, successful.length);
 
     return {
       agentCount: successful.length,
       rounds: 2,
       confirmed,
       disputed,
+      unverified,
       unique,
       newFindings,
       signals,
@@ -475,8 +523,8 @@ Return only valid JSON.` },
       return join(root, fileRef);
     } catch { /* not found at root */ }
 
-    // Recursive search in common source directories
-    const searchDirs = ['packages', 'src', 'apps'];
+    // Recursive search in common source directories (including tests, tools, lib)
+    const searchDirs = ['packages', 'src', 'apps', 'tests', 'test', 'tools', 'scripts', 'lib'];
     for (const dir of searchDirs) {
       const found = await this.findFile(join(root, dir), fileName);
       if (found) return found;
@@ -539,7 +587,7 @@ Return only valid JSON.` },
    * 3-tier matching: exact, substring, word overlap.
    */
   private findMatchingFinding(
-    findingMap: Map<string, { originalAgentId: string; finding: string; confirmedBy: string[]; disputedBy: any[]; confidences: number[] }>,
+    findingMap: Map<string, { originalAgentId: string; finding: string; confirmedBy: string[]; disputedBy: Array<{ agentId: string; reason: string; evidence: string }>; unverifiedBy: Array<{ agentId: string; reason: string }>; confidences: number[] }>,
     peerAgentId: string,
     findingText: string,
   ): string | null {
@@ -576,11 +624,99 @@ Return only valid JSON.` },
   }
 
   /**
+   * Semantic dedup: merge findings from different agents that describe the same issue.
+   * Uses file path extraction + Jaccard word overlap to detect duplicates.
+   * When found, the duplicate is removed and the second agent is added as a co-discoverer
+   * (pre-populates confirmedBy so the finding starts as confirmed, not split).
+   */
+  private deduplicateFindings(
+    findingMap: Map<string, {
+      originalAgentId: string;
+      finding: string;
+      confirmedBy: string[];
+      disputedBy: Array<{ agentId: string; reason: string; evidence: string }>;
+      unverifiedBy: Array<{ agentId: string; reason: string }>;
+      confidences: number[];
+    }>,
+  ): void {
+    const entries = Array.from(findingMap.entries());
+    const toRemove = new Set<string>();
+
+    // Extract file references from a finding
+    const extractFile = (text: string): string | null => {
+      const match = text.match(/([a-zA-Z][\w.-]+\.[a-z]{1,4})/);
+      return match ? match[1].toLowerCase() : null;
+    };
+
+    // No stop words — static lists can't distinguish boilerplate from signal.
+    // Use raw word overlap with high thresholds instead.
+    const significantWords = (text: string) =>
+      text.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+
+    for (let i = 0; i < entries.length; i++) {
+      const [keyA, entryA] = entries[i];
+      if (toRemove.has(keyA)) continue;
+
+      for (let j = i + 1; j < entries.length; j++) {
+        const [keyB, entryB] = entries[j];
+        if (toRemove.has(keyB)) continue;
+        // Only dedup across different agents
+        if (entryA.originalAgentId === entryB.originalAgentId) continue;
+
+        // Check if they reference the same file
+        const fileA = extractFile(entryA.finding);
+        const fileB = extractFile(entryB.finding);
+        const sameFile = fileA && fileB && fileA === fileB;
+
+        // Jaccard similarity on significant words
+        const wordsA = significantWords(entryA.finding);
+        const wordsB = significantWords(entryB.finding);
+        if (wordsA.length === 0 || wordsB.length === 0) continue;
+
+        const overlap = wordsA.filter(w => wordsB.includes(w)).length;
+        const union = new Set([...wordsA, ...wordsB]).size;
+        const jaccard = overlap / union;
+
+        // High thresholds, no stop words — prefer missed dedup over false merge
+        const shouldMerge = sameFile ? jaccard > 0.6 : jaccard > 0.7;
+
+        if (shouldMerge) {
+          // Prefer the finding with a file:line citation (more actionable)
+          const hasCitationA = /:\d+/.test(entryA.finding);
+          const hasCitationB = /:\d+/.test(entryB.finding);
+          if (!hasCitationA && hasCitationB) {
+            // B is more precise — swap: merge A into B
+            entryB.confirmedBy.push(entryA.originalAgentId);
+            entryB.confidences.push(4);
+            toRemove.add(keyA);
+            process.stderr.write(
+              `[consensus] Dedup: merged "${entryA.finding.slice(0, 60)}..." (${entryA.originalAgentId}) into "${entryB.finding.slice(0, 60)}..." (${entryB.originalAgentId}) [B more precise]\n`
+            );
+            break; // A is removed, stop comparing it
+          }
+          // Default: merge B into A
+          entryA.confirmedBy.push(entryB.originalAgentId);
+          entryA.confidences.push(4); // high confidence — independent discovery
+          toRemove.add(keyB);
+          process.stderr.write(
+            `[consensus] Dedup: merged "${entryB.finding.slice(0, 60)}..." (${entryB.originalAgentId}) into "${entryA.finding.slice(0, 60)}..." (${entryA.originalAgentId})\n`
+          );
+        }
+      }
+    }
+
+    for (const key of toRemove) {
+      findingMap.delete(key);
+    }
+  }
+
+  /**
    * Format the consensus report as a human-readable string.
    */
   private formatReport(
     confirmed: ConsensusFinding[],
     disputed: ConsensusFinding[],
+    unverified: ConsensusFinding[],
     unique: ConsensusFinding[],
     newFindings: ConsensusNewFinding[],
     agentCount: number,
@@ -617,6 +753,16 @@ Return only valid JSON.` },
       lines.push('');
     }
 
+    if (unverified.length > 0) {
+      lines.push('UNVERIFIED (peers could not verify — likely valid but needs manual check):');
+      for (const f of unverified) {
+        const origPreset = this.config.registryGet(f.originalAgentId)?.preset || f.originalAgentId;
+        const unvNames = f.unverifiedBy?.map(u => this.config.registryGet(u.agentId)?.preset || u.agentId).join(', ') || '?';
+        lines.push(`  ◇ [${origPreset}, unverified by ${unvNames}] "${f.finding}"`);
+      }
+      lines.push('');
+    }
+
     if (unique.length > 0) {
       lines.push('UNIQUE (one agent only — verify before acting):');
       for (const f of unique) {
@@ -636,7 +782,7 @@ Return only valid JSON.` },
     }
 
     lines.push(bar);
-    lines.push(`Summary: ${confirmed.length} confirmed, ${disputed.length} disputed, ${unique.length} unique, ${newFindings.length} new`);
+    lines.push(`Summary: ${confirmed.length} confirmed, ${disputed.length} disputed, ${unverified.length} unverified, ${unique.length} unique, ${newFindings.length} new`);
     lines.push(bar);
 
     return lines.join('\n');
