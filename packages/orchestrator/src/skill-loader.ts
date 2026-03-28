@@ -1,5 +1,6 @@
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { resolve } from 'path';
+import type { SkillIndex } from './skill-index';
 
 /**
  * Load skill files for an agent and return concatenated content
@@ -9,11 +10,19 @@ import { resolve } from 'path';
  * 1. Agent's local skills: .gossip/agents/<id>/skills/
  * 2. Project skills: .gossip/skills/
  * 3. Default skills: packages/orchestrator/src/default-skills/
+ *
+ * If a SkillIndex is provided, uses its enabled skills as source of truth
+ * (filtering out disabled slots). Falls back to skills[] when no index.
  */
-export function loadSkills(agentId: string, skills: string[], projectRoot: string): string {
+export function loadSkills(agentId: string, skills: string[], projectRoot: string, index?: SkillIndex): string {
+  // Use index as source of truth when available and agent has slots
+  const effectiveSkills = index && index.getAgentSlots(agentId).length > 0
+    ? index.getEnabledSkills(agentId)
+    : skills;
+
   const sections: string[] = [];
 
-  for (const skill of skills) {
+  for (const skill of effectiveSkills) {
     const content = resolveSkill(agentId, skill, projectRoot);
     if (content) {
       sections.push(content);
