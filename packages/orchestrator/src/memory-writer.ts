@@ -199,7 +199,75 @@ export class MemoryWriter {
       ...peerFindings.map(f => `- [${f.originalAgentId}] ${f.finding}`),
     ].join('\n');
 
+    // Enforce knowledge file cap
+    try {
+      const existing = readdirSync(knowledgeDir).filter(f => f.endsWith('.md')).sort();
+      const MAX_KNOWLEDGE_FILES = 10;
+      if (existing.length >= MAX_KNOWLEDGE_FILES) {
+        const toRemove = existing.slice(0, existing.length - MAX_KNOWLEDGE_FILES + 1);
+        for (const old of toRemove) {
+          unlinkSync(join(knowledgeDir, old));
+        }
+      }
+    } catch { /* skip cleanup on error */ }
+
     writeFileSync(join(knowledgeDir, filename), content);
+  }
+
+  /**
+   * Update task memory importance based on consensus signals.
+   * High-quality findings get boosted, hallucinations get reduced.
+   */
+  updateImportanceFromSignals(signals: Array<{ signal: string; agentId: string; taskId: string }>): void {
+    const IMPORTANCE_ADJUSTMENTS: Record<string, number> = {
+      consensus_verified: 0.15,
+      unique_confirmed: 0.20,
+      agreement: 0.05,
+      hallucination_caught: -0.25,
+      disagreement: -0.10,
+    };
+
+    // Group adjustments by agentId → taskId
+    const adjustments = new Map<string, Map<string, number>>();
+    for (const s of signals) {
+      const weight = IMPORTANCE_ADJUSTMENTS[s.signal];
+      if (weight === undefined) continue;
+      if (!adjustments.has(s.agentId)) adjustments.set(s.agentId, new Map());
+      const taskAdj = adjustments.get(s.agentId)!;
+      taskAdj.set(s.taskId, (taskAdj.get(s.taskId) ?? 0) + weight);
+    }
+
+    // Apply adjustments to tasks.jsonl for each agent
+    for (const [agentId, taskAdjustments] of adjustments) {
+      const memDir = join(this.projectRoot, '.gossip', 'agents', agentId, 'memory');
+      const tasksPath = join(memDir, 'tasks.jsonl');
+      const lockPath = join(memDir, 'tasks.jsonl.lock');
+
+      if (!existsSync(tasksPath)) continue;
+      if (existsSync(lockPath)) continue; // locked by compactor, skip
+
+      try {
+        const lines = readFileSync(tasksPath, 'utf-8').trim().split('\n').filter(Boolean);
+        let modified = false;
+
+        const updated = lines.map(line => {
+          try {
+            const entry = JSON.parse(line);
+            const adj = taskAdjustments.get(entry.taskId);
+            if (adj !== undefined) {
+              entry.importance = Math.max(0.1, Math.min(1.0, (entry.importance || 0.5) + adj));
+              modified = true;
+              return JSON.stringify(entry);
+            }
+            return line;
+          } catch { return line; }
+        });
+
+        if (modified) {
+          writeFileSync(tasksPath, updated.join('\n') + '\n');
+        }
+      } catch { /* best-effort */ }
+    }
   }
 
   rebuildIndex(agentId: string): void {

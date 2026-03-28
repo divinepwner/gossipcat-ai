@@ -20,7 +20,16 @@ export class MemoryCompactor {
     if (!existsSync(tasksPath)) return { archived: 0 };
 
     // Lock to prevent race condition with concurrent MemoryWriter.writeTaskEntry
-    if (existsSync(lockPath)) return { archived: 0 }; // another compaction in progress
+    if (existsSync(lockPath)) {
+      // Expire stale locks older than 60 seconds (process crash recovery)
+      try {
+        const lockAge = Date.now() - parseInt(readFileSync(lockPath, 'utf-8'), 10);
+        if (lockAge < 60000) return { archived: 0 }; // lock is fresh, respect it
+        unlinkSync(lockPath); // stale lock, remove and proceed
+      } catch {
+        try { unlinkSync(lockPath); } catch { return { archived: 0 }; }
+      }
+    }
     try {
       writeFileSync(lockPath, `${Date.now()}`);
     } catch { return { archived: 0 }; }

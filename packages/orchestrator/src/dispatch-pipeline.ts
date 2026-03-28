@@ -665,6 +665,13 @@ export class DispatchPipeline {
 
         if (consensusReport.signals.length > 0) {
           perfWriter.appendSignals(consensusReport.signals);
+
+          // Feed consensus signals back into memory importance
+          try {
+            this.memWriter.updateImportanceFromSignals(
+              consensusReport.signals.map(s => ({ signal: s.signal, agentId: s.agentId, taskId: s.taskId }))
+            );
+          } catch { /* best-effort */ }
         }
         // Post-consensus: extract categories from confirmed findings
         if (consensusReport.confirmed.length > 0) {
@@ -696,6 +703,10 @@ export class DispatchPipeline {
             const participants = new Set(results.filter(r => r.status === 'completed').map(r => r.agentId));
             for (const agentId of participants) {
               this.memWriter.writeConsensusKnowledge(agentId, findings);
+            }
+            // Rebuild index to include consensus knowledge
+            for (const agentId of participants) {
+              try { this.memWriter.rebuildIndex(agentId); } catch { /* best-effort */ }
             }
           } catch { /* best-effort cross-agent learning */ }
         }

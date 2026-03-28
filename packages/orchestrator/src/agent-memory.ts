@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync, writeFileSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, writeFileSync, statSync } from 'fs';
 import { join } from 'path';
 
 export class AgentMemoryReader {
@@ -24,7 +24,10 @@ export class AgentMemoryReader {
         // Sanitize: strip potential prompt injection delimiters from agent-generated memory
         content = content.replace(/<\/?(?:agent-memory|system|instructions)>/gi, '');
         parts.push(`<agent-memory>\n${content}\n</agent-memory>`);
-        this.touchKnowledgeFile(file.path, content);
+        // Only touch files with high relevance to avoid corrupting low-value memories
+        if (file.score > 0.5) {
+          this.touchKnowledgeFile(file.path, content);
+        }
       }
     }
 
@@ -63,7 +66,6 @@ export class AgentMemoryReader {
         const relevance = this.calculateRelevance(content.slice(0, 500), lower);
         // Always include recent agent-written files (high base score)
         // Apply age-based decay to unindexed files using filesystem mtime
-        const { statSync } = require('fs');
         try {
           const mtime = statSync(filePath).mtimeMs;
           const ageDays = (Date.now() - mtime) / 86400000;
