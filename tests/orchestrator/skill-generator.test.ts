@@ -122,10 +122,14 @@ describe('SkillGenerator', () => {
     const gen = new SkillGenerator(llm, new CompetencyProfiler(testDir), testDir);
     const result = await gen.generate('agent-a', 'injection_vectors');
 
-    expect(result.content).toBe(VALID_SKILL);
+    expect(result.content).toContain('## Iron Law');
+    expect(result.content).toContain('## Methodology');
+    expect(result.content).toContain('## Anti-Patterns');
+    expect(result.content).toContain('## Quality Gate');
+    expect(result.content).toContain('name: injection-audit');
     expect(result.path).toContain('agent-a/skills/injection-vectors.md');
     expect(existsSync(result.path)).toBe(true);
-    expect(readFileSync(result.path, 'utf-8')).toBe(VALID_SKILL);
+    expect(readFileSync(result.path, 'utf-8')).toBe(VALID_SKILL.trim());
   });
 
   test('rejects LLM output missing required sections', async () => {

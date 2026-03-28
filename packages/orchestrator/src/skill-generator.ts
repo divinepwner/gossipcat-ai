@@ -146,15 +146,21 @@ Requirements:
     const response = await this.llm.generate(messages, { temperature: 0.3 });
     const content = response.text || '';
 
-    this.validateSkillContent(content);
+    // Strip markdown code fences if LLM wrapped the output
+    let cleaned = content.trim();
+    if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```\w*\n/, '').replace(/\n```\s*$/, '').trim();
+    }
+
+    this.validateSkillContent(cleaned);
 
     const skillName = normalizeSkillName(category);
     const skillDir = join(this.projectRoot, '.gossip', 'agents', agentId, 'skills');
     mkdirSync(skillDir, { recursive: true });
     const skillPath = join(skillDir, `${skillName}.md`);
-    writeFileSync(skillPath, content);
+    writeFileSync(skillPath, cleaned);
 
-    return { path: skillPath, content };
+    return { path: skillPath, content: cleaned };
   }
 
   private validateSkillContent(content: string): void {

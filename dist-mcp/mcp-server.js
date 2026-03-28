@@ -11517,13 +11517,17 @@ Requirements:
         ];
         const response = await this.llm.generate(messages, { temperature: 0.3 });
         const content = response.text || "";
-        this.validateSkillContent(content);
+        let cleaned = content.trim();
+        if (cleaned.startsWith("```")) {
+          cleaned = cleaned.replace(/^```\w*\n/, "").replace(/\n```\s*$/, "").trim();
+        }
+        this.validateSkillContent(cleaned);
         const skillName = normalizeSkillName(category);
         const skillDir = (0, import_path25.join)(this.projectRoot, ".gossip", "agents", agentId, "skills");
         (0, import_fs20.mkdirSync)(skillDir, { recursive: true });
         const skillPath = (0, import_path25.join)(skillDir, `${skillName}.md`);
-        (0, import_fs20.writeFileSync)(skillPath, content);
-        return { path: skillPath, content };
+        (0, import_fs20.writeFileSync)(skillPath, cleaned);
+        return { path: skillPath, content: cleaned };
       }
       validateSkillContent(content) {
         if (!content.match(/^---\n[\s\S]*?\n---/)) {
