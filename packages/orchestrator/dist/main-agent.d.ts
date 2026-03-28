@@ -73,6 +73,7 @@ export declare class MainAgent {
     getTask(taskId: string): import("./types").TaskEntry | undefined;
     setGossipPublisher(publisher: any): void;
     setOverlapDetector(detector: any): void;
+    setConsensusJudge(judge: any): void;
     setLensGenerator(generator: any): void;
     /** Health check for active tasks — diagnostics for "is it working?" */
     getActiveTasksHealth(): {

@@ -149,6 +149,16 @@ class MainAgent {
             syncFactory: config.syncFactory,
             toolServer: config.toolServer,
         });
+        // Wire ATI competency profiler + dispatch differentiator (after pipeline creation)
+        try {
+            const { CompetencyProfiler } = require('./competency-profiler');
+            const { DispatchDifferentiator } = require('./dispatch-differentiator');
+            const profiler = new CompetencyProfiler(this.projectRoot);
+            this.registry.setCompetencyProfiler(profiler);
+            this.pipeline.setCompetencyProfiler(profiler);
+            this.pipeline.setDispatchDifferentiator(new DispatchDifferentiator());
+        }
+        catch { /* ATI components optional */ }
         this.keyProviderFn = config.keyProvider;
         this.projectInitializer = new project_initializer_1.ProjectInitializer({
             llm: this.llm,
@@ -221,6 +231,7 @@ class MainAgent {
     getTask(taskId) { return this.pipeline.getTask(taskId); }
     setGossipPublisher(publisher) { this.pipeline.setGossipPublisher(publisher); }
     setOverlapDetector(detector) { this.pipeline.setOverlapDetector(detector); }
+    setConsensusJudge(judge) { this.pipeline.setConsensusJudge(judge); }
     setLensGenerator(generator) { this.pipeline.setLensGenerator(generator); }
     /** Health check for active tasks — diagnostics for "is it working?" */
     getActiveTasksHealth() { return this.pipeline.getActiveTasksHealth(); }

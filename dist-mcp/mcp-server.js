@@ -5249,9 +5249,10 @@ ${context}` : ""}
 });
 
 // packages/orchestrator/src/skill-loader.ts
-function loadSkills(agentId, skills, projectRoot) {
+function loadSkills(agentId, skills, projectRoot, index) {
+  const effectiveSkills = index && index.getAgentSlots(agentId).length > 0 ? index.getEnabledSkills(agentId) : skills;
   const sections = [];
-  for (const skill of skills) {
+  for (const skill of effectiveSkills) {
     const content = resolveSkill(agentId, skill, projectRoot);
     if (content) {
       sections.push(content);
@@ -6627,7 +6628,7 @@ var init_consensus_engine = __esm({
     FALLBACK_MAX_LENGTH = 2e3;
     MAX_SUMMARY_LENGTH = 3e3;
     MAX_CROSS_REVIEW_ENTRIES = 50;
-    VALID_ACTIONS = /* @__PURE__ */ new Set(["agree", "disagree", "new"]);
+    VALID_ACTIONS = /* @__PURE__ */ new Set(["agree", "disagree", "unverified", "new"]);
     ConsensusEngine = class {
       config;
       constructor(config2) {
@@ -6638,10 +6639,8 @@ var init_consensus_engine = __esm({
         if (idx !== -1) {
           const afterHeader = result.slice(idx + SUMMARY_HEADER.length).trimStart();
           const nextHeader = afterHeader.search(/\n##\s/);
-          const nextBlankLine = afterHeader.indexOf("\n\n");
           let end = afterHeader.length;
           if (nextHeader !== -1) end = Math.min(end, nextHeader);
-          if (nextBlankLine !== -1) end = Math.min(end, nextBlankLine);
           return afterHeader.slice(0, Math.min(end, MAX_SUMMARY_LENGTH)).trim();
         }
         if (result.length <= FALLBACK_MAX_LENGTH) return result;
@@ -6660,6 +6659,7 @@ var init_consensus_engine = __esm({
             rounds: 0,
             confirmed: [],
             disputed: [],
+            unverified: [],
             unique: [],
             newFindings: [],
             signals: [],
@@ -6732,21 +6732,25 @@ For each peer finding, you MUST:
 Respond with one of:
 - AGREE: The finding is factually correct \u2014 you verified it against the code. Cite your evidence.
 - DISAGREE: The finding is factually incorrect \u2014 the code shows otherwise. Cite file:line and what the code actually does.
+- UNVERIFIED: You cannot verify or refute this finding \u2014 the cited code is not in the snippets, the line number is wrong, or you lack sufficient context. This is NOT disagreement \u2014 it means "I can't confirm or deny."
 - NEW: Something ALL agents missed that you now realize after seeing peer work.
+
+IMPORTANT: Use DISAGREE only when you have evidence the finding is WRONG. Use UNVERIFIED when you simply cannot check it. "I can't find line 172" is UNVERIFIED, not DISAGREE.
 
 Return ONLY a JSON array:
 [
-  { "action": "agree"|"disagree"|"new", "agentId": "peer_id", "finding": "summary", "evidence": "your reasoning with file:line references", "confidence": 1-5 }
+  { "action": "agree"|"disagree"|"unverified"|"new", "agentId": "peer_id", "finding": "summary", "evidence": "your reasoning with file:line references", "confidence": 1-5 }
 ]`;
         const messages = [
-          { role: "system", content: `You are a code reviewer performing cross-review. You are a SKEPTIC \u2014 your job is to catch errors in peer findings, not rubber-stamp them.
+          { role: "system", content: `You are a code reviewer performing cross-review. Your job is to verify peer findings against actual code \u2014 catch errors, but also confirm good work.
 
-CRITICAL RULES:
-- Do NOT agree with a finding just because it sounds plausible
-- If a finding claims code "does not validate", "lacks sanitization", "has no check" \u2014 verify this is actually true before agreeing
-- If a finding cites a specific file:line, your evidence MUST reference what the code actually does at that location
+VERIFICATION RULES:
+- If a finding cites a specific file:line, check the REFERENCED CODE section to verify the claim
+- AGREE only if you can confirm the claim is factually correct \u2014 cite your evidence
+- DISAGREE only if you have concrete evidence the finding is WRONG \u2014 the code contradicts the claim
+- UNVERIFIED if the cited code is not in the snippets, the line number is wrong, or you lack context to check. First try to reason about the claim's plausibility from what you CAN see. Only use UNVERIFIED as a last resort when you truly cannot assess the claim.
+- Do NOT agree with a finding just because it sounds plausible \u2014 verify it
 - Agreeing without verification is WORSE than disagreeing \u2014 a false confirmation poisons the system
-- When in doubt, respond with DISAGREE and explain what you couldn't verify
 
 Return only valid JSON.` },
           { role: "user", content: userContent }
@@ -6780,14 +6784,17 @@ Return only valid JSON.` },
               finding,
               confirmedBy: [],
               disputedBy: [],
+              unverifiedBy: [],
               confidences: []
             });
           }
         }
+        this.deduplicateFindings(findingMap);
         const agentTaskIds = /* @__PURE__ */ new Map();
         for (const r of successful) agentTaskIds.set(r.agentId, r.id);
+        const crossReviewTimestamp = (/* @__PURE__ */ new Date()).toISOString();
         for (const entry of crossReviewEntries) {
-          const now = (/* @__PURE__ */ new Date()).toISOString();
+          const now = crossReviewTimestamp;
           if (entry.action === "new") {
             newFindings.push({
               agentId: entry.agentId,
@@ -6860,11 +6867,33 @@ Return only valid JSON.` },
               }
             }
           }
+          if (entry.action === "unverified") {
+            const matchKey = this.findMatchingFinding(findingMap, entry.peerAgentId, entry.finding);
+            if (matchKey) {
+              const f = findingMap.get(matchKey);
+              f.unverifiedBy.push({
+                agentId: entry.agentId,
+                reason: entry.evidence
+              });
+              f.confidences.push(entry.confidence);
+              signals.push({
+                type: "consensus",
+                taskId: agentTaskIds.get(entry.agentId) ?? "",
+                signal: "unverified",
+                agentId: entry.agentId,
+                counterpartId: entry.peerAgentId,
+                evidence: entry.evidence,
+                timestamp: now
+              });
+            }
+          }
         }
         const confirmed = [];
         const disputed = [];
+        const unverified = [];
         const unique = [];
         let findingIdx = 0;
+        const taggingTimestamp = (/* @__PURE__ */ new Date()).toISOString();
         for (const [, entry] of findingMap) {
           findingIdx++;
           const avgConfidence = entry.confidences.length > 0 ? entry.confidences.reduce((a, b) => a + b, 0) / entry.confidences.length : 3;
@@ -6875,9 +6904,10 @@ Return only valid JSON.` },
             tag: "unique",
             confirmedBy: entry.confirmedBy,
             disputedBy: entry.disputedBy,
+            unverifiedBy: entry.unverifiedBy.length > 0 ? entry.unverifiedBy : void 0,
             confidence: Math.round(avgConfidence)
           };
-          const now = (/* @__PURE__ */ new Date()).toISOString();
+          const now = taggingTimestamp;
           if (entry.disputedBy.length > 0) {
             finding.tag = "disputed";
             disputed.push(finding);
@@ -6912,6 +6942,17 @@ Return only valid JSON.` },
                 timestamp: now
               });
             }
+          } else if (entry.unverifiedBy.length > 0) {
+            finding.tag = "unverified";
+            unverified.push(finding);
+            signals.push({
+              type: "consensus",
+              taskId: agentTaskIds.get(entry.originalAgentId) ?? "",
+              signal: "unique_unconfirmed",
+              agentId: entry.originalAgentId,
+              evidence: entry.finding,
+              timestamp: now
+            });
           } else {
             finding.tag = "unique";
             unique.push(finding);
@@ -6925,12 +6966,13 @@ Return only valid JSON.` },
             });
           }
         }
-        const summary = this.formatReport(confirmed, disputed, unique, newFindings, successful.length);
+        const summary = this.formatReport(confirmed, disputed, unverified, unique, newFindings, successful.length);
         return {
           agentCount: successful.length,
           rounds: 2,
           confirmed,
           disputed,
+          unverified,
           unique,
           newFindings,
           signals,
@@ -7008,7 +7050,7 @@ ${snippet}`);
           return (0, import_path14.join)(root, fileRef);
         } catch {
         }
-        const searchDirs = ["packages", "src", "apps"];
+        const searchDirs = ["packages", "src", "apps", "tests", "test", "tools", "scripts", "lib"];
         for (const dir of searchDirs) {
           const found = await this.findFile((0, import_path14.join)(root, dir), fileName);
           if (found) return found;
@@ -7097,9 +7139,67 @@ ${snippet}`);
         return null;
       }
       /**
+       * Semantic dedup: merge findings from different agents that describe the same issue.
+       * Uses file path extraction + Jaccard word overlap to detect duplicates.
+       * When found, the duplicate is removed and the second agent is added as a co-discoverer
+       * (pre-populates confirmedBy so the finding starts as confirmed, not split).
+       */
+      deduplicateFindings(findingMap) {
+        const entries = Array.from(findingMap.entries());
+        const toRemove = /* @__PURE__ */ new Set();
+        const extractFile = (text) => {
+          const match = text.match(/([a-zA-Z][\w.-]+\.[a-z]{1,4})/);
+          return match ? match[1].toLowerCase() : null;
+        };
+        const significantWords = (text) => text.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
+        for (let i = 0; i < entries.length; i++) {
+          const [keyA, entryA] = entries[i];
+          if (toRemove.has(keyA)) continue;
+          for (let j = i + 1; j < entries.length; j++) {
+            const [keyB, entryB] = entries[j];
+            if (toRemove.has(keyB)) continue;
+            if (entryA.originalAgentId === entryB.originalAgentId) continue;
+            const fileA = extractFile(entryA.finding);
+            const fileB = extractFile(entryB.finding);
+            const sameFile = fileA && fileB && fileA === fileB;
+            const wordsA = significantWords(entryA.finding);
+            const wordsB = significantWords(entryB.finding);
+            if (wordsA.length === 0 || wordsB.length === 0) continue;
+            const overlap = wordsA.filter((w) => wordsB.includes(w)).length;
+            const union2 = (/* @__PURE__ */ new Set([...wordsA, ...wordsB])).size;
+            const jaccard = overlap / union2;
+            const shouldMerge = sameFile ? jaccard > 0.6 : jaccard > 0.7;
+            if (shouldMerge) {
+              const hasCitationA = /:\d+/.test(entryA.finding);
+              const hasCitationB = /:\d+/.test(entryB.finding);
+              if (!hasCitationA && hasCitationB) {
+                entryB.confirmedBy.push(entryA.originalAgentId);
+                entryB.confidences.push(4);
+                toRemove.add(keyA);
+                process.stderr.write(
+                  `[consensus] Dedup: merged "${entryA.finding.slice(0, 60)}..." (${entryA.originalAgentId}) into "${entryB.finding.slice(0, 60)}..." (${entryB.originalAgentId}) [B more precise]
+`
+                );
+                break;
+              }
+              entryA.confirmedBy.push(entryB.originalAgentId);
+              entryA.confidences.push(4);
+              toRemove.add(keyB);
+              process.stderr.write(
+                `[consensus] Dedup: merged "${entryB.finding.slice(0, 60)}..." (${entryB.originalAgentId}) into "${entryA.finding.slice(0, 60)}..." (${entryA.originalAgentId})
+`
+              );
+            }
+          }
+        }
+        for (const key of toRemove) {
+          findingMap.delete(key);
+        }
+      }
+      /**
        * Format the consensus report as a human-readable string.
        */
-      formatReport(confirmed, disputed, unique, newFindings, agentCount) {
+      formatReport(confirmed, disputed, unverified, unique, newFindings, agentCount) {
         const bar = "\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550";
         const lines = [];
         lines.push(bar);
@@ -7128,6 +7228,15 @@ ${snippet}`);
           }
           lines.push("");
         }
+        if (unverified.length > 0) {
+          lines.push("UNVERIFIED (peers could not verify \u2014 likely valid but needs manual check):");
+          for (const f of unverified) {
+            const origPreset = this.config.registryGet(f.originalAgentId)?.preset || f.originalAgentId;
+            const unvNames = f.unverifiedBy?.map((u) => this.config.registryGet(u.agentId)?.preset || u.agentId).join(", ") || "?";
+            lines.push(`  \u25C7 [${origPreset}, unverified by ${unvNames}] "${f.finding}"`);
+          }
+          lines.push("");
+        }
         if (unique.length > 0) {
           lines.push("UNIQUE (one agent only \u2014 verify before acting):");
           for (const f of unique) {
@@ -7145,7 +7254,7 @@ ${snippet}`);
           lines.push("");
         }
         lines.push(bar);
-        lines.push(`Summary: ${confirmed.length} confirmed, ${disputed.length} disputed, ${unique.length} unique, ${newFindings.length} new`);
+        lines.push(`Summary: ${confirmed.length} confirmed, ${disputed.length} disputed, ${unverified.length} unverified, ${unique.length} unique, ${newFindings.length} new`);
         lines.push(bar);
         return lines.join("\n");
       }
@@ -7311,6 +7420,7 @@ var init_dispatch_pipeline = __esm({
       competencyProfiler = null;
       dispatchDifferentiator = null;
       consensusJudge = null;
+      skillIndex = null;
       taskProgressCallback = null;
       setTaskProgressCallback(cb) {
         this.taskProgressCallback = cb;
@@ -7360,7 +7470,7 @@ var init_dispatch_pipeline = __esm({
         log2(`dispatch \u2192 ${agentId}: "${task.slice(0, 80)}..." writeMode=${options?.writeMode || "default"}`);
         const taskId = (0, import_crypto8.randomUUID)().slice(0, 8);
         const agentSkills = this.registryGet(agentId)?.skills || [];
-        const skills = loadSkills(agentId, agentSkills, this.projectRoot);
+        const skills = loadSkills(agentId, agentSkills, this.projectRoot, this.skillIndex ?? void 0);
         const memory = this.memReader.loadMemory(agentId, task);
         const skillWarnings = this.catalog ? this.catalog.checkCoverage(agentSkills, task) : [];
         let sessionContext = "";
@@ -7809,109 +7919,7 @@ Worktree merge: CONFLICT
         ];
         let consensusReport;
         if (options?.consensus && this.llm && results.filter((r) => r.status === "completed").length >= 2) {
-          try {
-            const engine = new ConsensusEngine({ llm: this.llm, registryGet: this.registryGet, projectRoot: this.projectRoot });
-            consensusReport = await engine.run(results);
-            const perfWriter = new PerformanceWriter(this.projectRoot);
-            const agentTaskIdMap = /* @__PURE__ */ new Map();
-            for (const r of results) agentTaskIdMap.set(r.agentId, r.id);
-            if (consensusReport.confirmed.length > 0 && this.consensusJudge) {
-              try {
-                const verdicts = await this.consensusJudge.verify(consensusReport.confirmed);
-                const now = (/* @__PURE__ */ new Date()).toISOString();
-                verdicts.sort((a, b) => b.index - a.index);
-                for (const v of verdicts) {
-                  const findingIndex = v.index - 1;
-                  const finding = consensusReport.confirmed[findingIndex];
-                  if (!finding) continue;
-                  if (v.verdict === "REFUTED") {
-                    consensusReport.confirmed.splice(findingIndex, 1);
-                    finding.tag = "disputed";
-                    consensusReport.disputed.push(finding);
-                    consensusReport.signals.push({
-                      type: "consensus",
-                      signal: "hallucination_caught",
-                      agentId: finding.originalAgentId,
-                      outcome: "judge_refuted",
-                      evidence: v.evidence,
-                      timestamp: now,
-                      taskId: agentTaskIdMap.get(finding.originalAgentId) || finding.id || ""
-                    });
-                    for (const confirmerId of finding.confirmedBy) {
-                      consensusReport.signals.push({
-                        type: "consensus",
-                        signal: "hallucination_caught",
-                        agentId: confirmerId,
-                        outcome: "confirmed_hallucination",
-                        evidence: `Confirmed refuted finding: ${v.evidence}`,
-                        timestamp: now,
-                        taskId: agentTaskIdMap.get(confirmerId) || finding.id || ""
-                      });
-                    }
-                  } else if (v.verdict === "VERIFIED") {
-                    consensusReport.signals.push({
-                      type: "consensus",
-                      signal: "consensus_verified",
-                      agentId: finding.originalAgentId,
-                      evidence: v.evidence,
-                      timestamp: now,
-                      taskId: agentTaskIdMap.get(finding.originalAgentId) || finding.id || ""
-                    });
-                  }
-                }
-              } catch (err) {
-                log2(`Consensus judge failed: ${err.message}`);
-              }
-            }
-            if (consensusReport.signals.length > 0) {
-              perfWriter.appendSignals(consensusReport.signals);
-              try {
-                this.memWriter.updateImportanceFromSignals(
-                  consensusReport.signals.map((s) => ({ signal: s.signal, agentId: s.agentId, taskId: s.taskId }))
-                );
-              } catch {
-              }
-            }
-            if (consensusReport.confirmed.length > 0) {
-              const now = (/* @__PURE__ */ new Date()).toISOString();
-              for (const finding of consensusReport.confirmed) {
-                const categories = extractCategories(finding.finding);
-                for (const category of categories) {
-                  perfWriter.appendSignal({
-                    type: "consensus",
-                    signal: "category_confirmed",
-                    agentId: finding.originalAgentId,
-                    taskId: finding.id || "",
-                    category,
-                    evidence: finding.finding,
-                    timestamp: now
-                  });
-                }
-              }
-            }
-            if (consensusReport.confirmed.length > 0) {
-              try {
-                const findings = consensusReport.confirmed.map((f) => ({
-                  originalAgentId: f.originalAgentId,
-                  finding: f.finding
-                }));
-                const participants = new Set(results.filter((r) => r.status === "completed").map((r) => r.agentId));
-                for (const agentId of participants) {
-                  this.memWriter.writeConsensusKnowledge(agentId, findings);
-                }
-                for (const agentId of participants) {
-                  try {
-                    this.memWriter.rebuildIndex(agentId);
-                  } catch {
-                  }
-                }
-              } catch {
-              }
-            }
-          } catch (err) {
-            process.stderr.write(`[gossipcat] Consensus failed: ${err.message}
-`);
-          }
+          consensusReport = await this.runConsensus(results);
         }
         for (const t of targets) {
           this.tasks.delete(t.id);
@@ -8109,11 +8117,129 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
       setCompetencyProfiler(profiler) {
         this.competencyProfiler = profiler;
       }
+      setSkillIndex(index) {
+        this.skillIndex = index;
+      }
+      getSkillIndex() {
+        return this.skillIndex;
+      }
       setDispatchDifferentiator(differ) {
         this.dispatchDifferentiator = differ;
       }
       setConsensusJudge(judge) {
         this.consensusJudge = judge;
+      }
+      /**
+       * Run consensus cross-review + judge verification + signal pipeline on any set of results.
+       * Extracted so MCP handlers can call this after merging relay + native agent results.
+       */
+      async runConsensus(results) {
+        if (!this.llm || results.filter((r) => r.status === "completed").length < 2) return void 0;
+        try {
+          const engine = new ConsensusEngine({ llm: this.llm, registryGet: this.registryGet, projectRoot: this.projectRoot });
+          const consensusReport = await engine.run(results);
+          const perfWriter = new PerformanceWriter(this.projectRoot);
+          const agentTaskIdMap = /* @__PURE__ */ new Map();
+          for (const r of results) agentTaskIdMap.set(r.agentId, r.id);
+          if (consensusReport.confirmed.length > 0 && this.consensusJudge) {
+            try {
+              const verdicts = await this.consensusJudge.verify(consensusReport.confirmed);
+              const now = (/* @__PURE__ */ new Date()).toISOString();
+              verdicts.sort((a, b) => b.index - a.index);
+              for (const v of verdicts) {
+                const findingIndex = v.index - 1;
+                const finding = consensusReport.confirmed[findingIndex];
+                if (!finding) continue;
+                if (v.verdict === "REFUTED") {
+                  consensusReport.confirmed.splice(findingIndex, 1);
+                  finding.tag = "disputed";
+                  consensusReport.disputed.push(finding);
+                  consensusReport.signals.push({
+                    type: "consensus",
+                    signal: "hallucination_caught",
+                    agentId: finding.originalAgentId,
+                    outcome: "judge_refuted",
+                    evidence: v.evidence,
+                    timestamp: now,
+                    taskId: agentTaskIdMap.get(finding.originalAgentId) || finding.id || ""
+                  });
+                  for (const confirmerId of finding.confirmedBy) {
+                    consensusReport.signals.push({
+                      type: "consensus",
+                      signal: "hallucination_caught",
+                      agentId: confirmerId,
+                      outcome: "confirmed_hallucination",
+                      evidence: `Confirmed refuted finding: ${v.evidence}`,
+                      timestamp: now,
+                      taskId: agentTaskIdMap.get(confirmerId) || finding.id || ""
+                    });
+                  }
+                } else if (v.verdict === "VERIFIED") {
+                  consensusReport.signals.push({
+                    type: "consensus",
+                    signal: "consensus_verified",
+                    agentId: finding.originalAgentId,
+                    evidence: v.evidence,
+                    timestamp: now,
+                    taskId: agentTaskIdMap.get(finding.originalAgentId) || finding.id || ""
+                  });
+                }
+              }
+            } catch (err) {
+              log2(`Consensus judge failed: ${err.message}`);
+            }
+          }
+          if (consensusReport.signals.length > 0) {
+            perfWriter.appendSignals(consensusReport.signals);
+            try {
+              this.memWriter.updateImportanceFromSignals(
+                consensusReport.signals.map((s) => ({ signal: s.signal, agentId: s.agentId, taskId: s.taskId }))
+              );
+            } catch {
+            }
+          }
+          if (consensusReport.confirmed.length > 0) {
+            const now = (/* @__PURE__ */ new Date()).toISOString();
+            for (const finding of consensusReport.confirmed) {
+              const categories = extractCategories(finding.finding);
+              for (const category of categories) {
+                perfWriter.appendSignal({
+                  type: "consensus",
+                  signal: "category_confirmed",
+                  agentId: finding.originalAgentId,
+                  taskId: finding.id || "",
+                  category,
+                  evidence: finding.finding,
+                  timestamp: now
+                });
+              }
+            }
+          }
+          if (consensusReport.confirmed.length > 0) {
+            try {
+              const findings = consensusReport.confirmed.map((f) => ({
+                originalAgentId: f.originalAgentId,
+                finding: f.finding
+              }));
+              const participants = new Set(results.filter((r) => r.status === "completed").map((r) => r.agentId));
+              for (const agentId of participants) {
+                this.memWriter.writeConsensusKnowledge(agentId, findings);
+              }
+              for (const agentId of participants) {
+                try {
+                  this.memWriter.rebuildIndex(agentId);
+                } catch {
+                }
+              }
+            } catch {
+            }
+          }
+          return consensusReport;
+        } catch (err) {
+          process.stderr.write(`[gossipcat] Consensus failed: ${err.message}
+`);
+          return void 0;
+        }
       }
       /** Flush TaskGraph index on shutdown */
       flushTaskGraph() {
@@ -8147,6 +8273,42 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
       getSkeletonMessages() {
         const { pending } = this.gapTracker.checkThresholds();
         return pending.length > 0 ? [`${pending.length} skill(s) ready to build: ${pending.join(", ")}`] : [];
+      }
+      /**
+       * Detect agents weak in categories where peers are strong.
+       * Returns suggestions like: "sonnet-reviewer needs a skill in error_handling (score: 0.2, team median: 0.7)"
+       */
+      getSkillGapSuggestions() {
+        if (!this.competencyProfiler) return [];
+        const profiles = this.competencyProfiler.getProfiles();
+        if (profiles.size < 2) return [];
+        const categoryScores = /* @__PURE__ */ new Map();
+        for (const [, profile] of profiles) {
+          for (const [cat, score] of Object.entries(profile.reviewStrengths)) {
+            if (!categoryScores.has(cat)) categoryScores.set(cat, []);
+            categoryScores.get(cat).push(score);
+          }
+        }
+        const categoryMedians = /* @__PURE__ */ new Map();
+        for (const [cat, scores] of categoryScores) {
+          if (scores.length < 2) continue;
+          const sorted = [...scores].sort((a, b) => a - b);
+          const mid = Math.floor(sorted.length / 2);
+          categoryMedians.set(cat, sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
+        }
+        const suggestions = [];
+        for (const [, profile] of profiles) {
+          for (const [cat, median] of categoryMedians) {
+            if (median < 0.6) continue;
+            const agentScore = profile.reviewStrengths[cat] ?? 0;
+            if (agentScore < 0.3) {
+              suggestions.push(
+                `${profile.agentId} needs a skill in "${cat}" (score: ${agentScore.toFixed(2)}, team median: ${median.toFixed(2)}) \u2014 call gossip_develop_skill(agent_id: "${profile.agentId}", category: "${cat}")`
+              );
+            }
+          }
+        }
+        return suggestions;
       }
       async summarizeAndStoreGossip(agentId, result) {
         try {
@@ -9046,8 +9208,8 @@ Keep it SHORT \u2014 under 30 lines. This is a working document, not a design do
         ]);
         const specContent = response.text || "";
         try {
-          const { mkdirSync: mkdirSync11, writeFileSync: writeFS } = require("fs");
-          mkdirSync11((0, import_path17.join)(this.projectRoot, ".gossip"), { recursive: true });
+          const { mkdirSync: mkdirSync12, writeFileSync: writeFS } = require("fs");
+          mkdirSync12((0, import_path17.join)(this.projectRoot, ".gossip"), { recursive: true });
           writeFS(specPath, specContent, "utf-8");
         } catch (err) {
           return { text: `Spec generated but failed to save: ${err.message}
@@ -9663,6 +9825,8 @@ var init_performance_reader = __esm({
       agreement: { accuracy: 0.1 },
       disagreement: { accuracy: -0.15 },
       // losing side; winning side gets bonus via counterpart
+      unverified: { accuracy: -0.03 },
+      // tiny penalty — couldn't verify, less useful than agree/disagree
       unique_confirmed: { uniqueness: 0.2 },
       unique_unconfirmed: { uniqueness: 0.05 },
       new_finding: { uniqueness: 0.15 },
@@ -10230,8 +10394,8 @@ message: Your question?
       }
       /** Start all worker agents (connect to relay) */
       async start() {
-        const { existsSync: existsSync21, readFileSync: readFileSync22 } = await import("fs");
-        const { join: join24 } = await import("path");
+        const { existsSync: existsSync21, readFileSync: readFileSync23 } = await import("fs");
+        const { join: join25 } = await import("path");
         for (const config2 of this.registry.getAll()) {
           if (config2.native) continue;
           if (this.workers.has(config2.id)) continue;
@@ -10240,8 +10404,8 @@ message: Your question?
             apiKey = await this.keyProviderFn(config2.provider) ?? void 0;
           }
           const llm = createProvider(config2.provider, config2.model, apiKey);
-          const instructionsPath = join24(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
-          const instructions = existsSync21(instructionsPath) ? readFileSync22(instructionsPath, "utf-8") : void 0;
+          const instructionsPath = join25(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
+          const instructions = existsSync21(instructionsPath) ? readFileSync23(instructionsPath, "utf-8") : void 0;
           const enableWebSearch = config2.preset === "researcher" || config2.skills.includes("research");
           const worker = new WorkerAgent(config2.id, llm, this.relayUrl, ALL_TOOLS, instructions, enableWebSearch);
           await worker.start();
@@ -10294,8 +10458,20 @@ message: Your question?
       setConsensusJudge(judge) {
         this.pipeline.setConsensusJudge(judge);
       }
+      async runConsensus(results) {
+        return this.pipeline.runConsensus(results);
+      }
       setLensGenerator(generator) {
         this.pipeline.setLensGenerator(generator);
+      }
+      getSkillGapSuggestions() {
+        return this.pipeline.getSkillGapSuggestions();
+      }
+      setSkillIndex(index) {
+        this.pipeline.setSkillIndex(index);
+      }
+      getSkillIndex() {
+        return this.pipeline.getSkillIndex();
       }
       /** Health check for active tasks — diagnostics for "is it working?" */
       getActiveTasksHealth() {
@@ -10370,16 +10546,16 @@ message: Your question?
         this.registry.register(config2);
       }
       async syncWorkers(keyProvider) {
-        const { existsSync: existsSync21, readFileSync: readFileSync22 } = await import("fs");
-        const { join: join24 } = await import("path");
+        const { existsSync: existsSync21, readFileSync: readFileSync23 } = await import("fs");
+        const { join: join25 } = await import("path");
         let added = 0;
         for (const ac of this.registry.getAll()) {
           if (ac.native) continue;
           if (this.workers.has(ac.id)) continue;
           const key = await keyProvider(ac.provider);
           const llm = createProvider(ac.provider, ac.model, key ?? void 0);
-          const instructionsPath = join24(this.projectRoot, ".gossip", "agents", ac.id, "instructions.md");
-          const instructions = existsSync21(instructionsPath) ? readFileSync22(instructionsPath, "utf-8") : void 0;
+          const instructionsPath = join25(this.projectRoot, ".gossip", "agents", ac.id, "instructions.md");
+          const instructions = existsSync21(instructionsPath) ? readFileSync23(instructionsPath, "utf-8") : void 0;
           const enableWebSearch = ac.preset === "researcher" || ac.skills.includes("research");
           const worker = new WorkerAgent(ac.id, llm, this.relayUrl, ALL_TOOLS, instructions, enableWebSearch);
           await worker.start();
@@ -10913,6 +11089,162 @@ var init_consensus_types = __esm({
   }
 });
 
+// packages/orchestrator/src/skill-index.ts
+var import_fs18, import_path23, DANGEROUS_KEYS, SkillIndex;
+var init_skill_index = __esm({
+  "packages/orchestrator/src/skill-index.ts"() {
+    "use strict";
+    import_fs18 = require("fs");
+    import_path23 = require("path");
+    init_skill_name();
+    DANGEROUS_KEYS = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
+    SkillIndex = class {
+      data = {};
+      filePath;
+      dirty = false;
+      _exists = false;
+      constructor(projectRoot) {
+        this.filePath = (0, import_path23.join)(projectRoot, ".gossip", "skill-index.json");
+        this.load();
+      }
+      /** Bind a skill to an agent (creates or updates the slot) */
+      bind(agentId, skill, options) {
+        this.validateAgentId(agentId);
+        const name = this.validateSkillName(skill);
+        if (!this.data[agentId]) this.data[agentId] = /* @__PURE__ */ Object.create(null);
+        const existing = this.data[agentId][name];
+        const slot = {
+          skill: name,
+          enabled: options?.enabled ?? true,
+          source: options?.source ?? existing?.source ?? "manual",
+          version: existing ? existing.version + 1 : 1,
+          boundAt: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        this.data[agentId][name] = slot;
+        this.dirty = true;
+        this.save();
+        return slot;
+      }
+      /** Unbind a skill from an agent (removes the slot entirely) */
+      unbind(agentId, skill) {
+        const name = normalizeSkillName(skill);
+        if (!this.data[agentId]?.[name]) return false;
+        delete this.data[agentId][name];
+        if (Object.keys(this.data[agentId]).length === 0) delete this.data[agentId];
+        this.dirty = true;
+        this.save();
+        return true;
+      }
+      /** Enable a previously disabled skill slot */
+      enable(agentId, skill) {
+        const name = normalizeSkillName(skill);
+        const slot = this.data[agentId]?.[name];
+        if (!slot) return false;
+        slot.enabled = true;
+        slot.version++;
+        this.dirty = true;
+        this.save();
+        return true;
+      }
+      /** Disable a skill slot without removing it */
+      disable(agentId, skill) {
+        const name = normalizeSkillName(skill);
+        const slot = this.data[agentId]?.[name];
+        if (!slot) return false;
+        slot.enabled = false;
+        slot.version++;
+        this.dirty = true;
+        this.save();
+        return true;
+      }
+      /** Get all enabled skill names for an agent */
+      getEnabledSkills(agentId) {
+        const agentSlots = this.data[agentId];
+        if (!agentSlots) return [];
+        return Object.values(agentSlots).filter((s) => s.enabled).map((s) => s.skill);
+      }
+      /** Get all slots for an agent (enabled and disabled) — returns copies */
+      getAgentSlots(agentId) {
+        const agentSlots = this.data[agentId];
+        if (!agentSlots) return [];
+        return Object.values(agentSlots).map((s) => ({ ...s }));
+      }
+      /** Get a specific slot — returns a copy */
+      getSlot(agentId, skill) {
+        const slot = this.data[agentId]?.[normalizeSkillName(skill)];
+        return slot ? { ...slot } : void 0;
+      }
+      /** Get the full index data — returns a deep copy */
+      getIndex() {
+        return JSON.parse(JSON.stringify(this.data));
+      }
+      /** Get all agent IDs in the index */
+      getAgentIds() {
+        return Object.keys(this.data);
+      }
+      /** Check if an index file exists (for backward compat detection) */
+      exists() {
+        return this._exists;
+      }
+      /**
+       * Seed index from agent configs — call once on first load when no index file exists.
+       * Imports existing config.skills[] as 'config' source slots.
+       */
+      seedFromConfigs(agents) {
+        for (const agent of agents) {
+          if (DANGEROUS_KEYS.has(agent.id) || !agent.id) continue;
+          if (!this.data[agent.id]) this.data[agent.id] = /* @__PURE__ */ Object.create(null);
+          for (const skill of agent.skills) {
+            if (typeof skill !== "string" || !skill) continue;
+            const name = normalizeSkillName(skill);
+            if (!name) continue;
+            if (!this.data[agent.id][name]) {
+              this.data[agent.id][name] = {
+                skill: name,
+                enabled: true,
+                source: "config",
+                version: 1,
+                boundAt: (/* @__PURE__ */ new Date()).toISOString()
+              };
+            }
+          }
+        }
+        this.dirty = true;
+        this.save();
+      }
+      validateAgentId(agentId) {
+        if (!agentId || typeof agentId !== "string" || DANGEROUS_KEYS.has(agentId)) {
+          throw new Error(`Invalid agentId: "${agentId}"`);
+        }
+      }
+      validateSkillName(skill) {
+        const name = normalizeSkillName(skill);
+        if (!name) throw new Error(`Invalid skill name: "${skill}"`);
+        return name;
+      }
+      load() {
+        try {
+          const raw = (0, import_fs18.readFileSync)(this.filePath, "utf-8");
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            this.data = parsed;
+            this._exists = true;
+          }
+        } catch {
+        }
+      }
+      save() {
+        if (!this.dirty) return;
+        const dir = (0, import_path23.dirname)(this.filePath);
+        (0, import_fs18.mkdirSync)(dir, { recursive: true });
+        (0, import_fs18.writeFileSync)(this.filePath, JSON.stringify(this.data, null, 2) + "\n");
+        this._exists = true;
+        this.dirty = false;
+      }
+    };
+  }
+});
+
 // packages/orchestrator/src/task-graph-sync.ts
 function safeId(value) {
   if (!value || /[&=?|()\s!]/.test(value)) {
@@ -10920,12 +11252,12 @@ function safeId(value) {
   }
   return encodeURIComponent(value);
 }
-var import_fs18, import_path23, TaskGraphSync;
+var import_fs19, import_path24, TaskGraphSync;
 var init_task_graph_sync = __esm({
   "packages/orchestrator/src/task-graph-sync.ts"() {
     "use strict";
-    import_fs18 = require("fs");
-    import_path23 = require("path");
+    import_fs19 = require("fs");
+    import_path24 = require("path");
     TaskGraphSync = class {
       constructor(graph, supabaseUrl, supabaseKey, userId, projectId, projectRoot, displayName, migration) {
         this.graph = graph;
@@ -10935,7 +11267,7 @@ var init_task_graph_sync = __esm({
         this.projectId = projectId;
         this.displayName = displayName;
         this.migration = migration;
-        this.gossipDir = (0, import_path23.join)(projectRoot, ".gossip");
+        this.gossipDir = (0, import_path24.join)(projectRoot, ".gossip");
       }
       gossipDir;
       migrationDone = false;
@@ -11058,9 +11390,9 @@ var init_task_graph_sync = __esm({
         });
       }
       async syncAgentScores() {
-        const perfPath = (0, import_path23.join)(this.gossipDir, "agent-performance.jsonl");
-        if (!(0, import_fs18.existsSync)(perfPath)) return 0;
-        const content = (0, import_fs18.readFileSync)(perfPath, "utf-8");
+        const perfPath = (0, import_path24.join)(this.gossipDir, "agent-performance.jsonl");
+        if (!(0, import_fs19.existsSync)(perfPath)) return 0;
+        const content = (0, import_fs19.readFileSync)(perfPath, "utf-8");
         const lines = content.trim().split("\n").filter(Boolean);
         const meta3 = this.graph.getSyncMeta();
         let synced = 0;
@@ -11206,12 +11538,12 @@ Return JSON: { "<agentId>": "<summary>", ... }`
 });
 
 // packages/orchestrator/src/bootstrap.ts
-var import_fs19, import_path24, log4, BootstrapGenerator;
+var import_fs20, import_path25, log4, BootstrapGenerator;
 var init_bootstrap = __esm({
   "packages/orchestrator/src/bootstrap.ts"() {
     "use strict";
-    import_fs19 = require("fs");
-    import_path24 = require("path");
+    import_fs20 = require("fs");
+    import_path25 = require("path");
     log4 = (msg) => process.stderr.write(`[gossipcat] ${msg}
 `);
     BootstrapGenerator = class {
@@ -11233,23 +11565,23 @@ var init_bootstrap = __esm({
         };
       }
       migrateConfig() {
-        const oldPath = (0, import_path24.resolve)(this.projectRoot, "gossip.agents.json");
-        const newPath = (0, import_path24.resolve)(this.projectRoot, ".gossip", "config.json");
-        if (!(0, import_fs19.existsSync)(newPath) && (0, import_fs19.existsSync)(oldPath)) {
-          (0, import_fs19.mkdirSync)((0, import_path24.resolve)(this.projectRoot, ".gossip"), { recursive: true });
-          (0, import_fs19.copyFileSync)(oldPath, newPath);
+        const oldPath = (0, import_path25.resolve)(this.projectRoot, "gossip.agents.json");
+        const newPath = (0, import_path25.resolve)(this.projectRoot, ".gossip", "config.json");
+        if (!(0, import_fs20.existsSync)(newPath) && (0, import_fs20.existsSync)(oldPath)) {
+          (0, import_fs20.mkdirSync)((0, import_path25.resolve)(this.projectRoot, ".gossip"), { recursive: true });
+          (0, import_fs20.copyFileSync)(oldPath, newPath);
           log4("Migrated config to .gossip/config.json \u2014 gossip.agents.json is now ignored.");
         }
       }
       loadConfig() {
         const paths = [
-          (0, import_path24.resolve)(this.projectRoot, ".gossip", "config.json"),
-          (0, import_path24.resolve)(this.projectRoot, "gossip.agents.json")
+          (0, import_path25.resolve)(this.projectRoot, ".gossip", "config.json"),
+          (0, import_path25.resolve)(this.projectRoot, "gossip.agents.json")
         ];
         for (const p of paths) {
-          if ((0, import_fs19.existsSync)(p)) {
+          if ((0, import_fs20.existsSync)(p)) {
             try {
-              return JSON.parse((0, import_fs19.readFileSync)(p, "utf-8"));
+              return JSON.parse((0, import_fs20.readFileSync)(p, "utf-8"));
             } catch {
               log4("Config parse error, falling back to setup mode");
               return null;
@@ -11270,9 +11602,9 @@ var init_bootstrap = __esm({
             skills: ac.skills || [],
             taskCount: 0
           };
-          const tasksPath = (0, import_path24.join)(this.projectRoot, ".gossip", "agents", id, "memory", "tasks.jsonl");
-          if ((0, import_fs19.existsSync)(tasksPath)) {
-            const lines = (0, import_fs19.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+          const tasksPath = (0, import_path25.join)(this.projectRoot, ".gossip", "agents", id, "memory", "tasks.jsonl");
+          if ((0, import_fs20.existsSync)(tasksPath)) {
+            const lines = (0, import_fs20.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
             let count = 0;
             let lastTs = "";
             for (const line of lines) {
@@ -11286,9 +11618,9 @@ var init_bootstrap = __esm({
             summary.taskCount = count;
             if (lastTs) summary.lastActive = lastTs.split("T")[0];
           }
-          const memPath = (0, import_path24.join)(this.projectRoot, ".gossip", "agents", id, "memory", "MEMORY.md");
-          if ((0, import_fs19.existsSync)(memPath)) {
-            const content = (0, import_fs19.readFileSync)(memPath, "utf-8").slice(0, 500);
+          const memPath = (0, import_path25.join)(this.projectRoot, ".gossip", "agents", id, "memory", "MEMORY.md");
+          if ((0, import_fs20.existsSync)(memPath)) {
+            const content = (0, import_fs20.readFileSync)(memPath, "utf-8").slice(0, 500);
             const knowledgeLines = content.match(/- \[([^\]]+)\]/g);
             if (knowledgeLines?.length) {
               summary.topics = knowledgeLines.map((l) => l.replace(/- \[([^\]]+)\].*/, "$1")).join(", ");
@@ -11581,12 +11913,12 @@ Return ONLY the JSON array, no other text.`
 });
 
 // packages/orchestrator/src/skill-generator.ts
-var import_fs20, import_path25, SAFE_NAME, KNOWN_CATEGORIES, REQUIRED_SECTIONS, BUNDLED_TEMPLATE, SkillGenerator;
+var import_fs21, import_path26, SAFE_NAME, KNOWN_CATEGORIES, REQUIRED_SECTIONS, BUNDLED_TEMPLATE, SkillGenerator;
 var init_skill_generator = __esm({
   "packages/orchestrator/src/skill-generator.ts"() {
     "use strict";
-    import_fs20 = require("fs");
-    import_path25 = require("path");
+    import_fs21 = require("fs");
+    import_path26 = require("path");
     init_skill_name();
     SAFE_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
     KNOWN_CATEGORIES = /* @__PURE__ */ new Set([
@@ -11663,9 +11995,9 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST.
           }
         }
         let projectContext = "";
-        const bootstrapPath = (0, import_path25.join)(this.projectRoot, ".gossip", "bootstrap.md");
-        if ((0, import_fs20.existsSync)(bootstrapPath)) {
-          projectContext = (0, import_fs20.readFileSync)(bootstrapPath, "utf-8").slice(0, 2e3);
+        const bootstrapPath = (0, import_path26.join)(this.projectRoot, ".gossip", "bootstrap.md");
+        if ((0, import_fs21.existsSync)(bootstrapPath)) {
+          projectContext = (0, import_fs21.readFileSync)(bootstrapPath, "utf-8").slice(0, 2e3);
         }
         const totalDispatches = agentProfile?.totalTasks ?? 0;
         const categoryConfirmations = findings.filter((f) => f.agentId === agentId).length;
@@ -11724,10 +12056,10 @@ Requirements:
         }
         this.validateSkillContent(cleaned);
         const skillName = normalizeSkillName(category);
-        const skillDir = (0, import_path25.join)(this.projectRoot, ".gossip", "agents", agentId, "skills");
-        (0, import_fs20.mkdirSync)(skillDir, { recursive: true });
-        const skillPath = (0, import_path25.join)(skillDir, `${skillName}.md`);
-        (0, import_fs20.writeFileSync)(skillPath, cleaned);
+        const skillDir = (0, import_path26.join)(this.projectRoot, ".gossip", "agents", agentId, "skills");
+        (0, import_fs21.mkdirSync)(skillDir, { recursive: true });
+        const skillPath = (0, import_path26.join)(skillDir, `${skillName}.md`);
+        (0, import_fs21.writeFileSync)(skillPath, cleaned);
         return { path: skillPath, content: cleaned };
       }
       validateSkillContent(content) {
@@ -11745,24 +12077,24 @@ Requirements:
         }
       }
       loadTemplate() {
-        const userDir = (0, import_path25.join)(this.projectRoot, ".gossip", "skill-templates");
-        if ((0, import_fs20.existsSync)(userDir)) {
-          const files = (0, import_fs20.readdirSync)(userDir).filter((f) => f.endsWith(".md"));
+        const userDir = (0, import_path26.join)(this.projectRoot, ".gossip", "skill-templates");
+        if ((0, import_fs21.existsSync)(userDir)) {
+          const files = (0, import_fs21.readdirSync)(userDir).filter((f) => f.endsWith(".md"));
           if (files.length > 0) {
-            return (0, import_fs20.readFileSync)((0, import_path25.join)(userDir, files[0]), "utf-8");
+            return (0, import_fs21.readFileSync)((0, import_path26.join)(userDir, files[0]), "utf-8");
           }
         }
         const home = process.env.HOME || process.env.USERPROFILE || "";
-        const cacheBase = (0, import_path25.join)(home, ".claude", "plugins", "cache", "claude-plugins-official", "superpowers");
-        if ((0, import_fs20.existsSync)(cacheBase)) {
+        const cacheBase = (0, import_path26.join)(home, ".claude", "plugins", "cache", "claude-plugins-official", "superpowers");
+        if ((0, import_fs21.existsSync)(cacheBase)) {
           try {
-            const versions = (0, import_fs20.readdirSync)(cacheBase).sort().reverse();
+            const versions = (0, import_fs21.readdirSync)(cacheBase).sort().reverse();
             for (const ver of versions) {
-              const skillPath = (0, import_path25.join)(cacheBase, ver, "skills", "systematic-debugging", "SKILL.md");
-              if ((0, import_fs20.existsSync)(skillPath)) {
-                const realPath = (0, import_fs20.realpathSync)(skillPath);
-                if (realPath.startsWith((0, import_path25.resolve)(cacheBase))) {
-                  return (0, import_fs20.readFileSync)(realPath, "utf-8");
+              const skillPath = (0, import_path26.join)(cacheBase, ver, "skills", "systematic-debugging", "SKILL.md");
+              if ((0, import_fs21.existsSync)(skillPath)) {
+                const realPath = (0, import_fs21.realpathSync)(skillPath);
+                if (realPath.startsWith((0, import_path26.resolve)(cacheBase))) {
+                  return (0, import_fs21.readFileSync)(realPath, "utf-8");
                 }
               }
             }
@@ -11772,10 +12104,10 @@ Requirements:
         return BUNDLED_TEMPLATE;
       }
       loadCategoryFindings(category) {
-        const filePath = (0, import_path25.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
-        if (!(0, import_fs20.existsSync)(filePath)) return [];
+        const filePath = (0, import_path26.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
+        if (!(0, import_fs21.existsSync)(filePath)) return [];
         try {
-          return (0, import_fs20.readFileSync)(filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
+          return (0, import_fs21.readFileSync)(filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
             try {
               return JSON.parse(line);
             } catch {
@@ -11793,12 +12125,12 @@ Requirements:
 });
 
 // packages/orchestrator/src/consensus-judge.ts
-var import_fs21, import_path26, log5, ConsensusJudge;
+var import_fs22, import_path27, log5, ConsensusJudge;
 var init_consensus_judge = __esm({
   "packages/orchestrator/src/consensus-judge.ts"() {
     "use strict";
-    import_fs21 = require("fs");
-    import_path26 = require("path");
+    import_fs22 = require("fs");
+    import_path27 = require("path");
     log5 = (msg) => process.stderr.write(`[consensus-judge] ${msg}
 `);
     ConsensusJudge = class {
@@ -11868,12 +12200,12 @@ For each, return: [{"index": 1, "verdict": "VERIFIED|REFUTED|UNVERIFIABLE", "evi
       readCodeSnippet(fileRef, line) {
         const fileName = fileRef.split("/").pop();
         let filePath = null;
-        const direct = (0, import_path26.join)(this.projectRoot, fileRef);
-        if ((0, import_fs21.existsSync)(direct)) {
+        const direct = (0, import_path27.join)(this.projectRoot, fileRef);
+        if ((0, import_fs22.existsSync)(direct)) {
           filePath = direct;
         } else {
           for (const dir of ["packages", "src", "apps"]) {
-            const found = this.findFileSync((0, import_path26.join)(this.projectRoot, dir), fileName);
+            const found = this.findFileSync((0, import_path27.join)(this.projectRoot, dir), fileName);
             if (found) {
               filePath = found;
               break;
@@ -11882,7 +12214,7 @@ For each, return: [{"index": 1, "verdict": "VERIFIED|REFUTED|UNVERIFIABLE", "evi
         }
         if (!filePath) return null;
         try {
-          const content = (0, import_fs21.readFileSync)(filePath, "utf-8");
+          const content = (0, import_fs22.readFileSync)(filePath, "utf-8");
           const lines = content.split("\n");
           if (line > lines.length) return null;
           const start = Math.max(0, line - 4);
@@ -11894,9 +12226,9 @@ For each, return: [{"index": 1, "verdict": "VERIFIED|REFUTED|UNVERIFIABLE", "evi
       }
       findFileSync(dir, fileName) {
         try {
-          const entries = (0, import_fs21.readdirSync)(dir, { withFileTypes: true });
+          const entries = (0, import_fs22.readdirSync)(dir, { withFileTypes: true });
           for (const entry of entries) {
-            const fullPath = (0, import_path26.join)(dir, entry.name);
+            const fullPath = (0, import_path27.join)(dir, entry.name);
             if (entry.isFile() && entry.name === fileName) return fullPath;
             if (entry.isDirectory() && entry.name !== "node_modules" && entry.name !== ".git") {
               const found = this.findFileSync(fullPath, fileName);
@@ -11942,6 +12274,7 @@ __export(src_exports4, {
   SkillCatalog: () => SkillCatalog,
   SkillGapTracker: () => SkillGapTracker,
   SkillGenerator: () => SkillGenerator,
+  SkillIndex: () => SkillIndex,
   TOOL_SCHEMAS: () => TOOL_SCHEMAS,
   TaskDispatcher: () => TaskDispatcher,
   TaskGraph: () => TaskGraph,
@@ -11975,6 +12308,7 @@ var init_src5 = __esm({
     init_consensus_types();
     init_skill_catalog();
     init_skill_gap_tracker();
+    init_skill_index();
     init_prompt_assembler();
     init_agent_memory();
     init_memory_writer();
@@ -12020,18 +12354,18 @@ __export(config_exports, {
 function findConfigPath(projectRoot) {
   const root = projectRoot || process.cwd();
   const candidates = [
-    (0, import_path27.resolve)(root, ".gossip", "config.json"),
-    (0, import_path27.resolve)(root, "gossip.agents.json"),
-    (0, import_path27.resolve)(root, "gossip.agents.yaml"),
-    (0, import_path27.resolve)(root, "gossip.agents.yml")
+    (0, import_path28.resolve)(root, ".gossip", "config.json"),
+    (0, import_path28.resolve)(root, "gossip.agents.json"),
+    (0, import_path28.resolve)(root, "gossip.agents.yaml"),
+    (0, import_path28.resolve)(root, "gossip.agents.yml")
   ];
   for (const p of candidates) {
-    if ((0, import_fs22.existsSync)(p)) return p;
+    if ((0, import_fs23.existsSync)(p)) return p;
   }
   return null;
 }
 function loadConfig(configPath) {
-  const raw = (0, import_fs22.readFileSync)(configPath, "utf-8");
+  const raw = (0, import_fs23.readFileSync)(configPath, "utf-8");
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -12083,19 +12417,19 @@ function configToAgentConfigs(config2) {
 }
 function loadClaudeSubagents(projectRoot, existingIds) {
   const root = projectRoot || process.cwd();
-  const agentsDir = (0, import_path27.join)(root, ".claude", "agents");
-  if (!(0, import_fs22.existsSync)(agentsDir)) return [];
+  const agentsDir = (0, import_path28.join)(root, ".claude", "agents");
+  if (!(0, import_fs23.existsSync)(agentsDir)) return [];
   let files;
   try {
-    files = (0, import_fs22.readdirSync)(agentsDir).filter((f) => f.endsWith(".md"));
+    files = (0, import_fs23.readdirSync)(agentsDir).filter((f) => f.endsWith(".md"));
   } catch {
     return [];
   }
   const agents = [];
   for (const file2 of files) {
-    const filePath = (0, import_path27.join)(agentsDir, file2);
+    const filePath = (0, import_path28.join)(agentsDir, file2);
     try {
-      const content = (0, import_fs22.readFileSync)(filePath, "utf-8");
+      const content = (0, import_fs23.readFileSync)(filePath, "utf-8");
       const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
       if (!frontmatter) continue;
       const fm = frontmatter[1];
@@ -12157,12 +12491,12 @@ function inferSkills(description, name) {
   if (skills.length === 0) skills.push("general");
   return skills;
 }
-var import_fs22, import_path27, VALID_PROVIDERS, CLAUDE_MODEL_MAP;
+var import_fs23, import_path28, VALID_PROVIDERS, CLAUDE_MODEL_MAP;
 var init_config = __esm({
   "apps/cli/src/config.ts"() {
     "use strict";
-    import_fs22 = require("fs");
-    import_path27 = require("path");
+    import_fs23 = require("fs");
+    import_path28 = require("path");
     VALID_PROVIDERS = ["anthropic", "openai", "google", "local"];
     CLAUDE_MODEL_MAP = {
       opus: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -12312,17 +12646,17 @@ __export(identity_exports, {
   normalizeGitUrl: () => normalizeGitUrl
 });
 function getOrCreateSalt(projectRoot) {
-  const saltPath = (0, import_path28.join)(projectRoot, ".gossip", "local-salt");
+  const saltPath = (0, import_path29.join)(projectRoot, ".gossip", "local-salt");
   try {
-    return (0, import_fs23.readFileSync)(saltPath, "utf-8").trim();
+    return (0, import_fs24.readFileSync)(saltPath, "utf-8").trim();
   } catch {
     const salt = (0, import_crypto9.randomBytes)(16).toString("hex");
-    (0, import_fs23.mkdirSync)((0, import_path28.join)(projectRoot, ".gossip"), { recursive: true });
+    (0, import_fs24.mkdirSync)((0, import_path29.join)(projectRoot, ".gossip"), { recursive: true });
     try {
-      (0, import_fs23.writeFileSync)(saltPath, salt, { flag: "wx" });
+      (0, import_fs24.writeFileSync)(saltPath, salt, { flag: "wx" });
       return salt;
     } catch {
-      return (0, import_fs23.readFileSync)(saltPath, "utf-8").trim();
+      return (0, import_fs24.readFileSync)(saltPath, "utf-8").trim();
     }
   }
 }
@@ -12372,12 +12706,12 @@ function getProjectId(projectRoot) {
   }
   return (0, import_crypto9.createHash)("sha256").update(projectRoot).digest("hex").slice(0, 16);
 }
-var import_fs23, import_path28, import_crypto9, import_child_process5;
+var import_fs24, import_path29, import_crypto9, import_child_process5;
 var init_identity = __esm({
   "apps/cli/src/identity.ts"() {
     "use strict";
-    import_fs23 = require("fs");
-    import_path28 = require("path");
+    import_fs24 = require("fs");
+    import_path29 = require("path");
     import_crypto9 = require("crypto");
     import_child_process5 = require("child_process");
   }
@@ -26251,10 +26585,10 @@ async function doBoot() {
     }
     const key = await keychain.getKey(ac.provider);
     const llm = m.createProvider(ac.provider, ac.model, key ?? void 0);
-    const { existsSync: existsSync21, readFileSync: readFileSync22 } = require("fs");
-    const { join: join24 } = require("path");
-    const instructionsPath = join24(process.cwd(), ".gossip", "agents", ac.id, "instructions.md");
-    const instructions = existsSync21(instructionsPath) ? readFileSync22(instructionsPath, "utf-8") : void 0;
+    const { existsSync: existsSync21, readFileSync: readFileSync23 } = require("fs");
+    const { join: join25 } = require("path");
+    const instructionsPath = join25(process.cwd(), ".gossip", "agents", ac.id, "instructions.md");
+    const instructions = existsSync21(instructionsPath) ? readFileSync23(instructionsPath, "utf-8") : void 0;
     const worker = new m.WorkerAgent(ac.id, llm, relay.url, m.ALL_TOOLS, instructions);
     worker.setOnTaskComplete?.((event) => {
       try {
@@ -26400,6 +26734,21 @@ async function doBoot() {
     process.stderr.write("[gossipcat] Skill generator ready\n");
   } catch (err) {
     process.stderr.write(`[gossipcat] Skill generator failed: ${err.message}
+`);
+  }
+  try {
+    const { SkillIndex: SI } = await Promise.resolve().then(() => (init_src5(), src_exports4));
+    const skillIndex = new SI(process.cwd());
+    if (!skillIndex.exists()) {
+      skillIndex.seedFromConfigs(agentConfigs.map((ac) => ({ id: ac.id, skills: ac.skills || [] })));
+      process.stderr.write(`[gossipcat] Skill index created (seeded from ${agentConfigs.length} agent configs)
+`);
+    }
+    mainAgent.setSkillIndex(skillIndex);
+    process.stderr.write(`[gossipcat] Skill index loaded (${skillIndex.getAgentIds().length} agents)
+`);
+  } catch (err) {
+    process.stderr.write(`[gossipcat] Skill index failed: ${err.message}
 `);
   }
   try {
@@ -26817,45 +27166,66 @@ server.tool(
   },
   async ({ task_ids, timeout_ms, consensus }) => {
     await boot();
-    let collected;
     const requestedIds = task_ids.length > 0 ? task_ids : void 0;
     const relayIds = requestedIds?.filter((id) => !nativeResultMap.has(id) && !nativeTaskMap.has(id));
     const nativeIds = requestedIds?.filter((id) => nativeResultMap.has(id) || nativeTaskMap.has(id));
+    let relayResults = [];
     try {
       const idsForRelay = relayIds && relayIds.length > 0 ? relayIds : !requestedIds ? void 0 : [];
       if (!idsForRelay || idsForRelay.length > 0) {
-        collected = await mainAgent.collect(idsForRelay, timeout_ms, consensus ? { consensus: true } : void 0);
-      } else {
-        collected = { results: [], consensus: void 0 };
+        const collected = await mainAgent.collect(idsForRelay, timeout_ms);
+        relayResults = collected.results || [];
       }
     } catch (err) {
       process.stderr.write(`[gossipcat] collect failed: ${err.message}
 `);
-      collected = { results: [], consensus: void 0 };
     }
-    const { results: taskResults, consensus: consensusReport } = collected;
-    const allResults = [...taskResults];
-    if (nativeIds && nativeIds.length > 0) {
-      for (const id of nativeIds) {
-        const nr = nativeResultMap.get(id);
-        if (nr) {
-          allResults.push(nr);
-          nativeResultMap.delete(id);
-        } else if (nativeTaskMap.has(id)) {
-          allResults.push({ id, agentId: nativeTaskMap.get(id).agentId, task: nativeTaskMap.get(id).task, status: "running" });
+    const pendingNativeIds = (nativeIds || []).filter((id) => nativeTaskMap.has(id) && !nativeResultMap.has(id));
+    if (!requestedIds) {
+      for (const [id] of nativeTaskMap) {
+        if (!nativeResultMap.has(id) && !pendingNativeIds.includes(id)) {
+          pendingNativeIds.push(id);
         }
       }
-    } else if (!requestedIds) {
-      for (const [id, nr] of nativeResultMap) {
+    }
+    if (pendingNativeIds.length > 0 && consensus) {
+      const POLL_INTERVAL = 2e3;
+      const nativeTimeout = Math.min(timeout_ms, 12e4);
+      const deadline = Date.now() + nativeTimeout;
+      process.stderr.write(`[gossipcat] Waiting for ${pendingNativeIds.length} native agent(s) before consensus...
+`);
+      while (Date.now() < deadline) {
+        const stillPending = pendingNativeIds.filter((id) => !nativeResultMap.has(id) && nativeTaskMap.has(id));
+        if (stillPending.length === 0) break;
+        await new Promise((resolve12) => setTimeout(resolve12, POLL_INTERVAL));
+      }
+      const arrived = pendingNativeIds.filter((id) => nativeResultMap.has(id)).length;
+      const timedOut = pendingNativeIds.length - arrived;
+      if (timedOut > 0) {
+        process.stderr.write(`[gossipcat] ${timedOut} native agent(s) timed out, proceeding with ${arrived} arrived
+`);
+      } else {
+        process.stderr.write(`[gossipcat] All ${arrived} native agent(s) arrived
+`);
+      }
+    }
+    const allResults = [...relayResults];
+    const collectNativeIds = nativeIds || (!requestedIds ? [...nativeResultMap.keys(), ...nativeTaskMap.keys()].filter((id, i, arr) => arr.indexOf(id) === i) : []);
+    for (const id of collectNativeIds) {
+      const nr = nativeResultMap.get(id);
+      if (nr) {
         allResults.push(nr);
         nativeResultMap.delete(id);
-      }
-      for (const [id, info] of nativeTaskMap) {
-        allResults.push({ id, agentId: info.agentId, task: info.task, status: "running" });
+      } else if (nativeTaskMap.has(id)) {
+        allResults.push({ id, agentId: nativeTaskMap.get(id).agentId, task: nativeTaskMap.get(id).task, status: "running" });
       }
     }
     if (allResults.length === 0) {
       return { content: [{ type: "text", text: requestedIds ? "No matching tasks." : "No pending tasks." }] };
+    }
+    let consensusReport = void 0;
+    if (consensus && allResults.filter((r) => r.status === "completed").length >= 2) {
+      consensusReport = await mainAgent.runConsensus(allResults);
     }
     const resultTexts = allResults.map((t) => {
       const dur = t.completedAt && t.startedAt ? `${t.completedAt - t.startedAt}ms` : "running";
@@ -26879,7 +27249,7 @@ ${t.skillWarnings.map((w) => `  - ${w}`).join("\n")}`;
       return text;
     });
     let output = resultTexts.join("\n\n---\n\n");
-    if (consensusReport) {
+    if (consensusReport?.summary) {
       output += "\n\n" + consensusReport.summary;
     }
     try {
@@ -26890,6 +27260,16 @@ ${t.skillWarnings.map((w) => `  - ${w}`).join("\n")}`;
         output += `
 
 \u{1F527} ${thresholds.count} skill(s) ready to build. Call gossip_build_skills() to generate them.`;
+      }
+    } catch {
+    }
+    try {
+      const suggestions = mainAgent.getSkillGapSuggestions();
+      if (suggestions.length > 0) {
+        output += `
+
+\u{1F4CA} Skill gap detected:
+${suggestions.map((s) => `  - ${s}`).join("\n")}`;
       }
     } catch {
     }
@@ -26997,6 +27377,28 @@ server.tool(
       process.stderr.write(`[gossipcat] consensus collect failed: ${err.message}
 `);
     }
+    const pendingNativeIds = nativeIds.filter((id) => nativeTaskMap.has(id) && !nativeResultMap.has(id));
+    if (pendingNativeIds.length > 0) {
+      const POLL_INTERVAL = 2e3;
+      const nativeTimeout = Math.min(timeout_ms, 12e4);
+      const deadline = Date.now() + nativeTimeout;
+      process.stderr.write(`[gossipcat] Waiting for ${pendingNativeIds.length} native agent(s) before consensus...
+`);
+      while (Date.now() < deadline) {
+        const stillPending = pendingNativeIds.filter((id) => !nativeResultMap.has(id) && nativeTaskMap.has(id));
+        if (stillPending.length === 0) break;
+        await new Promise((resolve12) => setTimeout(resolve12, POLL_INTERVAL));
+      }
+      const arrived = pendingNativeIds.filter((id) => nativeResultMap.has(id)).length;
+      const timedOut = pendingNativeIds.length - arrived;
+      if (timedOut > 0) {
+        process.stderr.write(`[gossipcat] ${timedOut} native agent(s) timed out, proceeding with ${arrived} arrived
+`);
+      } else {
+        process.stderr.write(`[gossipcat] All ${arrived} native agent(s) arrived
+`);
+      }
+    }
     const allResults = [...relayResults];
     for (const id of nativeIds) {
       const nr = nativeResultMap.get(id);
@@ -27013,19 +27415,7 @@ server.tool(
     let consensusReport = void 0;
     const completedResults = allResults.filter((t) => t.status === "completed" && t.result);
     if (completedResults.length >= 2) {
-      try {
-        const { ConsensusEngine: ConsensusEngine2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
-        const engine = new ConsensusEngine2({
-          llm: mainAgent.getLLM(),
-          registryGet: (id) => mainAgent.getAgentList().find((a) => a.id === id)
-        });
-        consensusReport = await engine.run(allResults);
-        process.stderr.write(`[gossipcat] Consensus engine: ${completedResults.length} agents cross-reviewed
-`);
-      } catch (err) {
-        process.stderr.write(`[gossipcat] Consensus engine skipped: ${err.message}
-`);
-      }
+      consensusReport = await mainAgent.runConsensus(allResults);
     }
     const resultTexts = allResults.map((t) => {
       const dur = t.completedAt && t.startedAt ? `${t.completedAt - t.startedAt}ms` : "running";
@@ -27042,6 +27432,16 @@ ${t.result}`;
       output += "\n\n---\n\nCross-reference the findings above. Identify: CONFIRMED (both agents agree), DISPUTED (they disagree), UNIQUE (only one found it), and any NEW insights from comparing their perspectives.";
     } else {
       output += "\n\n\u26A0\uFE0F Need \u22652 successful agents for consensus.";
+    }
+    try {
+      const suggestions = mainAgent.getSkillGapSuggestions();
+      if (suggestions.length > 0) {
+        output += `
+
+\u{1F4CA} Skill gap detected:
+${suggestions.map((s) => `  - ${s}`).join("\n")}`;
+      }
+    } catch {
     }
     return { content: [{ type: "text", text: output }] };
   }
@@ -27169,10 +27569,10 @@ server.tool(
     const { BootstrapGenerator: BootstrapGenerator2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
     const generator = new BootstrapGenerator2(process.cwd());
     const result = generator.generate();
-    const { writeFileSync: writeFileSync11, mkdirSync: mkdirSync11 } = require("fs");
-    const { join: join24 } = require("path");
-    mkdirSync11(join24(process.cwd(), ".gossip"), { recursive: true });
-    writeFileSync11(join24(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
+    const { writeFileSync: writeFileSync12, mkdirSync: mkdirSync12 } = require("fs");
+    const { join: join25 } = require("path");
+    mkdirSync12(join25(process.cwd(), ".gossip"), { recursive: true });
+    writeFileSync12(join25(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
     return { content: [{ type: "text", text: result.prompt }] };
   }
 );
@@ -27200,8 +27600,8 @@ server.tool(
     })).describe("Array of agents to create")
   },
   async ({ main_provider, main_model, agents }) => {
-    const { writeFileSync: writeFileSync11, mkdirSync: mkdirSync11 } = require("fs");
-    const { join: join24 } = require("path");
+    const { writeFileSync: writeFileSync12, mkdirSync: mkdirSync12 } = require("fs");
+    const { join: join25 } = require("path");
     const root = process.cwd();
     const CLAUDE_MODEL_MAP2 = {
       opus: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -27234,9 +27634,9 @@ server.tool(
           "",
           body
         ].join("\n");
-        const agentsDir = join24(root, ".claude", "agents");
-        mkdirSync11(agentsDir, { recursive: true });
-        writeFileSync11(join24(agentsDir, `${agent.id}.md`), md, "utf-8");
+        const agentsDir = join25(root, ".claude", "agents");
+        mkdirSync12(agentsDir, { recursive: true });
+        writeFileSync12(join25(agentsDir, `${agent.id}.md`), md, "utf-8");
         nativeCreated.push(agent.id);
         configAgents[agent.id] = {
           provider: mapped.provider,
@@ -27262,9 +27662,9 @@ server.tool(
         };
         customCreated.push(agent.id);
         if (agent.instructions) {
-          const instrDir = join24(root, ".gossip", "agents", agent.id);
-          mkdirSync11(instrDir, { recursive: true });
-          writeFileSync11(join24(instrDir, "instructions.md"), agent.instructions, "utf-8");
+          const instrDir = join25(root, ".gossip", "agents", agent.id);
+          mkdirSync12(instrDir, { recursive: true });
+          writeFileSync12(join25(instrDir, "instructions.md"), agent.instructions, "utf-8");
         }
       }
     }
@@ -27278,13 +27678,13 @@ server.tool(
     } catch (err) {
       return { content: [{ type: "text", text: `Invalid config: ${err.message}` }] };
     }
-    mkdirSync11(join24(root, ".gossip"), { recursive: true });
-    writeFileSync11(join24(root, ".gossip", "config.json"), JSON.stringify(config2, null, 2));
+    mkdirSync12(join25(root, ".gossip"), { recursive: true });
+    writeFileSync12(join25(root, ".gossip", "config.json"), JSON.stringify(config2, null, 2));
     const agentList = Object.entries(configAgents).map(([id, a]) => `- ${id}: ${a.provider}/${a.model} (${a.preset || "custom"})`).join("\n");
-    const rulesDir = join24(root, env.rulesDir);
-    const rulesFile = join24(root, env.rulesFile);
-    mkdirSync11(rulesDir, { recursive: true });
-    writeFileSync11(rulesFile, `# Gossipcat \u2014 Multi-Agent Orchestration
+    const rulesDir = join25(root, env.rulesDir);
+    const rulesFile = join25(root, env.rulesFile);
+    mkdirSync12(rulesDir, { recursive: true });
+    writeFileSync12(rulesFile, `# Gossipcat \u2014 Multi-Agent Orchestration
 
 This project uses gossipcat for multi-agent orchestration via MCP.
 
@@ -27716,12 +28116,12 @@ server.tool(
     if (findings.length === 0) {
       return { content: [{ type: "text", text: "No findings to log." }] };
     }
-    const { appendFileSync: appendFileSync6, mkdirSync: mkdirSync11, existsSync: existsSync21 } = require("fs");
-    const { join: join24 } = require("path");
+    const { appendFileSync: appendFileSync6, mkdirSync: mkdirSync12, existsSync: existsSync21 } = require("fs");
+    const { join: join25 } = require("path");
     const root = process.cwd();
-    const dir = join24(root, ".gossip");
-    if (!existsSync21(dir)) mkdirSync11(dir, { recursive: true });
-    const filePath = join24(dir, "implementation-findings.jsonl");
+    const dir = join25(root, ".gossip");
+    if (!existsSync21(dir)) mkdirSync12(dir, { recursive: true });
+    const filePath = join25(dir, "implementation-findings.jsonl");
     const timestamp = (/* @__PURE__ */ new Date()).toISOString();
     const data = findings.map((f) => JSON.stringify({
       timestamp,
@@ -27762,15 +28162,15 @@ server.tool(
     agent_id: external_exports.string().optional().describe("Filter by implementer agent ID. Omit to see all.")
   },
   async ({ agent_id }) => {
-    const { existsSync: existsSync21, readFileSync: readFileSync22 } = require("fs");
-    const { join: join24 } = require("path");
-    const filePath = join24(process.cwd(), ".gossip", "implementation-findings.jsonl");
+    const { existsSync: existsSync21, readFileSync: readFileSync23 } = require("fs");
+    const { join: join25 } = require("path");
+    const filePath = join25(process.cwd(), ".gossip", "implementation-findings.jsonl");
     if (!existsSync21(filePath)) {
       return { content: [{ type: "text", text: "No implementation findings yet. Use gossip_log_finding to record findings after code reviews." }] };
     }
     const entries = [];
     try {
-      const lines = readFileSync22(filePath, "utf-8").trim().split("\n").filter(Boolean);
+      const lines = readFileSync23(filePath, "utf-8").trim().split("\n").filter(Boolean);
       for (const l of lines) {
         try {
           entries.push(JSON.parse(l));
@@ -27833,16 +28233,16 @@ server.tool(
     const { SkillGapTracker: SkillGapTracker2, parseSkillFrontmatter: parseSkillFrontmatter2, normalizeSkillName: normalizeSkillName2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
     const tracker = new SkillGapTracker2(process.cwd());
     if (skills && skills.length > 0) {
-      const { writeFileSync: writeFileSync11, mkdirSync: mkdirSync11, existsSync: existsSync21, readFileSync: readFileSync22 } = require("fs");
-      const { join: join24 } = require("path");
-      const dir = join24(process.cwd(), ".gossip", "skills");
-      mkdirSync11(dir, { recursive: true });
+      const { writeFileSync: writeFileSync12, mkdirSync: mkdirSync12, existsSync: existsSync21, readFileSync: readFileSync23 } = require("fs");
+      const { join: join25 } = require("path");
+      const dir = join25(process.cwd(), ".gossip", "skills");
+      mkdirSync12(dir, { recursive: true });
       const results = [];
       for (const skill of skills) {
         const name = normalizeSkillName2(skill.name);
-        const filePath = join24(dir, `${name}.md`);
+        const filePath = join25(dir, `${name}.md`);
         if (existsSync21(filePath)) {
-          const existing = readFileSync22(filePath, "utf-8");
+          const existing = readFileSync23(filePath, "utf-8");
           const fm = parseSkillFrontmatter2(existing);
           if (fm) {
             if (fm.generated_by === "manual") {
@@ -27859,7 +28259,7 @@ server.tool(
             }
           }
         }
-        writeFileSync11(filePath, skill.content);
+        writeFileSync12(filePath, skill.content);
         tracker.recordResolution(name);
         results.push(`\u2705 Created .gossip/skills/${name}.md`);
       }
@@ -27935,6 +28335,66 @@ ${preview}` }]
   }
 );
 server.tool(
+  "gossip_skill_index",
+  'Show the per-agent skill index. Each agent has skill "slots" that can be enabled/disabled. Like smart contract storage slots \u2014 deterministic addressing, O(1) lookup.',
+  {},
+  async () => {
+    await boot();
+    const index = mainAgent.getSkillIndex();
+    if (!index) return { content: [{ type: "text", text: "Skill index not initialized." }] };
+    const data = index.getIndex();
+    const agentIds = Object.keys(data);
+    if (agentIds.length === 0) return { content: [{ type: "text", text: "Skill index is empty. Skills will be indexed on next dispatch." }] };
+    const sections = agentIds.map((agentId) => {
+      const slots = Object.values(data[agentId]);
+      const lines = slots.map(
+        (s) => `  [${s.enabled ? "\u2713" : "\u2717"}] ${s.skill} (v${s.version}, ${s.source})`
+      );
+      return `${agentId} (${slots.filter((s) => s.enabled).length}/${slots.length} enabled):
+${lines.join("\n")}`;
+    });
+    return { content: [{ type: "text", text: `Skill Index (${agentIds.length} agents):
+
+${sections.join("\n\n")}` }] };
+  }
+);
+server.tool(
+  "gossip_skill_bind",
+  "Bind a skill to an agent (creates or updates the slot). Can also enable/disable existing slots. Skills are shared \u2014 one skill file, many agents.",
+  {
+    agent_id: external_exports.string().describe("Agent to bind skill to"),
+    skill: external_exports.string().describe('Skill name (e.g. "security-audit", "typescript")'),
+    enabled: external_exports.boolean().default(true).describe("Set to false to disable the slot without removing it")
+  },
+  async ({ agent_id, skill, enabled }) => {
+    await boot();
+    const index = mainAgent.getSkillIndex();
+    if (!index) return { content: [{ type: "text", text: "Skill index not initialized." }] };
+    const existing = index.getSlot(agent_id, skill);
+    const slot = index.bind(agent_id, skill, { enabled });
+    const action = existing ? existing.enabled !== enabled ? enabled ? "enabled" : "disabled" : "updated" : "bound";
+    return { content: [{ type: "text", text: `Skill "${slot.skill}" ${action} for ${agent_id} (v${slot.version}, ${slot.enabled ? "enabled" : "disabled"})` }] };
+  }
+);
+server.tool(
+  "gossip_skill_unbind",
+  "Remove a skill slot from an agent entirely. Use gossip_skill_bind with enabled: false to disable without removing.",
+  {
+    agent_id: external_exports.string().describe("Agent to unbind skill from"),
+    skill: external_exports.string().describe("Skill name to remove")
+  },
+  async ({ agent_id, skill }) => {
+    await boot();
+    const index = mainAgent.getSkillIndex();
+    if (!index) return { content: [{ type: "text", text: "Skill index not initialized." }] };
+    const removed = index.unbind(agent_id, skill);
+    return { content: [{
+      type: "text",
+      text: removed ? `Skill "${skill}" unbound from ${agent_id}` : `No slot found for "${skill}" on ${agent_id}`
+    }] };
+  }
+);
+server.tool(
   "gossip_tools",
   "List all available gossipcat MCP tools with descriptions. Call after /mcp reconnect to discover new tools.",
   {},
@@ -27959,6 +28419,9 @@ server.tool(
       { name: "gossip_findings", desc: "View implementation findings per agent" },
       { name: "gossip_build_skills", desc: "Build skill files from agent gap suggestions" },
       { name: "gossip_develop_skill", desc: "Generate agent-specific skill from ATI competency data" },
+      { name: "gossip_skill_index", desc: "Show per-agent skill slots (enabled/disabled/version)" },
+      { name: "gossip_skill_bind", desc: "Bind/enable/disable a skill slot on an agent" },
+      { name: "gossip_skill_unbind", desc: "Remove a skill slot from an agent" },
       { name: "gossip_tools", desc: "List available tools (this command)" },
       { name: "gossip_bootstrap", desc: "Generate team context prompt with live agent state" },
       { name: "gossip_setup", desc: "Create or update team configuration" }
