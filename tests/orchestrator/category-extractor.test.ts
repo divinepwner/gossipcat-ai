@@ -1,4 +1,7 @@
-import { extractCategories } from '@gossip/orchestrator';
+import { extractCategories, PerformanceWriter } from '@gossip/orchestrator';
+import { mkdirSync, readFileSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 describe('extractCategories', () => {
   test('extracts injection_vectors from injection-related finding', () => {
@@ -40,5 +43,42 @@ describe('extractCategories', () => {
     const cats = extractCategories('SQL injection with unsanitized input injection');
     const unique = new Set(cats);
     expect(cats.length).toBe(unique.size);
+  });
+});
+
+describe('Post-consensus category extraction integration', () => {
+  const testDir = join(tmpdir(), 'gossip-cat-hook-' + Date.now());
+
+  beforeAll(() => mkdirSync(join(testDir, '.gossip'), { recursive: true }));
+  afterAll(() => rmSync(testDir, { recursive: true, force: true }));
+
+  test('extractCategories + PerformanceWriter produces category_confirmed signals', () => {
+    const writer = new PerformanceWriter(testDir);
+    const confirmedFindings = [
+      { originalAgentId: 'agent-a', finding: 'Prompt injection via unsanitized input' },
+      { originalAgentId: 'agent-b', finding: 'Race condition in scope validation' },
+    ];
+
+    for (const f of confirmedFindings) {
+      const categories = extractCategories(f.finding);
+      for (const category of categories) {
+        writer.appendSignal({
+          type: 'consensus',
+          signal: 'category_confirmed',
+          agentId: f.originalAgentId,
+          taskId: 'test-task',
+          category,
+          evidence: f.finding,
+          timestamp: new Date().toISOString(),
+        } as any);
+      }
+    }
+
+    const lines = readFileSync(join(testDir, '.gossip', 'agent-performance.jsonl'), 'utf-8').trim().split('\n');
+    const signals = lines.map(l => JSON.parse(l));
+    const catSignals = signals.filter((s: any) => s.signal === 'category_confirmed');
+    expect(catSignals.length).toBeGreaterThanOrEqual(2);
+    expect(catSignals.some((s: any) => s.category === 'injection_vectors')).toBe(true);
+    expect(catSignals.some((s: any) => s.category === 'concurrency')).toBe(true);
   });
 });

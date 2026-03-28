@@ -21,6 +21,7 @@ import { LensGenerator } from './lens-generator';
 import { ConsensusEngine } from './consensus-engine';
 import { PerformanceWriter } from './performance-writer';
 import { CollectResult } from './consensus-types';
+import { extractCategories } from './category-extractor';
 import { WorkerProgressCallback } from './worker-agent';
 
 const log = (msg: string) => process.stderr.write(`[gossipcat] ${msg}\n`);
@@ -608,6 +609,25 @@ export class DispatchPipeline {
         if (consensusReport.signals.length > 0) {
           const perfWriter = new PerformanceWriter(this.projectRoot);
           perfWriter.appendSignals(consensusReport.signals);
+        }
+        // Post-consensus: extract categories from confirmed findings
+        if (consensusReport.confirmed.length > 0) {
+          const perfWriter2 = new PerformanceWriter(this.projectRoot);
+          const now = new Date().toISOString();
+          for (const finding of consensusReport.confirmed) {
+            const categories = extractCategories(finding.finding);
+            for (const category of categories) {
+              perfWriter2.appendSignal({
+                type: 'consensus',
+                signal: 'category_confirmed',
+                agentId: finding.originalAgentId,
+                taskId: finding.id || '',
+                category,
+                evidence: finding.finding,
+                timestamp: now,
+              } as any);
+            }
+          }
         }
       } catch (err) {
         process.stderr.write(`[gossipcat] Consensus failed: ${(err as Error).message}\n`);
