@@ -53,9 +53,15 @@ export class SkillGenerator {
 
    Only the structure is used — the content is generated fresh.
 
-2. **Category findings** — all `category_confirmed` signals for this category from `agent-performance.jsonl` via `CompetencyProfiler`. Includes finding text, originating agent, and evidence (file:line references).
+2. **Category findings** — all `category_confirmed` signals for this category from `agent-performance.jsonl`.
 
-3. **Agent gap data** — this agent's `reviewStrengths[category]` score, peer scores in the same category, and findings peers made that this agent missed (derived by comparing confirmed findings across agents in co-dispatched tasks).
+   > **Review finding (H1):** `CompetencyProfiler` only exposes numeric scores, not raw signal text. `ConsensusSignal` has an `evidence` field but no `finding` field — finding text lives in `ConsensusReport` which is ephemeral.
+   >
+   > **Fix:** `SkillGenerator` reads `agent-performance.jsonl` directly (reusing the same parsing logic as `CompetencyProfiler.readSignals()`) and filters for `signal === 'category_confirmed'` with matching category. The `evidence` field on `category_confirmed` signals already contains the finding text (set in the post-consensus hook at `dispatch-pipeline.ts:625`). No new profiler API needed — the JSONL is the shared data store.
+
+3. **Agent gap data** — this agent's `reviewStrengths[category]` score and peer scores in the same category (from `CompetencyProfiler.getProfiles()`).
+
+   > **Review finding (M1):** "Findings agent missed" requires cross-agent comparison from `ConsensusReport` which is ephemeral and not persisted. Deferred — the per-category scores and peer comparison are sufficient for skill generation. Missed-finding attribution can be added in a future iteration when `ConsensusReport` is persisted.
 
 4. **Project context** — `.gossip/bootstrap.md` content (architecture overview, package structure).
 
@@ -184,34 +190,44 @@ Before reporting findings:
 
 ### Skill Injection at Dispatch
 
-Modify the skill loading in `dispatch-pipeline.ts` to also load agent-specific skills:
+> **Review finding (C1):** The proposed `readdirSync` patch is redundant. `skill-loader.ts` already checks `.gossip/agents/{id}/skills/` as its first resolution priority (line 35-38). However, `loadSkills()` only loads skills matching the agent's declared `agentConfig.skills` array — so generated skills are silently ignored unless the category name is added to the agent's skill list.
+
+**Fix:** When `SkillGenerator.generate()` creates a skill file, it must also register the category as a skill on the agent config. Two approaches:
 
 ```typescript
-// Existing: load team skills from .gossip/skills/
-const skills = loadSkills(agentId, agentSkills, this.projectRoot);
-
-// New: also load agent-specific skills from .gossip/agents/{id}/skills/
-const agentSkillsDir = join(this.projectRoot, '.gossip', 'agents', agentId, 'skills');
-if (existsSync(agentSkillsDir)) {
-  const agentSkillFiles = readdirSync(agentSkillsDir).filter(f => f.endsWith('.md'));
-  for (const file of agentSkillFiles) {
-    skills += '\n\n' + readFileSync(join(agentSkillsDir, file), 'utf-8');
-  }
+// Option A (chosen): SkillGenerator updates the config after generation
+const agentConfig = this.registryGet(agentId);
+if (agentConfig && !agentConfig.skills.includes(category)) {
+  agentConfig.skills.push(category);
 }
 ```
 
+No modification to `dispatch-pipeline.ts` or `skill-loader.ts` needed — the existing `loadSkills()` will pick up the new skill file once the category is in the agent's skill list. The path sanitization in `skill-loader.ts:44` (`candidate.startsWith(base + '/')`) already protects against traversal on the read side.
+
 ### Effectiveness Tracking
 
-After generating a skill, record the agent's current `reviewStrengths[category]` score as the baseline. After 5 subsequent dispatches where the agent reviews code in that category:
+> **Review finding (H2):** `reviewStrengths[category]` is monotonically non-decreasing (only `category_confirmed` adds to it). Measuring `newScore - baselineScore` will always be >= 0 if any findings occur, making it useless for detecting failing skills.
 
-1. Read the new `reviewStrengths[category]` score
-2. Compute `effectiveness = newScore - baselineScore`
-3. Update the skill's frontmatter `effectiveness` field
-4. If `effectiveness <= 0` after 5 dispatches, log a warning: skill needs regeneration
+**Fix:** Measure **confirmation rate per dispatch** instead of absolute score.
 
-This is tracked in the skill file's frontmatter — no separate data store needed. The `CompetencyProfiler` already tracks per-category scores, so the comparison is a simple read.
+After generating a skill, record:
+- `baselineRate`: agent's category confirmations / total dispatches (over last 10 dispatches before skill generation)
 
-Implementation: a `checkEffectiveness()` method on `SkillGenerator` called periodically (e.g., from `gossip_collect` post-processing, alongside category extraction).
+After 5 subsequent dispatches with the skill active:
+- `newRate`: agent's category confirmations / total dispatches (over those 5 dispatches)
+- `effectiveness = newRate - baselineRate`
+
+```typescript
+// In skill frontmatter:
+effectiveness: 0.0
+baseline_rate: 0.2        # 2 confirmations in 10 dispatches before skill
+baseline_dispatches: 10
+post_skill_dispatches: 0  # incremented each dispatch, checked at 5
+```
+
+If `effectiveness <= 0` after 5 post-skill dispatches, the skill didn't help → log warning, flag for regeneration.
+
+Implementation: `checkEffectiveness()` on `SkillGenerator`, called from `gossip_collect` post-processing. Reads JSONL to count `category_confirmed` signals per agent per window.
 
 ---
 
@@ -284,10 +300,28 @@ Returns: path to generated skill file + preview of content.
 
 ## Security Constraints
 
-- **Skill content is LLM-generated** — treat as untrusted data when injecting into prompts. Wrap in data tags or clearly delineate from system instructions.
-- **No arbitrary file writes** — skills only written to `.gossip/agents/{id}/skills/`, validated path.
-- **Reference templates are read-only** — the generator reads superpowers skills but never modifies them.
-- **Category must be from known set** — reject unknown categories to prevent skill file name injection.
+- **Skill content is LLM-generated — wrap before injection.** All skill content loaded into agent prompts must be wrapped in `<agent-skill>...</agent-skill>` tags, and the agent's system prompt must instruct it to treat content within those tags as methodology guidance, not as instructions to override its task. This is enforced in `skill-loader.ts`, not in each consumer.
+
+- **Path traversal prevention on writes.** Both `agent_id` and `category` must be validated before constructing file paths:
+  ```typescript
+  const SAFE_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+  if (!SAFE_NAME.test(agentId) || !SAFE_NAME.test(category)) {
+    throw new Error(`Invalid agent_id or category: must be lowercase alphanumeric with hyphens/underscores`);
+  }
+  ```
+  This mirrors the `AGENT_ID_RE` validation already in `tool-router.ts:12`.
+
+- **Category must be from known set.** Only categories defined in `CATEGORY_PATTERNS` (from `category-extractor.ts`) are accepted. Unknown categories are rejected.
+
+- **Reference templates are read-only.** The generator reads superpowers skills from disk but never modifies them. Template paths are resolved via `realpathSync` to prevent symlink attacks when reading from `~/.claude/plugins/cache/`.
+
+- **No arbitrary file writes** — skills only written to `.gossip/agents/{id}/skills/{category}.md`.
+
+- **LLM output validation.** Before saving, parse the generated content to verify:
+  1. Valid YAML frontmatter with required fields (name, category, agent, effectiveness, version)
+  2. All required sections present (Iron Law, Methodology, Anti-Patterns, Quality Gate)
+  3. Content under 200 lines
+  If validation fails, discard and return error — don't save a malformed skill.
 
 ---
 
