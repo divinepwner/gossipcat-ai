@@ -3622,7 +3622,18 @@ var init_skill_tools = __esm({
           timestamp: (/* @__PURE__ */ new Date()).toISOString()
         };
         (0, import_fs.appendFileSync)(this.gapLogPath, JSON.stringify(entry) + "\n");
+        this.truncateIfNeeded();
         return `Suggestion noted: '${args.skill_name}'. Continue with your current skills.`;
+      }
+      truncateIfNeeded() {
+        try {
+          const content = (0, import_fs.readFileSync)(this.gapLogPath, "utf-8");
+          const lines = content.trim().split("\n").filter(Boolean);
+          if (lines.length > 5e3) {
+            (0, import_fs.writeFileSync)(this.gapLogPath, lines.slice(-1e3).join("\n") + "\n");
+          }
+        } catch {
+        }
       }
     };
   }
@@ -3707,6 +3718,7 @@ var init_tool_server = __esm({
       agentWrittenFiles = /* @__PURE__ */ new Map();
       // agentId → written file paths
       static MAX_WRITTEN_FILES_PER_AGENT = 1024;
+      perfWriter;
       constructor(config2) {
         this.allowedCallers = config2.allowedCallers ? new Set(config2.allowedCallers) : null;
         this.sandbox = new Sandbox(config2.projectRoot);
@@ -3714,6 +3726,7 @@ var init_tool_server = __esm({
         this.shellTools = new ShellTools();
         this.gitTools = new GitTools(config2.projectRoot);
         this.skillTools = new SkillTools(config2.projectRoot);
+        this.perfWriter = config2.perfWriter;
         this.agent = new GossipAgent({
           agentId: config2.agentId || "tool-server",
           relayUrl: config2.relayUrl,
@@ -3948,6 +3961,28 @@ var init_tool_server = __esm({
           reviewResult = `Peer review unavailable: ${err.message}`;
         }
         const testStatus = testResult.includes("FAIL") ? "FAIL" : "PASS";
+        if (this.perfWriter) {
+          const now = (/* @__PURE__ */ new Date()).toISOString();
+          this.perfWriter.appendSignal({
+            type: "impl",
+            signal: testStatus === "PASS" ? "impl_test_pass" : "impl_test_fail",
+            agentId: callerId,
+            taskId: callerId,
+            evidence: testStatus === "FAIL" ? testResult.slice(-500) : void 0,
+            timestamp: now
+          });
+          if (reviewResult && !reviewResult.includes("unavailable")) {
+            const approved = !reviewResult.toLowerCase().includes("reject") && !reviewResult.toLowerCase().includes("fail");
+            this.perfWriter.appendSignal({
+              type: "impl",
+              signal: approved ? "impl_peer_approved" : "impl_peer_rejected",
+              agentId: callerId,
+              taskId: callerId,
+              evidence: reviewResult.slice(0, 500),
+              timestamp: now
+            });
+          }
+        }
         return `## Verification Result
 
 ### Tests: ${testStatus}
@@ -4548,63 +4583,95 @@ var init_llm_client = __esm({
   }
 });
 
+// packages/orchestrator/src/skill-name.ts
+function normalizeSkillName(name) {
+  return name.toLowerCase().replace(/[_\s]+/g, "-").replace(/[^a-z0-9-]/g, "");
+}
+var init_skill_name = __esm({
+  "packages/orchestrator/src/skill-name.ts"() {
+    "use strict";
+  }
+});
+
 // packages/orchestrator/src/agent-registry.ts
 var AgentRegistry;
 var init_agent_registry = __esm({
   "packages/orchestrator/src/agent-registry.ts"() {
     "use strict";
+    init_skill_name();
     AgentRegistry = class {
       agents = /* @__PURE__ */ new Map();
       perfReader = null;
-      /** Register a new agent configuration */
+      competencyProfiler = null;
+      suggesterCache = /* @__PURE__ */ new Map();
       register(config2) {
         this.agents.set(config2.id, config2);
       }
-      /** Remove an agent by ID */
       unregister(id) {
         this.agents.delete(id);
       }
-      /** Get agent config by ID */
       get(id) {
         return this.agents.get(id);
       }
-      /** Get all registered agents */
       getAll() {
         return Array.from(this.agents.values());
       }
-      /** Set performance reader for dispatch weighting */
       setPerformanceReader(reader) {
         this.perfReader = reader;
       }
-      /**
-       * Find the agent with the most overlapping skills, weighted by performance.
-       * Returns null if no agents are registered.
-       */
-      findBestMatch(requiredSkills) {
-        return this.findBestMatchExcluding(requiredSkills, /* @__PURE__ */ new Set());
+      setCompetencyProfiler(profiler) {
+        this.competencyProfiler = profiler;
       }
-      /** Find best skill match, excluding agents in the given set.
-       *  Score = skillOverlap × performanceWeight (0.5-1.5) */
-      findBestMatchExcluding(requiredSkills, exclude) {
+      setSuggesterCache(cache) {
+        this.suggesterCache = cache;
+      }
+      findBestMatch(requiredSkills, options) {
+        return this.findBestMatchExcluding(requiredSkills, /* @__PURE__ */ new Set(), options);
+      }
+      /**
+       * Find best skill match with additive boosts for project skills.
+       * Score = (staticOverlap + projectMatchBoost + suggesterBoost) × perfWeight
+       */
+      findBestMatchExcluding(requiredSkills, exclude, options) {
+        const normalizedRequired = requiredSkills.map(normalizeSkillName);
+        let projectMatches = [];
+        if (options?.taskText && options?.catalog) {
+          projectMatches = options.catalog.matchTask(options.taskText).filter((e) => e.source === "project").map((e) => e.name);
+        }
         let bestMatch = null;
         let bestScore = 0;
         for (const agent of this.agents.values()) {
           if (exclude.has(agent.id)) continue;
-          const skillScore = requiredSkills.filter((s) => agent.skills.includes(s)).length;
-          const perfWeight = this.perfReader?.getDispatchWeight(agent.id) ?? 1;
-          const score = skillScore * perfWeight;
-          if (score > bestScore) {
+          const normalizedAgentSkills = agent.skills.map(normalizeSkillName);
+          const staticOverlap = normalizedRequired.filter((s) => normalizedAgentSkills.includes(s)).length;
+          const projectMatchBoost = projectMatches.length * 0.5;
+          let suggesterBoost = 0;
+          for (const skill of projectMatches) {
+            if (this.suggesterCache.get(skill)?.has(agent.id)) {
+              suggesterBoost = 0.3;
+              break;
+            }
+          }
+          let perfWeight = 1;
+          if (this.competencyProfiler) {
+            perfWeight = this.competencyProfiler.getProfileMultiplier(agent.id, "review");
+          } else if (this.perfReader) {
+            perfWeight = this.perfReader.getDispatchWeight(agent.id);
+          }
+          const score = (staticOverlap + projectMatchBoost + suggesterBoost) * perfWeight;
+          const ratio = agent.skills.length > 0 ? staticOverlap / agent.skills.length : 0;
+          const bestRatio = bestMatch && bestMatch.skills.length > 0 ? normalizedRequired.filter((s) => bestMatch.skills.map(normalizeSkillName).includes(s)).length / bestMatch.skills.length : 0;
+          if (score > bestScore || score === bestScore && score > 0 && ratio > bestRatio) {
             bestScore = score;
             bestMatch = agent;
           }
         }
         return bestMatch;
       }
-      /** Find all agents that have a given skill */
       findBySkill(skill) {
-        return this.getAll().filter((a) => a.skills.includes(skill));
+        const normalized = normalizeSkillName(skill);
+        return this.getAll().filter((a) => a.skills.map(normalizeSkillName).includes(normalized));
       }
-      /** Number of registered agents */
       get count() {
         return this.agents.size;
       }
@@ -4876,6 +4943,10 @@ var init_worker_agent = __esm({
       pendingToolCalls = /* @__PURE__ */ new Map();
       webSearchEnabled;
       validToolNames;
+      onTaskComplete;
+      setOnTaskComplete(cb) {
+        this.onTaskComplete = cb;
+      }
       setInstructions(instructions) {
         this.instructions = instructions;
       }
@@ -4920,6 +4991,7 @@ var init_worker_agent = __esm({
       async executeTask(task, context, skillsContent, onProgress) {
         log(this.agentId, `executeTask started \u2014 task: "${task.slice(0, 100)}..." webSearch=${this.webSearchEnabled} tools=${this.tools.length}`);
         this.gossipQueue = [];
+        const startTime = Date.now();
         let totalInputTokens = 0;
         let totalOutputTokens = 0;
         let toolCallCount = 0;
@@ -5006,6 +5078,7 @@ ${context}` : ""}
             }
             if (!response.toolCalls?.length) {
               log(this.agentId, `turn ${turn} \u2014 NO tool calls, exiting. Text preview: "${(response.text || "").slice(0, 200)}"`);
+              this.onTaskComplete?.({ agentId: this.agentId, taskId: "", toolCalls: toolCallCount, durationMs: Date.now() - startTime });
               return { result: response.text || "[No response from agent]", inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
             }
             const toolSig = response.toolCalls.map((tc) => `${tc.name}:${JSON.stringify(tc.arguments, Object.keys(tc.arguments || {}).sort())}`).join("|");
@@ -5013,6 +5086,7 @@ ${context}` : ""}
               repeatCount++;
               if (repeatCount >= 2) {
                 log(this.agentId, `turn ${turn} \u2014 STUCK: repeating same tool calls ${repeatCount + 1}x, exiting`);
+                this.onTaskComplete?.({ agentId: this.agentId, taskId: "", toolCalls: toolCallCount, durationMs: Date.now() - startTime });
                 return {
                   result: response.text || "Task completed (agent was repeating the same action).",
                   inputTokens: totalInputTokens,
@@ -5065,6 +5139,7 @@ ${context}` : ""}
               log(this.agentId, `turn ${turn} \u2014 all ${response.toolCalls.length} tool calls errored (streak: ${consecutiveErrors})`);
               if (consecutiveErrors >= 3) {
                 log(this.agentId, `turn ${turn} \u2014 ERROR LOOP: 3 consecutive all-error turns, exiting`);
+                this.onTaskComplete?.({ agentId: this.agentId, taskId: "", toolCalls: toolCallCount, durationMs: Date.now() - startTime });
                 return {
                   result: response.text || "Task incomplete \u2014 agent stuck in error loop. Simplify the approach or check the error messages above.",
                   inputTokens: totalInputTokens,
@@ -5083,12 +5158,15 @@ ${context}` : ""}
               totalInputTokens += summary.usage.inputTokens;
               totalOutputTokens += summary.usage.outputTokens;
             }
+            this.onTaskComplete?.({ agentId: this.agentId, taskId: "", toolCalls: toolCallCount, durationMs: Date.now() - startTime });
             return { result: summary.text || "Task completed (turn budget exhausted).", inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
           } catch {
+            this.onTaskComplete?.({ agentId: this.agentId, taskId: "", toolCalls: toolCallCount, durationMs: Date.now() - startTime });
             return { result: "Task incomplete \u2014 agent exhausted its turn budget.", inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
           }
         } catch (err) {
           log(this.agentId, `FATAL ERROR in executeTask: ${err.message}`);
+          this.onTaskComplete?.({ agentId: this.agentId, taskId: "", toolCalls: toolCallCount, durationMs: Date.now() - startTime });
           return { result: `Error: ${err.message}`, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
         }
       }
@@ -5929,6 +6007,45 @@ var init_task_graph = __esm({
   }
 });
 
+// packages/orchestrator/src/skill-parser.ts
+function parseSkillFrontmatter(content) {
+  const match = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return null;
+  const lines = match[1].split("\n");
+  const fields = {};
+  for (const line of lines) {
+    const colonIdx = line.indexOf(":");
+    if (colonIdx === -1) continue;
+    const key = line.slice(0, colonIdx).trim();
+    const value = line.slice(colonIdx + 1).trim();
+    fields[key] = value;
+  }
+  if (!fields.name || !fields.description || !fields.status) return null;
+  let keywords = [];
+  if (fields.keywords) {
+    const raw = fields.keywords;
+    if (raw.startsWith("[") && raw.endsWith("]")) {
+      keywords = raw.slice(1, -1).split(",").map((k) => k.trim()).filter(Boolean);
+    } else {
+      keywords = raw.split(",").map((k) => k.trim()).filter(Boolean);
+    }
+  }
+  return {
+    name: normalizeSkillName(fields.name),
+    description: fields.description,
+    keywords,
+    generated_by: fields.generated_by,
+    sources: fields.sources,
+    status: fields.status
+  };
+}
+var init_skill_parser = __esm({
+  "packages/orchestrator/src/skill-parser.ts"() {
+    "use strict";
+    init_skill_name();
+  }
+});
+
 // packages/orchestrator/src/skill-catalog.ts
 var import_fs8, import_path10, SkillCatalog;
 var init_skill_catalog = __esm({
@@ -5936,32 +6053,49 @@ var init_skill_catalog = __esm({
     "use strict";
     import_fs8 = require("fs");
     import_path10 = require("path");
+    init_skill_name();
+    init_skill_parser();
     SkillCatalog = class {
-      entries;
-      skillsDir;
-      constructor(catalogPath) {
-        const defaultPath = (0, import_path10.resolve)(__dirname, "default-skills", "catalog.json");
-        const raw = (0, import_fs8.readFileSync)(catalogPath || defaultPath, "utf-8");
-        const data = JSON.parse(raw);
-        this.entries = data.skills;
-        this.skillsDir = (0, import_path10.resolve)(__dirname, "default-skills");
+      entries = [];
+      defaultSkillsDir;
+      projectSkillsDir;
+      projectFileMtimes = /* @__PURE__ */ new Map();
+      constructor(projectRoot, catalogPath) {
+        const defaultPath = catalogPath || (0, import_path10.resolve)(__dirname, "default-skills", "catalog.json");
+        this.defaultSkillsDir = (0, import_path10.resolve)(__dirname, "default-skills");
+        this.projectSkillsDir = projectRoot ? (0, import_path10.join)(projectRoot, ".gossip", "skills") : null;
+        try {
+          const raw = (0, import_fs8.readFileSync)(defaultPath, "utf-8");
+          const data = JSON.parse(raw);
+          this.entries = data.skills.map((s) => ({
+            ...s,
+            name: normalizeSkillName(s.name),
+            source: "default"
+          }));
+        } catch {
+        }
+        this.loadProjectSkills();
       }
       listSkills() {
+        this.reloadIfChanged();
         return [...this.entries];
       }
       matchTask(taskText) {
+        this.reloadIfChanged();
         const lower = taskText.toLowerCase();
-        return this.entries.filter(
-          (entry) => entry.keywords.some((kw) => lower.includes(kw.toLowerCase()))
-        );
+        return this.entries.filter((entry) => {
+          if (entry._status === "disabled") return false;
+          return entry.keywords.some((kw) => lower.includes(kw.toLowerCase()));
+        });
       }
       checkCoverage(agentSkills, taskText) {
+        const normalizedAgentSkills = agentSkills.map(normalizeSkillName);
         const matched = this.matchTask(taskText);
         const warnings = [];
         for (const entry of matched) {
-          if (!agentSkills.includes(entry.name)) {
+          if (!normalizedAgentSkills.includes(entry.name)) {
             warnings.push(
-              `Skill '${entry.name}' (${entry.description}) may be relevant but is not assigned to this agent. Add it to the agent's skills in gossip.agents.json.`
+              `Skill '${entry.name}' (${entry.description}) may be relevant but is not assigned to this agent.`
             );
           }
         }
@@ -5969,7 +6103,7 @@ var init_skill_catalog = __esm({
       }
       validate() {
         const issues = [];
-        const mdFiles = (0, import_fs8.readdirSync)(this.skillsDir).filter((f) => f.endsWith(".md")).map((f) => f.replace(".md", "").replace(/-/g, "_"));
+        const mdFiles = (0, import_fs8.readdirSync)(this.defaultSkillsDir).filter((f) => f.endsWith(".md")).map((f) => normalizeSkillName(f.replace(".md", "")));
         for (const file2 of mdFiles) {
           if (!this.entries.find((e) => e.name === file2)) {
             issues.push(`Skill file '${file2}' has no catalog entry`);
@@ -5977,132 +6111,204 @@ var init_skill_catalog = __esm({
         }
         return issues;
       }
+      loadProjectSkills() {
+        if (!this.projectSkillsDir || !(0, import_fs8.existsSync)(this.projectSkillsDir)) return;
+        const files = (0, import_fs8.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
+        const newMtimes = /* @__PURE__ */ new Map();
+        for (const file2 of files) {
+          const filePath = (0, import_path10.join)(this.projectSkillsDir, file2);
+          try {
+            const mtime = (0, import_fs8.statSync)(filePath).mtimeMs;
+            newMtimes.set(file2, mtime);
+            const content = (0, import_fs8.readFileSync)(filePath, "utf-8");
+            const fm = parseSkillFrontmatter(content);
+            if (!fm) continue;
+            const entry = {
+              name: normalizeSkillName(fm.name),
+              description: fm.description,
+              keywords: fm.keywords,
+              categories: [],
+              source: "project"
+            };
+            entry._status = fm.status;
+            this.entries = this.entries.filter((e) => !(e.name === entry.name && e.source === "default"));
+            this.entries = this.entries.filter((e) => !(e.name === entry.name && e.source === "project"));
+            if (fm.status !== "disabled") {
+              this.entries.push(entry);
+            }
+          } catch {
+          }
+        }
+        this.projectFileMtimes = newMtimes;
+      }
+      reloadIfChanged() {
+        if (!this.projectSkillsDir || !(0, import_fs8.existsSync)(this.projectSkillsDir)) return;
+        const files = (0, import_fs8.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
+        let changed = files.length !== this.projectFileMtimes.size;
+        if (!changed) {
+          for (const file2 of files) {
+            const filePath = (0, import_path10.join)(this.projectSkillsDir, file2);
+            try {
+              const mtime = (0, import_fs8.statSync)(filePath).mtimeMs;
+              if (mtime !== this.projectFileMtimes.get(file2)) {
+                changed = true;
+                break;
+              }
+            } catch {
+              changed = true;
+              break;
+            }
+          }
+        }
+        if (changed) {
+          this.entries = this.entries.filter((e) => e.source === "default");
+          this.loadProjectSkills();
+        }
+      }
     };
   }
 });
 
 // packages/orchestrator/src/skill-gap-tracker.ts
-var import_fs9, import_path11, MAX_SCAN_LINES2, MAX_LOG_LINES, TRUNCATE_TO, SkillGapTracker;
+var import_fs9, import_path11, MAX_LOG_LINES, TRUNCATE_TO, SkillGapTracker;
 var init_skill_gap_tracker = __esm({
   "packages/orchestrator/src/skill-gap-tracker.ts"() {
     "use strict";
     import_fs9 = require("fs");
     import_path11 = require("path");
-    MAX_SCAN_LINES2 = 500;
+    init_skill_name();
     MAX_LOG_LINES = 5e3;
     TRUNCATE_TO = 1e3;
     SkillGapTracker = class {
       gapLogPath;
-      skillsDir;
+      resolutionsPath;
+      resolutionsCache = null;
       constructor(projectRoot) {
         this.gapLogPath = (0, import_path11.join)(projectRoot, ".gossip", "skill-gaps.jsonl");
-        this.skillsDir = (0, import_path11.join)(projectRoot, ".gossip", "skills");
+        this.resolutionsPath = (0, import_path11.join)(projectRoot, ".gossip", "skill-resolutions.json");
+        this.migrateResolutions();
       }
-      readEntries() {
-        if (!(0, import_fs9.existsSync)(this.gapLogPath)) return [];
-        const content = (0, import_fs9.readFileSync)(this.gapLogPath, "utf-8");
-        const lines = content.trim().split("\n").filter(Boolean);
-        const tail = lines.slice(-MAX_SCAN_LINES2);
-        return tail.map((line) => {
-          try {
-            return JSON.parse(line);
-          } catch {
-            return null;
-          }
-        }).filter(Boolean);
+      checkThresholds() {
+        this.truncateIfNeeded();
+        const pending = this.getPendingSkills();
+        return { pending, count: pending.length };
       }
-      getPendingSkills() {
-        const entries = this.readEntries();
-        const resolved = new Set(
-          entries.filter((e) => e.type === "resolution").map((e) => e.skill)
-        );
-        const suggestions = entries.filter(
-          (e) => e.type === "suggestion" && !resolved.has(e.skill)
-        );
-        return [...new Set(suggestions.map((s) => s.skill))];
-      }
-      shouldGenerate(skillName) {
-        const entries = this.readEntries();
-        const resolved = entries.some((e) => e.type === "resolution" && e.skill === skillName);
-        if (resolved) return false;
-        const suggestions = entries.filter(
-          (e) => e.type === "suggestion" && e.skill === skillName
-        );
-        const uniqueAgents = new Set(suggestions.map((e) => e.agent));
+      isAtThreshold(skillName) {
+        const normalized = normalizeSkillName(skillName);
+        const resolutions = this.loadResolutions();
+        if (resolutions[normalized]) return false;
+        const suggestions = this.getSuggestionsForSkill(normalized);
+        const uniqueAgents = new Set(suggestions.map((s) => s.agent));
         return suggestions.length >= 3 && uniqueAgents.size >= 2;
       }
-      generateSkeleton(skillName) {
-        if (!this.shouldGenerate(skillName)) {
-          return { generated: false, message: `Threshold not met for '${skillName}'` };
-        }
-        const entries = this.readEntries();
-        const suggestions = entries.filter(
-          (e) => e.type === "suggestion" && e.skill === skillName
-        );
-        const seen = /* @__PURE__ */ new Map();
-        for (const s of suggestions) {
-          if (!seen.has(s.agent)) seen.set(s.agent, s.reason);
-        }
-        const fileName = skillName.replace(/_/g, "-") + ".md";
-        (0, import_fs9.mkdirSync)(this.skillsDir, { recursive: true });
-        const filePath = (0, import_path11.join)(this.skillsDir, fileName);
-        const suggestedBy = [...seen.entries()].map(([agent, reason]) => `- ${agent}: "${reason}"`).join("\n");
-        const content = `# ${skillName}
-
-> Auto-generated from ${suggestions.length} agent suggestions. REVIEW AND EDIT BEFORE ASSIGNING TO AGENTS.
-
-## Suggested By
-${suggestedBy}
-
-## What You Do
-[TODO: Define what this skill covers]
-
-## Approach
-[TODO: Fill in your checklist \u2014 use the reasons above as starting points]
-
-## Output Format
-[TODO: Define expected output structure]
-
-## Don't
-[TODO: Add anti-patterns to avoid]
-`;
-        (0, import_fs9.writeFileSync)(filePath, content);
-        const resolution = {
-          type: "resolution",
-          skill: skillName,
-          skeleton_path: `.gossip/skills/${fileName}`,
-          triggered_by: suggestions.length,
-          timestamp: (/* @__PURE__ */ new Date()).toISOString()
-        };
-        (0, import_fs9.appendFileSync)(this.gapLogPath, JSON.stringify(resolution) + "\n");
-        this.truncateIfNeeded();
-        return {
-          generated: true,
-          path: filePath,
-          message: `Created draft skill '${skillName}' based on ${suggestions.length} agent suggestions. Review at .gossip/skills/${fileName} before assigning to agents.`
-        };
+      getGapData(skillNames) {
+        return skillNames.map((name) => {
+          const normalized = normalizeSkillName(name);
+          const suggestions = this.getSuggestionsForSkill(normalized);
+          const uniqueAgents = [...new Set(suggestions.map((s) => s.agent))];
+          return { skill: normalized, suggestions, uniqueAgents };
+        });
+      }
+      recordResolution(skillName) {
+        const normalized = normalizeSkillName(skillName);
+        const resolutions = this.loadResolutions();
+        resolutions[normalized] = (/* @__PURE__ */ new Date()).toISOString();
+        const dir = (0, import_path11.join)(this.resolutionsPath, "..");
+        if (!(0, import_fs9.existsSync)(dir)) (0, import_fs9.mkdirSync)(dir, { recursive: true });
+        (0, import_fs9.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
+        this.resolutionsCache = resolutions;
       }
       getSuggestionsSince(agentId, sinceMs) {
-        return this.readEntries().filter(
-          (e) => e.type === "suggestion" && e.agent === agentId && new Date(e.timestamp).getTime() >= sinceMs
+        return this.readSuggestions().filter(
+          (s) => s.agent === agentId && new Date(s.timestamp).getTime() >= sinceMs
         );
       }
-      checkAndGenerate() {
-        const messages = [];
-        for (const skill of this.getPendingSkills()) {
-          const result = this.generateSkeleton(skill);
-          if (result.generated && result.message) {
-            messages.push(result.message);
+      getPendingSkills() {
+        const resolutions = this.loadResolutions();
+        const suggestions = this.readSuggestions();
+        const bySkill = /* @__PURE__ */ new Map();
+        for (const s of suggestions) {
+          const norm = normalizeSkillName(s.skill);
+          if (resolutions[norm]) continue;
+          if (!bySkill.has(norm)) bySkill.set(norm, []);
+          bySkill.get(norm).push(s);
+        }
+        const pending = [];
+        for (const [skill, entries] of bySkill) {
+          const uniqueAgents = new Set(entries.map((e) => e.agent));
+          if (entries.length >= 3 && uniqueAgents.size >= 2) {
+            pending.push(skill);
           }
         }
-        return messages;
+        return pending;
+      }
+      getSuggestionsForSkill(normalizedName) {
+        return this.readSuggestions().filter(
+          (s) => normalizeSkillName(s.skill) === normalizedName
+        );
+      }
+      readSuggestions() {
+        if (!(0, import_fs9.existsSync)(this.gapLogPath)) return [];
+        try {
+          const lines = (0, import_fs9.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
+          return lines.map((line) => {
+            try {
+              return JSON.parse(line);
+            } catch {
+              return null;
+            }
+          }).filter((e) => e !== null && e.type === "suggestion");
+        } catch {
+          return [];
+        }
+      }
+      loadResolutions() {
+        if (this.resolutionsCache) return this.resolutionsCache;
+        if (!(0, import_fs9.existsSync)(this.resolutionsPath)) {
+          this.resolutionsCache = {};
+          return this.resolutionsCache;
+        }
+        try {
+          this.resolutionsCache = JSON.parse((0, import_fs9.readFileSync)(this.resolutionsPath, "utf-8"));
+          return this.resolutionsCache;
+        } catch {
+          this.resolutionsCache = {};
+          return this.resolutionsCache;
+        }
+      }
+      migrateResolutions() {
+        if ((0, import_fs9.existsSync)(this.resolutionsPath)) return;
+        if (!(0, import_fs9.existsSync)(this.gapLogPath)) return;
+        try {
+          const lines = (0, import_fs9.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
+          const resolutions = {};
+          for (const line of lines) {
+            try {
+              const entry = JSON.parse(line);
+              if (entry.type === "resolution") {
+                resolutions[normalizeSkillName(entry.skill)] = entry.timestamp;
+              }
+            } catch {
+            }
+          }
+          if (Object.keys(resolutions).length > 0) {
+            const dir = (0, import_path11.join)(this.resolutionsPath, "..");
+            if (!(0, import_fs9.existsSync)(dir)) (0, import_fs9.mkdirSync)(dir, { recursive: true });
+            (0, import_fs9.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
+            this.resolutionsCache = resolutions;
+          }
+        } catch {
+        }
       }
       truncateIfNeeded() {
         if (!(0, import_fs9.existsSync)(this.gapLogPath)) return;
-        const content = (0, import_fs9.readFileSync)(this.gapLogPath, "utf-8");
-        const lines = content.trim().split("\n").filter(Boolean);
-        if (lines.length > MAX_LOG_LINES) {
-          (0, import_fs9.writeFileSync)(this.gapLogPath, lines.slice(-TRUNCATE_TO).join("\n") + "\n");
+        try {
+          const content = (0, import_fs9.readFileSync)(this.gapLogPath, "utf-8");
+          const lines = content.trim().split("\n").filter(Boolean);
+          if (lines.length > MAX_LOG_LINES) {
+            (0, import_fs9.writeFileSync)(this.gapLogPath, lines.slice(-TRUNCATE_TO).join("\n") + "\n");
+          }
+        } catch {
         }
       }
     };
@@ -6245,10 +6451,12 @@ var init_worktree_manager = __esm({
 });
 
 // packages/orchestrator/src/consensus-engine.ts
-var SUMMARY_HEADER, FALLBACK_MAX_LENGTH, MAX_SUMMARY_LENGTH, MAX_CROSS_REVIEW_ENTRIES, VALID_ACTIONS, ConsensusEngine;
+var import_promises3, import_path14, SUMMARY_HEADER, FALLBACK_MAX_LENGTH, MAX_SUMMARY_LENGTH, MAX_CROSS_REVIEW_ENTRIES, VALID_ACTIONS, ConsensusEngine;
 var init_consensus_engine = __esm({
   "packages/orchestrator/src/consensus-engine.ts"() {
     "use strict";
+    import_promises3 = require("fs/promises");
+    import_path14 = require("path");
     SUMMARY_HEADER = "## Consensus Summary";
     FALLBACK_MAX_LENGTH = 2e3;
     MAX_SUMMARY_LENGTH = 3e3;
@@ -6297,7 +6505,7 @@ var init_consensus_engine = __esm({
         const crossReviewEntries = await this.dispatchCrossReview(results);
         process.stderr.write(`[consensus] Cross-review complete: ${crossReviewEntries.length} entries
 `);
-        const report = this.synthesize(results, crossReviewEntries);
+        const report = await this.synthesize(results, crossReviewEntries);
         process.stderr.write(`[consensus] ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unique.length} unique, ${report.newFindings.length} new
 `);
         return report;
@@ -6365,7 +6573,7 @@ Return ONLY a JSON array:
       /**
        * Phase 3: Synthesize Phase 1 results and Phase 2 cross-review entries into a consensus report.
        */
-      synthesize(results, crossReviewEntries) {
+      async synthesize(results, crossReviewEntries) {
         const signals = [];
         const newFindings = [];
         const successful = results.filter((r) => r.status === "completed" && r.result);
@@ -6429,13 +6637,10 @@ Return ONLY a JSON array:
             const matchKey = this.findMatchingFinding(findingMap, entry.peerAgentId, entry.finding);
             if (matchKey) {
               const f = findingMap.get(matchKey);
-              f.disputedBy.push({
-                agentId: entry.agentId,
-                reason: entry.evidence,
-                evidence: entry.evidence
-              });
               f.confidences.push(entry.confidence);
-              const isHallucination = this.detectHallucination(entry.evidence);
+              const isKeywordHallucination = this.detectHallucination(entry.evidence);
+              const isCitationFabricated = !isKeywordHallucination ? await this.verifyCitations(entry.evidence) : false;
+              const isHallucination = isKeywordHallucination || isCitationFabricated;
               if (isHallucination) {
                 signals.push({
                   type: "consensus",
@@ -6443,11 +6648,16 @@ Return ONLY a JSON array:
                   signal: "hallucination_caught",
                   agentId: entry.peerAgentId,
                   counterpartId: entry.agentId,
-                  outcome: "incorrect",
+                  outcome: isCitationFabricated ? "fabricated_citation" : "incorrect",
                   evidence: entry.evidence,
                   timestamp: now
                 });
               } else {
+                f.disputedBy.push({
+                  agentId: entry.agentId,
+                  reason: entry.evidence,
+                  evidence: entry.evidence
+                });
                 signals.push({
                   type: "consensus",
                   taskId: agentTaskIds.get(entry.agentId) ?? "",
@@ -6524,6 +6734,96 @@ Return ONLY a JSON array:
           signals,
           summary
         };
+      }
+      /**
+       * Verify file:line citations in disagreement evidence against actual source code.
+       * Returns true if any citation is fabricated (file doesn't exist, line doesn't match claim).
+       */
+      async verifyCitations(evidence) {
+        if (!this.config.projectRoot) return false;
+        const citationPattern = /(?:[\w./-]+\/)?(\S+\.[a-z]{1,4}):(\d+)/g;
+        const citations = [];
+        let match;
+        while ((match = citationPattern.exec(evidence)) !== null) {
+          citations.push({ file: match[0].split(":")[0], line: parseInt(match[2], 10) });
+        }
+        if (citations.length === 0) return false;
+        const claimPatterns = [
+          /(?:explicitly |directly )?(?:throws?|throw new)\b/,
+          /(?:explicitly |directly )?(?:checks?|validates?|verifies?)\b/,
+          /(?:explicitly |directly )?(?:returns?|calls?|invokes?)\b/,
+          /(?:explicitly |directly )?(?:prevents?|blocks?|rejects?)\b/
+        ];
+        const lowerEvidence = evidence.toLowerCase();
+        const citationClaims = [];
+        for (const citation of citations) {
+          const citRef = `${citation.file}:${citation.line}`.toLowerCase();
+          const citIdx = lowerEvidence.indexOf(citRef);
+          if (citIdx === -1) continue;
+          const contextStart = Math.max(0, citIdx - 30);
+          const contextEnd = Math.min(lowerEvidence.length, citIdx + citRef.length + 100);
+          const context = lowerEvidence.slice(contextStart, contextEnd);
+          for (const pattern of claimPatterns) {
+            const match2 = context.match(pattern);
+            if (match2) {
+              const beforeMatch = context.slice(0, match2.index);
+              if (/\b(not?|doesn'?t|don'?t|never|isn'?t|just a|without)\s*$/.test(beforeMatch)) continue;
+              citationClaims.push(match2[0]);
+            }
+          }
+        }
+        for (const citation of citations) {
+          try {
+            const filePath = await this.resolveFilePath(citation.file);
+            if (!filePath) return true;
+            const content = await (0, import_promises3.readFile)(filePath, "utf-8");
+            const lines = content.split("\n");
+            if (citation.line > lines.length) return true;
+            const start = Math.max(0, citation.line - 6);
+            const end = Math.min(lines.length, citation.line + 5);
+            const window = lines.slice(start, end).join("\n").toLowerCase();
+            if (citationClaims.length > 0) {
+              const hasAnyClaim = citationClaims.some((claim) => window.includes(claim));
+              if (!hasAnyClaim) return true;
+            }
+          } catch {
+            return true;
+          }
+        }
+        return false;
+      }
+      /**
+       * Resolve a relative file reference to an absolute path within the project.
+       */
+      async resolveFilePath(fileRef) {
+        const root = this.config.projectRoot;
+        const fileName = fileRef.split("/").pop();
+        try {
+          await (0, import_promises3.stat)((0, import_path14.join)(root, fileRef));
+          return (0, import_path14.join)(root, fileRef);
+        } catch {
+        }
+        const searchDirs = ["packages", "src", "apps"];
+        for (const dir of searchDirs) {
+          const found = await this.findFile((0, import_path14.join)(root, dir), fileName);
+          if (found) return found;
+        }
+        return null;
+      }
+      async findFile(dir, fileName) {
+        try {
+          const entries = await (0, import_promises3.readdir)(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = (0, import_path14.join)(dir, entry.name);
+            if (entry.isFile() && entry.name === fileName) return fullPath;
+            if (entry.isDirectory() && entry.name !== "node_modules" && entry.name !== ".git") {
+              const found = await this.findFile(fullPath, fileName);
+              if (found) return found;
+            }
+          }
+        } catch {
+        }
+        return null;
       }
       /**
        * Detect if disagreement evidence indicates a hallucination.
@@ -6689,18 +6989,18 @@ Return ONLY a JSON array:
 });
 
 // packages/orchestrator/src/performance-writer.ts
-var import_fs10, import_path14, PerformanceWriter;
+var import_fs10, import_path15, PerformanceWriter;
 var init_performance_writer = __esm({
   "packages/orchestrator/src/performance-writer.ts"() {
     "use strict";
     import_fs10 = require("fs");
-    import_path14 = require("path");
+    import_path15 = require("path");
     PerformanceWriter = class {
       filePath;
       constructor(projectRoot) {
-        const dir = (0, import_path14.join)(projectRoot, ".gossip");
+        const dir = (0, import_path15.join)(projectRoot, ".gossip");
         if (!(0, import_fs10.existsSync)(dir)) (0, import_fs10.mkdirSync)(dir, { recursive: true });
-        this.filePath = (0, import_path14.join)(dir, "agent-performance.jsonl");
+        this.filePath = (0, import_path15.join)(dir, "agent-performance.jsonl");
       }
       appendSignal(signal) {
         (0, import_fs10.appendFileSync)(this.filePath, JSON.stringify(signal) + "\n");
@@ -6714,14 +7014,53 @@ var init_performance_writer = __esm({
   }
 });
 
+// packages/orchestrator/src/category-extractor.ts
+function extractCategories(findingText) {
+  const matched = /* @__PURE__ */ new Set();
+  for (const [category, patterns] of Object.entries(CATEGORY_PATTERNS)) {
+    for (const pattern of patterns) {
+      if (pattern.test(findingText)) {
+        matched.add(category);
+        break;
+      }
+    }
+  }
+  return Array.from(matched);
+}
+var CATEGORY_PATTERNS;
+var init_category_extractor = __esm({
+  "packages/orchestrator/src/category-extractor.ts"() {
+    "use strict";
+    CATEGORY_PATTERNS = {
+      trust_boundaries: [/trust.?boundar/i, /authenticat/i, /authoriz/i, /impersonat/i, /identity/i, /credential/i],
+      injection_vectors: [/inject/i, /sanitiz/i, /escape/i, /\bxss\b/i, /sql.?inject/i, /prompt.?inject/i],
+      input_validation: [/validat/i, /input.?check/i, /type.?guard/i, /\bschema\b/i, /malform/i],
+      concurrency: [/race.?condition/i, /deadlock/i, /\batomic\b/i, /concurrent/i, /\bmutex\b/i, /\btoctou\b/i],
+      resource_exhaustion: [/\bdos\b/i, /unbounded/i, /memory.?leak/i, /exhaust/i, /\btimeout\b/i, /infinite.?loop/i],
+      type_safety: [/type.?safe/i, /typescript/i, /type.?narrow/i, /\bany\[?\]?\b/i, /type.?assert/i, /type.?guard/i],
+      error_handling: [/error.?handl/i, /\bexception\b/i, /\bfallback\b/i, /try.?catch/i, /unhandled/i],
+      data_integrity: [/data.?corrupt/i, /\bintegrity\b/i, /\bconsistency\b/i, /idempoten/i, /non.?atomic/i]
+    };
+  }
+});
+
 // packages/orchestrator/src/dispatch-pipeline.ts
-var import_crypto8, import_fs11, import_path15, log2, DispatchPipeline;
+function shouldSkipConsensus(task, agents, costMode, agreementHistory) {
+  if (costMode === "thorough") return false;
+  if (SECURITY_KEYWORDS.test(task)) return false;
+  if (agents.some((a) => a.reviewReliability < 0.9)) return false;
+  if (agents.some((a) => a.totalTasks < 10)) return false;
+  if (agreementHistory.rate < 0.8 || agreementHistory.uniquePeerPairings < 3) return false;
+  const firstWord = task.trim().split(/\s+/)[0] || "";
+  return OBSERVATION_VERBS.test(firstWord);
+}
+var import_crypto8, import_fs11, import_path16, log2, DispatchPipeline, SECURITY_KEYWORDS, OBSERVATION_VERBS;
 var init_dispatch_pipeline = __esm({
   "packages/orchestrator/src/dispatch-pipeline.ts"() {
     "use strict";
     import_crypto8 = require("crypto");
     import_fs11 = require("fs");
-    import_path15 = require("path");
+    import_path16 = require("path");
     init_skill_loader();
     init_prompt_assembler();
     init_agent_memory();
@@ -6734,6 +7073,7 @@ var init_dispatch_pipeline = __esm({
     init_worktree_manager();
     init_consensus_engine();
     init_performance_writer();
+    init_category_extractor();
     log2 = (msg) => process.stderr.write(`[gossipcat] ${msg}
 `);
     DispatchPipeline = class _DispatchPipeline {
@@ -6763,6 +7103,8 @@ var init_dispatch_pipeline = __esm({
       overlapDetector = null;
       lensGenerator = null;
       bootWarningShown = false;
+      competencyProfiler = null;
+      dispatchDifferentiator = null;
       taskProgressCallback = null;
       setTaskProgressCallback(cb) {
         this.taskProgressCallback = cb;
@@ -6783,12 +7125,21 @@ var init_dispatch_pipeline = __esm({
         this.scopeTracker = new ScopeTracker(config2.projectRoot);
         this.worktreeManager = new WorktreeManager(config2.projectRoot);
         try {
-          this.catalog = new SkillCatalog();
+          this.catalog = new SkillCatalog(config2.projectRoot);
         } catch (err) {
           this.catalog = null;
           log2(`SkillCatalog unavailable: ${err.message}`);
         }
         this.worktreeManager.pruneOrphans().catch((err) => log2(`Orphan cleanup failed: ${err.message}`));
+      }
+      /** Build chain context string for a plan step (used by native agent bridge) */
+      getChainContext(planId, step) {
+        if (step <= 1) return "";
+        const plan = this.plans.get(planId);
+        if (!plan) return "";
+        const priorSteps = plan.steps.filter((s) => s.step < step && s.result);
+        if (priorSteps.length === 0) return "";
+        return "[Chain Context \u2014 results from prior steps in this plan]\n" + priorSteps.map((s) => `Step ${s.step} (${s.agentId}): ${s.result.slice(0, 1e3)}`).join("\n\n");
       }
       static MAX_TASKS = 500;
       dispatch(agentId, task, options) {
@@ -6829,7 +7180,7 @@ var init_dispatch_pipeline = __esm({
         const specRefs = extractSpecReferences(task);
         if (specRefs.length > 0) {
           try {
-            const specPath = (0, import_path15.resolve)(this.projectRoot, specRefs[0]);
+            const specPath = (0, import_path16.resolve)(this.projectRoot, specRefs[0]);
             if (specPath.startsWith(this.projectRoot + "/") || specPath === this.projectRoot) {
               const specContent = (0, import_fs11.readFileSync)(specPath, "utf-8");
               const implFiles = extractSpecReferences(task, specContent);
@@ -6839,7 +7190,7 @@ var init_dispatch_pipeline = __esm({
           } catch {
           }
         }
-        const memoryDir = (0, import_path15.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "knowledge");
+        const memoryDir = (0, import_path16.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "knowledge");
         const promptContent = assemblePrompt({
           memory: memory || void 0,
           memoryDir,
@@ -7137,13 +7488,12 @@ var init_dispatch_pipeline = __esm({
             log2(`Memory compact failed for ${t.agentId}: ${err.message}`);
           }
         }
+        let skillsReadyCount = 0;
         try {
-          for (const t of targets) {
-            if (t.status !== "running") {
-              this.gapTracker.getSuggestionsSince(t.agentId, t.startedAt);
-            }
+          const thresholds = this.gapTracker.checkThresholds();
+          if (thresholds.count > 0) {
+            skillsReadyCount = thresholds.count;
           }
-          this.gapTracker.checkAndGenerate();
         } catch (err) {
           log2(`Skill gap check failed: ${err.message}`);
         }
@@ -7250,11 +7600,28 @@ Worktree merge: CONFLICT
         let consensusReport;
         if (options?.consensus && this.llm && results.filter((r) => r.status === "completed").length >= 2) {
           try {
-            const engine = new ConsensusEngine({ llm: this.llm, registryGet: this.registryGet });
+            const engine = new ConsensusEngine({ llm: this.llm, registryGet: this.registryGet, projectRoot: this.projectRoot });
             consensusReport = await engine.run(results);
+            const perfWriter = new PerformanceWriter(this.projectRoot);
             if (consensusReport.signals.length > 0) {
-              const perfWriter = new PerformanceWriter(this.projectRoot);
               perfWriter.appendSignals(consensusReport.signals);
+            }
+            if (consensusReport.confirmed.length > 0) {
+              const now = (/* @__PURE__ */ new Date()).toISOString();
+              for (const finding of consensusReport.confirmed) {
+                const categories = extractCategories(finding.finding);
+                for (const category of categories) {
+                  perfWriter.appendSignal({
+                    type: "consensus",
+                    signal: "category_confirmed",
+                    agentId: finding.originalAgentId,
+                    taskId: finding.id || "",
+                    category,
+                    evidence: finding.finding,
+                    timestamp: now
+                  });
+                }
+              }
             }
           } catch (err) {
             process.stderr.write(`[gossipcat] Consensus failed: ${err.message}
@@ -7264,7 +7631,11 @@ Worktree merge: CONFLICT
         for (const t of targets) {
           this.tasks.delete(t.id);
         }
-        return { results, consensus: consensusReport };
+        const result = { results, consensus: consensusReport };
+        if (skillsReadyCount > 0) {
+          result.skillsReady = skillsReadyCount;
+        }
+        return result;
       }
       async dispatchParallel(taskDefs, pipelineOptions) {
         log2(`dispatchParallel: ${taskDefs.length} tasks \u2014 agents: [${taskDefs.map((d) => d.agentId).join(", ")}]`);
@@ -7307,7 +7678,18 @@ Worktree merge: CONFLICT
           }
         }
         let lensMap = null;
-        if (this.overlapDetector) {
+        if (this.competencyProfiler && this.dispatchDifferentiator) {
+          const profiles = taskDefs.map((d) => this.competencyProfiler.getProfile(d.agentId)).filter((p) => p !== null);
+          if (profiles.length >= 2) {
+            const diffMap = this.dispatchDifferentiator.differentiate(profiles, taskDefs[0]?.task || "");
+            if (diffMap.size > 0) {
+              lensMap = diffMap;
+              log2(`Applied profile-based differentiation:
+${[...diffMap].map(([id, focus]) => `  ${id} \u2192 ${focus.slice(0, 80)}`).join("\n")}`);
+            }
+          }
+        }
+        if (!lensMap && this.overlapDetector) {
           const agentConfigs = taskDefs.map((d) => this.registryGet(d.agentId)).filter((c) => c !== void 0);
           const overlapResult = this.overlapDetector.detect(agentConfigs);
           if (!this.bootWarningShown) {
@@ -7435,6 +7817,12 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
       setLensGenerator(generator) {
         this.lensGenerator = generator;
       }
+      setCompetencyProfiler(profiler) {
+        this.competencyProfiler = profiler;
+      }
+      setDispatchDifferentiator(differ) {
+        this.dispatchDifferentiator = differ;
+      }
       /** Flush TaskGraph index on shutdown */
       flushTaskGraph() {
         this.taskGraph.flushIndex();
@@ -7451,12 +7839,22 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
           this.taskGraph.recordCompleted(taskId, (result || "").slice(0, 4e3), -1);
         }
       }
+      /** Record a native task result into the plan so subsequent steps get chain context */
+      recordPlanStepResult(planId, step, result) {
+        const plan = this.plans.get(planId);
+        if (!plan) return;
+        const planStep = plan.steps.find((s) => s.step === step);
+        if (planStep) {
+          planStep.result = (result || "").slice(0, 2e3);
+        }
+      }
       /** Get suggestion results for formatting in collect responses */
       getSkillSuggestions(agentId, sinceMs) {
         return this.gapTracker.getSuggestionsSince(agentId, sinceMs);
       }
       getSkeletonMessages() {
-        return this.gapTracker.checkAndGenerate();
+        const { pending } = this.gapTracker.checkThresholds();
+        return pending.length > 0 ? [`${pending.length} skill(s) ready to build: ${pending.join(", ")}`] : [];
       }
       async summarizeAndStoreGossip(agentId, result) {
         try {
@@ -7481,6 +7879,8 @@ ${result.slice(0, 2e3)}` }
         return (response.text || "").slice(0, 400);
       }
     };
+    SECURITY_KEYWORDS = /security|vulnerab|auth|inject|exploit|breach|attack|malicious/i;
+    OBSERVATION_VERBS = /^(summarize|research|analyze|check|verify|list|explain|document|review|audit|trace|investigate)\b/i;
   }
 });
 
@@ -7724,13 +8124,13 @@ function parseYamlLikeToolCall(content) {
   const args = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   return { tool, args };
 }
-var import_fs12, import_path16, log3, AGENT_ID_RE, TAG_PATTERN, BLOCK_RE, BLOCK_IN_FENCE_RE, ToolRouter, ToolExecutor;
+var import_fs12, import_path17, log3, AGENT_ID_RE, TAG_PATTERN, BLOCK_RE, BLOCK_IN_FENCE_RE, ToolRouter, ToolExecutor;
 var init_tool_router = __esm({
   "packages/orchestrator/src/tool-router.ts"() {
     "use strict";
     init_tool_definitions();
     import_fs12 = require("fs");
-    import_path16 = require("path");
+    import_path17 = require("path");
     log3 = (msg) => process.stderr.write(`[tool-router] ${msg}
 `);
     AGENT_ID_RE = /^[a-zA-Z0-9_-]+$/;
@@ -8136,8 +8536,8 @@ ${agentOutputs}` }
           const fsp = await import("fs/promises");
           const updatedIds = [];
           for (const id of pending.agentIds) {
-            const agentDir = (0, import_path16.join)(this.projectRoot, ".gossip", "agents", id);
-            const filePath = (0, import_path16.join)(agentDir, "instructions.md");
+            const agentDir = (0, import_path17.join)(this.projectRoot, ".gossip", "agents", id);
+            const filePath = (0, import_path17.join)(agentDir, "instructions.md");
             if (!(0, import_fs12.existsSync)(agentDir)) {
               await fsp.mkdir(agentDir, { recursive: true });
             }
@@ -8255,7 +8655,7 @@ ${collectResult.consensus.summary}`;
       async handlePlan(args) {
         let task = String(args.task);
         try {
-          const specPath = (0, import_path16.join)(this.projectRoot, ".gossip", "spec.md");
+          const specPath = (0, import_path17.join)(this.projectRoot, ".gossip", "spec.md");
           if ((0, import_fs12.existsSync)(specPath)) {
             const spec = (0, import_fs12.readFileSync)(specPath, "utf-8");
             task = `${task}
@@ -8315,7 +8715,7 @@ ${taskLines.join("\n")}`,
         if (!this.llm) {
           return { text: "Tool error: LLM not available for spec generation" };
         }
-        const specPath = (0, import_path16.join)(this.projectRoot, ".gossip", "spec.md");
+        const specPath = (0, import_path17.join)(this.projectRoot, ".gossip", "spec.md");
         let existingSpec = "";
         try {
           if ((0, import_fs12.existsSync)(specPath)) {
@@ -8355,7 +8755,7 @@ Keep it SHORT \u2014 under 30 lines. This is a working document, not a design do
         const specContent = response.text || "";
         try {
           const { mkdirSync: mkdirSync10, writeFileSync: writeFS } = require("fs");
-          mkdirSync10((0, import_path16.join)(this.projectRoot, ".gossip"), { recursive: true });
+          mkdirSync10((0, import_path17.join)(this.projectRoot, ".gossip"), { recursive: true });
           writeFS(specPath, specContent, "utf-8");
         } catch (err) {
           return { text: `Spec generated but failed to save: ${err.message}
@@ -8393,7 +8793,7 @@ ${lines.join("\n")}` };
         if (!this.registry.get(agentId)) {
           return { text: `Tool error: agent "${agentId}" not found in registry` };
         }
-        const tasksPath = (0, import_path16.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
+        const tasksPath = (0, import_path17.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
         if (!(0, import_fs12.existsSync)(tasksPath)) {
           return { text: `Agent "${agentId}" \u2014 no task history found.` };
         }
@@ -8414,7 +8814,7 @@ Last ${last5.length} tasks:
 ${formatted.join("\n")}` };
       }
       handleAgentPerformance() {
-        const perfPath = (0, import_path16.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
+        const perfPath = (0, import_path17.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
         if (!(0, import_fs12.existsSync)(perfPath)) {
           return { text: "No performance data found." };
         }
@@ -8469,7 +8869,7 @@ Instruction: "${instruction}"`,
         if (!this.registry.get(agentId)) {
           return { text: `Tool error: agent "${agentId}" not found in registry` };
         }
-        const tasksPath = (0, import_path16.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
+        const tasksPath = (0, import_path17.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
         if (!(0, import_fs12.existsSync)(tasksPath)) {
           return { text: `No task history for agent "${agentId}".` };
         }
@@ -8533,13 +8933,13 @@ ${formatted.join("\n")}` };
 });
 
 // packages/orchestrator/src/archetype-catalog.ts
-var import_fs13, import_path17, DEFAULT_PATH, ArchetypeCatalog;
+var import_fs13, import_path18, DEFAULT_PATH, ArchetypeCatalog;
 var init_archetype_catalog = __esm({
   "packages/orchestrator/src/archetype-catalog.ts"() {
     "use strict";
     import_fs13 = require("fs");
-    import_path17 = require("path");
-    DEFAULT_PATH = (0, import_path17.resolve)(__dirname, "..", "..", "..", "data", "archetypes.json");
+    import_path18 = require("path");
+    DEFAULT_PATH = (0, import_path18.resolve)(__dirname, "..", "..", "..", "data", "archetypes.json");
     ArchetypeCatalog = class {
       archetypes;
       constructor(catalogPath) {
@@ -8593,13 +8993,13 @@ var init_archetype_catalog = __esm({
 });
 
 // packages/orchestrator/src/project-initializer.ts
-var import_fs14, import_path18, SIGNAL_DIRS, SIGNAL_FILES, LANG_FILES, ProjectInitializer;
+var import_fs14, import_path19, SIGNAL_DIRS, SIGNAL_FILES, LANG_FILES, ProjectInitializer;
 var init_project_initializer = __esm({
   "packages/orchestrator/src/project-initializer.ts"() {
     "use strict";
     init_archetype_catalog();
     import_fs14 = require("fs");
-    import_path18 = require("path");
+    import_path19 = require("path");
     SIGNAL_DIRS = [
       "src",
       "pages",
@@ -8631,12 +9031,12 @@ var init_project_initializer = __esm({
         this.config = config2;
       }
       scanDirectory(root) {
-        const absRoot = (0, import_path18.resolve)(root);
+        const absRoot = (0, import_path19.resolve)(root);
         const signals = { dependencies: [], directories: [], files: [] };
         for (const [file2, lang] of Object.entries(LANG_FILES)) {
-          if (this.safeExists(absRoot, (0, import_path18.join)(absRoot, file2))) signals.language = lang;
+          if (this.safeExists(absRoot, (0, import_path19.join)(absRoot, file2))) signals.language = lang;
         }
-        const pkgPath = (0, import_path18.join)(absRoot, "package.json");
+        const pkgPath = (0, import_path19.join)(absRoot, "package.json");
         if (this.safeExists(absRoot, pkgPath)) {
           signals.files.push("package.json");
           try {
@@ -8650,18 +9050,18 @@ var init_project_initializer = __esm({
           if (!signals.language) signals.language = "JavaScript";
         }
         for (const dir of SIGNAL_DIRS) {
-          const p = (0, import_path18.join)(absRoot, dir);
+          const p = (0, import_path19.join)(absRoot, dir);
           if (this.safeExists(absRoot, p) && this.isDir(p)) signals.directories.push(`${dir}/`);
         }
-        const wfPath = (0, import_path18.join)(absRoot, ".github", "workflows");
+        const wfPath = (0, import_path19.join)(absRoot, ".github", "workflows");
         if (this.safeExists(absRoot, wfPath) && this.isDir(wfPath)) {
           signals.directories.push(".github/workflows/");
         }
         for (const file2 of SIGNAL_FILES) {
-          if (this.safeExists(absRoot, (0, import_path18.join)(absRoot, file2))) signals.files.push(file2);
+          if (this.safeExists(absRoot, (0, import_path19.join)(absRoot, file2))) signals.files.push(file2);
         }
         for (const file2 of Object.keys(LANG_FILES)) {
-          if (this.safeExists(absRoot, (0, import_path18.join)(absRoot, file2))) signals.files.push(file2);
+          if (this.safeExists(absRoot, (0, import_path19.join)(absRoot, file2))) signals.files.push(file2);
         }
         return signals;
       }
@@ -8793,12 +9193,12 @@ ${agentList}`,
       }
       async writeConfig(projectRoot) {
         if (!this.pendingProposal) throw new Error("No pending proposal to write");
-        const gossipDir = (0, import_path18.join)(projectRoot, ".gossip");
+        const gossipDir = (0, import_path19.join)(projectRoot, ".gossip");
         if (!(0, import_fs14.existsSync)(gossipDir)) (0, import_fs14.mkdirSync)(gossipDir, { recursive: true });
         const agents = {};
         for (const a of this.pendingProposal.agents || []) {
           agents[a.id] = { provider: a.provider, model: a.model, preset: a.preset, skills: a.skills || [] };
-          const agentDir = (0, import_path18.join)(gossipDir, "agents", a.id);
+          const agentDir = (0, import_path19.join)(gossipDir, "agents", a.id);
           if (!(0, import_fs14.existsSync)(agentDir)) (0, import_fs14.mkdirSync)(agentDir, { recursive: true });
         }
         const config2 = {
@@ -8810,10 +9210,10 @@ ${agentList}`,
           },
           agents
         };
-        (0, import_fs14.writeFileSync)((0, import_path18.join)(gossipDir, "config.json"), JSON.stringify(config2, null, 2));
+        (0, import_fs14.writeFileSync)((0, import_path19.join)(gossipDir, "config.json"), JSON.stringify(config2, null, 2));
       }
       safeExists(root, target) {
-        const resolved = (0, import_path18.resolve)(target);
+        const resolved = (0, import_path19.resolve)(target);
         if (!resolved.startsWith(root)) return false;
         try {
           return !(0, import_fs14.lstatSync)(resolved).isSymbolicLink();
@@ -8833,12 +9233,12 @@ ${agentList}`,
 });
 
 // packages/orchestrator/src/team-manager.ts
-var import_fs15, import_path19, TeamManager;
+var import_fs15, import_path20, TeamManager;
 var init_team_manager = __esm({
   "packages/orchestrator/src/team-manager.ts"() {
     "use strict";
     import_fs15 = require("fs");
-    import_path19 = require("path");
+    import_path20 = require("path");
     TeamManager = class {
       registry;
       pipeline;
@@ -8894,7 +9294,7 @@ var init_team_manager = __esm({
       applyAdd(config2) {
         this.registry.register(config2);
         this.writeConfig();
-        const dir = (0, import_path19.join)(this.projectRoot, ".gossip", "agents", config2.id);
+        const dir = (0, import_path20.join)(this.projectRoot, ".gossip", "agents", config2.id);
         if (!(0, import_fs15.existsSync)(dir)) (0, import_fs15.mkdirSync)(dir, { recursive: true });
         this.pendingAction = null;
       }
@@ -8929,7 +9329,7 @@ var init_team_manager = __esm({
         };
       }
       writeConfig() {
-        const configPath = (0, import_path19.join)(this.projectRoot, ".gossip", "config.json");
+        const configPath = (0, import_path20.join)(this.projectRoot, ".gossip", "config.json");
         let existing = {};
         if ((0, import_fs15.existsSync)(configPath)) {
           try {
@@ -8945,7 +9345,7 @@ var init_team_manager = __esm({
           ...a.preset ? { preset: a.preset } : {},
           skills: a.skills
         }));
-        const dir = (0, import_path19.join)(this.projectRoot, ".gossip");
+        const dir = (0, import_path20.join)(this.projectRoot, ".gossip");
         if (!(0, import_fs15.existsSync)(dir)) (0, import_fs15.mkdirSync)(dir, { recursive: true });
         (0, import_fs15.writeFileSync)(configPath, JSON.stringify(existing, null, 2) + "\n");
       }
@@ -8961,12 +9361,12 @@ __export(performance_reader_exports, {
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
-var import_fs16, import_path20, SIGNAL_WEIGHTS, PerformanceReader;
+var import_fs16, import_path21, SIGNAL_WEIGHTS, PerformanceReader;
 var init_performance_reader = __esm({
   "packages/orchestrator/src/performance-reader.ts"() {
     "use strict";
     import_fs16 = require("fs");
-    import_path20 = require("path");
+    import_path21 = require("path");
     SIGNAL_WEIGHTS = {
       agreement: { accuracy: 0.1 },
       disagreement: { accuracy: -0.15 },
@@ -8974,7 +9374,8 @@ var init_performance_reader = __esm({
       unique_confirmed: { uniqueness: 0.2 },
       unique_unconfirmed: { uniqueness: 0.05 },
       new_finding: { uniqueness: 0.15 },
-      hallucination_caught: { accuracy: -0.3 }
+      hallucination_caught: { accuracy: -0.3 },
+      category_confirmed: { accuracy: 0.1 }
     };
     PerformanceReader = class {
       filePath;
@@ -8982,7 +9383,7 @@ var init_performance_reader = __esm({
       cachedScores = null;
       cachedMtimeMs = 0;
       constructor(projectRoot) {
-        this.filePath = (0, import_path20.join)(projectRoot, ".gossip", "agent-performance.jsonl");
+        this.filePath = (0, import_path21.join)(projectRoot, ".gossip", "agent-performance.jsonl");
       }
       /** Read all signals and compute per-agent scores (cached by file mtime) */
       getScores() {
@@ -9081,6 +9482,304 @@ var init_performance_reader = __esm({
           score.reliability = clamp(score.accuracy * 0.7 + score.uniqueness * 0.3, 0, 1);
         }
         return scores;
+      }
+    };
+  }
+});
+
+// packages/orchestrator/src/competency-profiler.ts
+var competency_profiler_exports = {};
+__export(competency_profiler_exports, {
+  CompetencyProfiler: () => CompetencyProfiler
+});
+function clamp2(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+var import_fs17, import_path22, DECAY_HALF_LIFE, MIN_TASKS_THRESHOLD, MAX_ACCURACY_CHANGE_PER_ROUND, AGREEMENT_WEIGHT, DISAGREEMENT_WEIGHT, CompetencyProfiler;
+var init_competency_profiler = __esm({
+  "packages/orchestrator/src/competency-profiler.ts"() {
+    "use strict";
+    import_fs17 = require("fs");
+    import_path22 = require("path");
+    DECAY_HALF_LIFE = 50;
+    MIN_TASKS_THRESHOLD = 10;
+    MAX_ACCURACY_CHANGE_PER_ROUND = 0.3;
+    AGREEMENT_WEIGHT = 0.1;
+    DISAGREEMENT_WEIGHT = -0.15;
+    CompetencyProfiler = class {
+      filePath;
+      cachedProfiles = null;
+      cachedMtimeMs = 0;
+      constructor(projectRoot) {
+        this.filePath = (0, import_path22.join)(projectRoot, ".gossip", "agent-performance.jsonl");
+      }
+      getProfile(agentId) {
+        const profiles = this.getProfiles();
+        return profiles.get(agentId) ?? null;
+      }
+      getProfiles() {
+        let mtimeMs = 0;
+        try {
+          mtimeMs = (0, import_fs17.statSync)(this.filePath).mtimeMs;
+        } catch {
+        }
+        if (this.cachedProfiles && mtimeMs === this.cachedMtimeMs) {
+          return this.cachedProfiles;
+        }
+        this.cachedProfiles = this.computeProfiles();
+        this.cachedMtimeMs = mtimeMs;
+        return this.cachedProfiles;
+      }
+      /** Get profileMultiplier for dispatch (clamped 0.5-1.5, neutral if < threshold) */
+      getProfileMultiplier(agentId, taskType) {
+        const profile = this.getProfile(agentId);
+        if (!profile || profile.totalTasks < MIN_TASKS_THRESHOLD) return 1;
+        if (taskType === "review") {
+          const raw2 = profile.reviewReliability * (1 - profile.hallucinationRate);
+          return clamp2(raw2 * 2, 0.5, 1.5);
+        }
+        if (profile.implPassRate === 0.5 && profile.implPeerApproval === 0.5 && profile.implReliability === 0.5) {
+          return 1;
+        }
+        const raw = profile.implReliability * profile.implPassRate;
+        return clamp2(raw * 2, 0.5, 1.5);
+      }
+      computeProfiles() {
+        const signals = this.readSignals();
+        const profiles = /* @__PURE__ */ new Map();
+        const taskCountByAgent = /* @__PURE__ */ new Map();
+        const taskIndexByAgent = /* @__PURE__ */ new Map();
+        for (const s of signals) {
+          if (s.type === "meta" && s.signal === "task_completed") {
+            const count = taskCountByAgent.get(s.agentId) ?? 0;
+            if (!taskIndexByAgent.has(s.agentId)) taskIndexByAgent.set(s.agentId, /* @__PURE__ */ new Map());
+            taskIndexByAgent.get(s.agentId).set(s.taskId, count);
+            taskCountByAgent.set(s.agentId, count + 1);
+          }
+        }
+        const ensure = (id) => {
+          if (!profiles.has(id)) {
+            profiles.set(id, {
+              agentId: id,
+              reviewStrengths: {},
+              implPassRate: 0.5,
+              implIterations: 0,
+              implPeerApproval: 0.5,
+              speed: 0,
+              hallucinationRate: 0,
+              avgTokenCost: 0,
+              totalTasks: 0,
+              reviewReliability: 0.5,
+              implReliability: 0.5
+            });
+          }
+          return profiles.get(id);
+        };
+        const iterationCounts = /* @__PURE__ */ new Map();
+        for (const s of signals) {
+          if (s.type === "meta") {
+            const p = ensure(s.agentId);
+            if (s.signal === "task_completed") {
+              const prevCount = p.totalTasks;
+              p.totalTasks++;
+              if (s.value) {
+                p.speed = prevCount === 0 ? s.value : (p.speed * prevCount + s.value) / p.totalTasks;
+              }
+            }
+            if (s.signal === "task_tool_turns" && s.value) {
+              if (!iterationCounts.has(s.agentId)) iterationCounts.set(s.agentId, 0);
+              const count = iterationCounts.get(s.agentId);
+              p.implIterations = count === 0 ? s.value : (p.implIterations * count + s.value) / (count + 1);
+              iterationCounts.set(s.agentId, count + 1);
+            }
+          }
+        }
+        const peerDiversity = this.computePeerDiversity(signals);
+        const roundChanges = /* @__PURE__ */ new Map();
+        const accuracy = /* @__PURE__ */ new Map();
+        const uniqueness = /* @__PURE__ */ new Map();
+        const hallucinations = /* @__PURE__ */ new Map();
+        for (const s of signals) {
+          if (s.type !== "consensus") continue;
+          const cs = s;
+          const p = ensure(cs.agentId);
+          const totalTasks = taskCountByAgent.get(cs.agentId) ?? 0;
+          const taskIndex = taskIndexByAgent.get(cs.agentId)?.get(cs.taskId) ?? -1;
+          const tasksSince = taskIndex >= 0 ? totalTasks - taskIndex - 1 : DECAY_HALF_LIFE;
+          const decay = Math.pow(0.5, tasksSince / DECAY_HALF_LIFE);
+          if (!roundChanges.has(cs.agentId)) roundChanges.set(cs.agentId, /* @__PURE__ */ new Map());
+          const agentRounds = roundChanges.get(cs.agentId);
+          const currentRoundChange = agentRounds.get(cs.taskId) ?? 0;
+          if (cs.signal === "agreement") {
+            const diversity = peerDiversity.get(cs.agentId) ?? 1;
+            const change = AGREEMENT_WEIGHT * decay * diversity;
+            if (Math.abs(currentRoundChange + change) <= MAX_ACCURACY_CHANGE_PER_ROUND) {
+              const acc = accuracy.get(cs.agentId) ?? 0.5;
+              accuracy.set(cs.agentId, clamp2(acc + change, 0, 1));
+              agentRounds.set(cs.taskId, currentRoundChange + change);
+            }
+          }
+          if (cs.signal === "disagreement") {
+            const change = DISAGREEMENT_WEIGHT * decay;
+            if (Math.abs(currentRoundChange + change) <= MAX_ACCURACY_CHANGE_PER_ROUND) {
+              const acc = accuracy.get(cs.agentId) ?? 0.5;
+              accuracy.set(cs.agentId, clamp2(acc + change, 0, 1));
+              agentRounds.set(cs.taskId, currentRoundChange + change);
+            }
+          }
+          if (cs.signal === "unique_confirmed" || cs.signal === "new_finding") {
+            const boost = cs.signal === "unique_confirmed" ? 0.2 : 0.15;
+            const u = uniqueness.get(cs.agentId) ?? 0.5;
+            uniqueness.set(cs.agentId, clamp2(u + boost * decay, 0, 1));
+          }
+          if (cs.signal === "unique_unconfirmed") {
+            const u = uniqueness.get(cs.agentId) ?? 0.5;
+            uniqueness.set(cs.agentId, clamp2(u + 0.05 * decay, 0, 1));
+          }
+          if (cs.signal === "hallucination_caught") {
+            const h = hallucinations.get(cs.agentId) ?? { caught: 0 };
+            h.caught++;
+            hallucinations.set(cs.agentId, h);
+          }
+          if (cs.signal === "category_confirmed" && cs.category) {
+            const strength = p.reviewStrengths[cs.category] ?? 0.5;
+            p.reviewStrengths[cs.category] = clamp2(strength + 0.15 * decay, 0, 1);
+          }
+        }
+        const implStats = /* @__PURE__ */ new Map();
+        for (const s of signals) {
+          if (s.type !== "impl") continue;
+          const is = s;
+          const stats = implStats.get(is.agentId) ?? { pass: 0, fail: 0, approved: 0, rejected: 0 };
+          if (is.signal === "impl_test_pass") stats.pass++;
+          if (is.signal === "impl_test_fail") stats.fail++;
+          if (is.signal === "impl_peer_approved") stats.approved++;
+          if (is.signal === "impl_peer_rejected") stats.rejected++;
+          implStats.set(is.agentId, stats);
+        }
+        for (const [id, p] of profiles) {
+          const acc = accuracy.get(id) ?? 0.5;
+          const uniq = uniqueness.get(id) ?? 0.5;
+          p.reviewReliability = clamp2(acc * 0.7 + uniq * 0.3, 0, 1);
+          const h = hallucinations.get(id);
+          if (h && h.caught > 0) {
+            const totalFindings = signals.filter(
+              (s) => s.type === "consensus" && s.agentId === id && ["unique_confirmed", "unique_unconfirmed", "new_finding"].includes(s.signal)
+            ).length;
+            p.hallucinationRate = totalFindings > 0 ? clamp2(h.caught / totalFindings, 0, 1) : 0;
+          }
+          const impl = implStats.get(id);
+          if (impl) {
+            const implTotal = impl.pass + impl.fail;
+            p.implPassRate = implTotal > 0 ? impl.pass / implTotal : 0.5;
+            const peerTotal = impl.approved + impl.rejected;
+            p.implPeerApproval = peerTotal > 0 ? impl.approved / peerTotal : 0.5;
+            p.implReliability = clamp2(p.implPassRate * 0.6 + p.implPeerApproval * 0.4, 0, 1);
+          }
+        }
+        return profiles;
+      }
+      computePeerDiversity(signals) {
+        const peerSets = /* @__PURE__ */ new Map();
+        const consensusAgents = /* @__PURE__ */ new Set();
+        for (const s of signals) {
+          if (s.type === "consensus") consensusAgents.add(s.agentId);
+          if (s.type === "consensus" && s.signal === "agreement" && s.counterpartId) {
+            const peers = peerSets.get(s.agentId) || /* @__PURE__ */ new Set();
+            peers.add(s.counterpartId);
+            peerSets.set(s.agentId, peers);
+          }
+        }
+        const result = /* @__PURE__ */ new Map();
+        for (const [agentId, peers] of peerSets) {
+          const teamSize = Math.max(consensusAgents.size - 1, 1);
+          result.set(agentId, Math.max(0.3, peers.size / teamSize));
+        }
+        return result;
+      }
+      readSignals() {
+        if (!(0, import_fs17.existsSync)(this.filePath)) return [];
+        try {
+          return (0, import_fs17.readFileSync)(this.filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
+            try {
+              return JSON.parse(line);
+            } catch {
+              return null;
+            }
+          }).filter((s) => s !== null && typeof s.agentId === "string" && s.agentId.length > 0);
+        } catch {
+          return [];
+        }
+      }
+    };
+  }
+});
+
+// packages/orchestrator/src/dispatch-differentiator.ts
+var dispatch_differentiator_exports = {};
+__export(dispatch_differentiator_exports, {
+  DispatchDifferentiator: () => DispatchDifferentiator
+});
+var CATEGORY_LABELS, DispatchDifferentiator;
+var init_dispatch_differentiator = __esm({
+  "packages/orchestrator/src/dispatch-differentiator.ts"() {
+    "use strict";
+    CATEGORY_LABELS = {
+      trust_boundaries: "trust boundaries and authentication",
+      injection_vectors: "injection vectors and input sanitization",
+      input_validation: "input validation and schema enforcement",
+      concurrency: "concurrency, race conditions, and atomicity",
+      resource_exhaustion: "resource exhaustion and DoS vectors",
+      type_safety: "type safety and TypeScript strictness",
+      error_handling: "error handling and fallback paths",
+      data_integrity: "data integrity and consistency"
+    };
+    DispatchDifferentiator = class {
+      /**
+       * Generate differentiation prompts for co-dispatched agents.
+       * Returns empty map if:
+       *   - single agent (no differentiation needed)
+       *   - all profiles have empty strengths (cold start — caller should fall back to lens-generator)
+       */
+      differentiate(profiles, _task) {
+        if (profiles.length < 2) return /* @__PURE__ */ new Map();
+        const agentStrengths = /* @__PURE__ */ new Map();
+        for (const p of profiles) {
+          const sorted = Object.entries(p.reviewStrengths).filter(([, score]) => score > 0.5).sort(([, a], [, b]) => b - a).slice(0, 3).map(([cat]) => cat);
+          agentStrengths.set(p.agentId, sorted);
+        }
+        const allEmpty = [...agentStrengths.values()].every((s) => s.length === 0);
+        if (allEmpty) return /* @__PURE__ */ new Map();
+        const assigned = /* @__PURE__ */ new Set();
+        const focusMap = /* @__PURE__ */ new Map();
+        const sortedAgents = [...agentStrengths.entries()].sort(([, a], [, b]) => b.length - a.length);
+        for (const [agentId, strengths] of sortedAgents) {
+          const focus = [];
+          for (const cat of strengths) {
+            if (!assigned.has(cat)) {
+              focus.push(cat);
+              assigned.add(cat);
+            }
+          }
+          if (focus.length === 0) {
+            const unassigned = Object.keys(CATEGORY_LABELS).filter((c) => !assigned.has(c));
+            if (unassigned.length > 0) {
+              focus.push(unassigned[0]);
+              assigned.add(unassigned[0]);
+            }
+          }
+          focusMap.set(agentId, focus);
+        }
+        const result = /* @__PURE__ */ new Map();
+        for (const [agentId, focus] of focusMap) {
+          if (focus.length === 0) continue;
+          const labels = focus.map((c) => CATEGORY_LABELS[c] || c).join(", ");
+          result.set(
+            agentId,
+            `Focus your review on ${labels}. Other aspects are covered by your peers. Prioritize depth over breadth in your focus area.`
+          );
+        }
+        return result;
       }
     };
   }
@@ -9200,6 +9899,15 @@ message: Your question?
           syncFactory: config2.syncFactory,
           toolServer: config2.toolServer
         });
+        try {
+          const { CompetencyProfiler: CompetencyProfiler2 } = (init_competency_profiler(), __toCommonJS(competency_profiler_exports));
+          const { DispatchDifferentiator: DispatchDifferentiator2 } = (init_dispatch_differentiator(), __toCommonJS(dispatch_differentiator_exports));
+          const profiler = new CompetencyProfiler2(this.projectRoot);
+          this.registry.setCompetencyProfiler(profiler);
+          this.pipeline.setCompetencyProfiler(profiler);
+          this.pipeline.setDispatchDifferentiator(new DispatchDifferentiator2());
+        } catch {
+        }
         this.keyProviderFn = config2.keyProvider;
         this.projectInitializer = new ProjectInitializer({
           llm: this.llm,
@@ -9223,17 +9931,18 @@ message: Your question?
       }
       /** Start all worker agents (connect to relay) */
       async start() {
-        const { existsSync: existsSync17, readFileSync: readFileSync18 } = await import("fs");
-        const { join: join19 } = await import("path");
+        const { existsSync: existsSync19, readFileSync: readFileSync20 } = await import("fs");
+        const { join: join22 } = await import("path");
         for (const config2 of this.registry.getAll()) {
+          if (config2.native) continue;
           if (this.workers.has(config2.id)) continue;
           let apiKey = this.apiKeys[config2.provider];
           if (!apiKey && this.keyProviderFn) {
             apiKey = await this.keyProviderFn(config2.provider) ?? void 0;
           }
           const llm = createProvider(config2.provider, config2.model, apiKey);
-          const instructionsPath = join19(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
-          const instructions = existsSync17(instructionsPath) ? readFileSync18(instructionsPath, "utf-8") : void 0;
+          const instructionsPath = join22(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
+          const instructions = existsSync19(instructionsPath) ? readFileSync20(instructionsPath, "utf-8") : void 0;
           const enableWebSearch = config2.preset === "researcher" || config2.skills.includes("research");
           const worker = new WorkerAgent(config2.id, llm, this.relayUrl, ALL_TOOLS, instructions, enableWebSearch);
           await worker.start();
@@ -9264,6 +9973,12 @@ message: Your question?
       }
       registerPlan(plan) {
         this.pipeline.registerPlan(plan);
+      }
+      getChainContext(planId, step) {
+        return this.pipeline.getChainContext(planId, step);
+      }
+      recordPlanStepResult(planId, step, result) {
+        this.pipeline.recordPlanStepResult(planId, step, result);
       }
       getWorker(agentId) {
         return this.workers.get(agentId);
@@ -9353,15 +10068,16 @@ message: Your question?
         this.registry.register(config2);
       }
       async syncWorkers(keyProvider) {
-        const { existsSync: existsSync17, readFileSync: readFileSync18 } = await import("fs");
-        const { join: join19 } = await import("path");
+        const { existsSync: existsSync19, readFileSync: readFileSync20 } = await import("fs");
+        const { join: join22 } = await import("path");
         let added = 0;
         for (const ac of this.registry.getAll()) {
+          if (ac.native) continue;
           if (this.workers.has(ac.id)) continue;
           const key = await keyProvider(ac.provider);
           const llm = createProvider(ac.provider, ac.model, key ?? void 0);
-          const instructionsPath = join19(this.projectRoot, ".gossip", "agents", ac.id, "instructions.md");
-          const instructions = existsSync17(instructionsPath) ? readFileSync18(instructionsPath, "utf-8") : void 0;
+          const instructionsPath = join22(this.projectRoot, ".gossip", "agents", ac.id, "instructions.md");
+          const instructions = existsSync19(instructionsPath) ? readFileSync20(instructionsPath, "utf-8") : void 0;
           const enableWebSearch = ac.preset === "researcher" || ac.skills.includes("research");
           const worker = new WorkerAgent(ac.id, llm, this.relayUrl, ALL_TOOLS, instructions, enableWebSearch);
           await worker.start();
@@ -9902,12 +10618,12 @@ function safeId(value) {
   }
   return encodeURIComponent(value);
 }
-var import_fs17, import_path21, TaskGraphSync;
+var import_fs18, import_path23, TaskGraphSync;
 var init_task_graph_sync = __esm({
   "packages/orchestrator/src/task-graph-sync.ts"() {
     "use strict";
-    import_fs17 = require("fs");
-    import_path21 = require("path");
+    import_fs18 = require("fs");
+    import_path23 = require("path");
     TaskGraphSync = class {
       constructor(graph, supabaseUrl, supabaseKey, userId, projectId, projectRoot, displayName, migration) {
         this.graph = graph;
@@ -9917,7 +10633,7 @@ var init_task_graph_sync = __esm({
         this.projectId = projectId;
         this.displayName = displayName;
         this.migration = migration;
-        this.gossipDir = (0, import_path21.join)(projectRoot, ".gossip");
+        this.gossipDir = (0, import_path23.join)(projectRoot, ".gossip");
       }
       gossipDir;
       migrationDone = false;
@@ -10040,9 +10756,9 @@ var init_task_graph_sync = __esm({
         });
       }
       async syncAgentScores() {
-        const perfPath = (0, import_path21.join)(this.gossipDir, "agent-performance.jsonl");
-        if (!(0, import_fs17.existsSync)(perfPath)) return 0;
-        const content = (0, import_fs17.readFileSync)(perfPath, "utf-8");
+        const perfPath = (0, import_path23.join)(this.gossipDir, "agent-performance.jsonl");
+        if (!(0, import_fs18.existsSync)(perfPath)) return 0;
+        const content = (0, import_fs18.readFileSync)(perfPath, "utf-8");
         const lines = content.trim().split("\n").filter(Boolean);
         const meta3 = this.graph.getSyncMeta();
         let synced = 0;
@@ -10188,12 +10904,12 @@ Return JSON: { "<agentId>": "<summary>", ... }`
 });
 
 // packages/orchestrator/src/bootstrap.ts
-var import_fs18, import_path22, log4, BootstrapGenerator;
+var import_fs19, import_path24, log4, BootstrapGenerator;
 var init_bootstrap = __esm({
   "packages/orchestrator/src/bootstrap.ts"() {
     "use strict";
-    import_fs18 = require("fs");
-    import_path22 = require("path");
+    import_fs19 = require("fs");
+    import_path24 = require("path");
     log4 = (msg) => process.stderr.write(`[gossipcat] ${msg}
 `);
     BootstrapGenerator = class {
@@ -10215,23 +10931,23 @@ var init_bootstrap = __esm({
         };
       }
       migrateConfig() {
-        const oldPath = (0, import_path22.resolve)(this.projectRoot, "gossip.agents.json");
-        const newPath = (0, import_path22.resolve)(this.projectRoot, ".gossip", "config.json");
-        if (!(0, import_fs18.existsSync)(newPath) && (0, import_fs18.existsSync)(oldPath)) {
-          (0, import_fs18.mkdirSync)((0, import_path22.resolve)(this.projectRoot, ".gossip"), { recursive: true });
-          (0, import_fs18.copyFileSync)(oldPath, newPath);
+        const oldPath = (0, import_path24.resolve)(this.projectRoot, "gossip.agents.json");
+        const newPath = (0, import_path24.resolve)(this.projectRoot, ".gossip", "config.json");
+        if (!(0, import_fs19.existsSync)(newPath) && (0, import_fs19.existsSync)(oldPath)) {
+          (0, import_fs19.mkdirSync)((0, import_path24.resolve)(this.projectRoot, ".gossip"), { recursive: true });
+          (0, import_fs19.copyFileSync)(oldPath, newPath);
           log4("Migrated config to .gossip/config.json \u2014 gossip.agents.json is now ignored.");
         }
       }
       loadConfig() {
         const paths = [
-          (0, import_path22.resolve)(this.projectRoot, ".gossip", "config.json"),
-          (0, import_path22.resolve)(this.projectRoot, "gossip.agents.json")
+          (0, import_path24.resolve)(this.projectRoot, ".gossip", "config.json"),
+          (0, import_path24.resolve)(this.projectRoot, "gossip.agents.json")
         ];
         for (const p of paths) {
-          if ((0, import_fs18.existsSync)(p)) {
+          if ((0, import_fs19.existsSync)(p)) {
             try {
-              return JSON.parse((0, import_fs18.readFileSync)(p, "utf-8"));
+              return JSON.parse((0, import_fs19.readFileSync)(p, "utf-8"));
             } catch {
               log4("Config parse error, falling back to setup mode");
               return null;
@@ -10252,9 +10968,9 @@ var init_bootstrap = __esm({
             skills: ac.skills || [],
             taskCount: 0
           };
-          const tasksPath = (0, import_path22.join)(this.projectRoot, ".gossip", "agents", id, "memory", "tasks.jsonl");
-          if ((0, import_fs18.existsSync)(tasksPath)) {
-            const lines = (0, import_fs18.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+          const tasksPath = (0, import_path24.join)(this.projectRoot, ".gossip", "agents", id, "memory", "tasks.jsonl");
+          if ((0, import_fs19.existsSync)(tasksPath)) {
+            const lines = (0, import_fs19.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
             let count = 0;
             let lastTs = "";
             for (const line of lines) {
@@ -10268,9 +10984,9 @@ var init_bootstrap = __esm({
             summary.taskCount = count;
             if (lastTs) summary.lastActive = lastTs.split("T")[0];
           }
-          const memPath = (0, import_path22.join)(this.projectRoot, ".gossip", "agents", id, "memory", "MEMORY.md");
-          if ((0, import_fs18.existsSync)(memPath)) {
-            const content = (0, import_fs18.readFileSync)(memPath, "utf-8").slice(0, 500);
+          const memPath = (0, import_path24.join)(this.projectRoot, ".gossip", "agents", id, "memory", "MEMORY.md");
+          if ((0, import_fs19.existsSync)(memPath)) {
+            const content = (0, import_fs19.readFileSync)(memPath, "utf-8").slice(0, 500);
             const knowledgeLines = content.match(/- \[([^\]]+)\]/g);
             if (knowledgeLines?.length) {
               summary.topics = knowledgeLines.map((l) => l.replace(/- \[([^\]]+)\].*/, "$1")).join(", ");
@@ -10570,7 +11286,9 @@ __export(src_exports4, {
   AnthropicProvider: () => AnthropicProvider,
   ArchetypeCatalog: () => ArchetypeCatalog,
   BootstrapGenerator: () => BootstrapGenerator,
+  CompetencyProfiler: () => CompetencyProfiler,
   ConsensusEngine: () => ConsensusEngine,
+  DispatchDifferentiator: () => DispatchDifferentiator,
   DispatchPipeline: () => DispatchPipeline,
   GeminiProvider: () => GeminiProvider,
   GossipPublisher: () => GossipPublisher,
@@ -10602,8 +11320,12 @@ __export(src_exports4, {
   buildSpecReviewEnrichment: () => buildSpecReviewEnrichment,
   buildToolSystemPrompt: () => buildToolSystemPrompt,
   createProvider: () => createProvider,
+  extractCategories: () => extractCategories,
   extractSpecReferences: () => extractSpecReferences,
-  loadSkills: () => loadSkills
+  loadSkills: () => loadSkills,
+  normalizeSkillName: () => normalizeSkillName,
+  parseSkillFrontmatter: () => parseSkillFrontmatter,
+  shouldSkipConsensus: () => shouldSkipConsensus
 });
 var init_src5 = __esm({
   "packages/orchestrator/src/index.ts"() {
@@ -10639,6 +11361,12 @@ var init_src5 = __esm({
     init_archetype_catalog();
     init_project_initializer();
     init_team_manager();
+    init_skill_name();
+    init_skill_parser();
+    init_category_extractor();
+    init_competency_profiler();
+    init_dispatch_differentiator();
+    init_dispatch_pipeline();
   }
 });
 
@@ -10655,18 +11383,18 @@ __export(config_exports, {
 function findConfigPath(projectRoot) {
   const root = projectRoot || process.cwd();
   const candidates = [
-    (0, import_path23.resolve)(root, ".gossip", "config.json"),
-    (0, import_path23.resolve)(root, "gossip.agents.json"),
-    (0, import_path23.resolve)(root, "gossip.agents.yaml"),
-    (0, import_path23.resolve)(root, "gossip.agents.yml")
+    (0, import_path25.resolve)(root, ".gossip", "config.json"),
+    (0, import_path25.resolve)(root, "gossip.agents.json"),
+    (0, import_path25.resolve)(root, "gossip.agents.yaml"),
+    (0, import_path25.resolve)(root, "gossip.agents.yml")
   ];
   for (const p of candidates) {
-    if ((0, import_fs19.existsSync)(p)) return p;
+    if ((0, import_fs20.existsSync)(p)) return p;
   }
   return null;
 }
 function loadConfig(configPath) {
-  const raw = (0, import_fs19.readFileSync)(configPath, "utf-8");
+  const raw = (0, import_fs20.readFileSync)(configPath, "utf-8");
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -10718,19 +11446,19 @@ function configToAgentConfigs(config2) {
 }
 function loadClaudeSubagents(projectRoot, existingIds) {
   const root = projectRoot || process.cwd();
-  const agentsDir = (0, import_path23.join)(root, ".claude", "agents");
-  if (!(0, import_fs19.existsSync)(agentsDir)) return [];
+  const agentsDir = (0, import_path25.join)(root, ".claude", "agents");
+  if (!(0, import_fs20.existsSync)(agentsDir)) return [];
   let files;
   try {
-    files = (0, import_fs19.readdirSync)(agentsDir).filter((f) => f.endsWith(".md"));
+    files = (0, import_fs20.readdirSync)(agentsDir).filter((f) => f.endsWith(".md"));
   } catch {
     return [];
   }
   const agents = [];
   for (const file2 of files) {
-    const filePath = (0, import_path23.join)(agentsDir, file2);
+    const filePath = (0, import_path25.join)(agentsDir, file2);
     try {
-      const content = (0, import_fs19.readFileSync)(filePath, "utf-8");
+      const content = (0, import_fs20.readFileSync)(filePath, "utf-8");
       const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
       if (!frontmatter) continue;
       const fm = frontmatter[1];
@@ -10792,12 +11520,12 @@ function inferSkills(description, name) {
   if (skills.length === 0) skills.push("general");
   return skills;
 }
-var import_fs19, import_path23, VALID_PROVIDERS, CLAUDE_MODEL_MAP;
+var import_fs20, import_path25, VALID_PROVIDERS, CLAUDE_MODEL_MAP;
 var init_config = __esm({
   "apps/cli/src/config.ts"() {
     "use strict";
-    import_fs19 = require("fs");
-    import_path23 = require("path");
+    import_fs20 = require("fs");
+    import_path25 = require("path");
     VALID_PROVIDERS = ["anthropic", "openai", "google", "local"];
     CLAUDE_MODEL_MAP = {
       opus: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -10947,17 +11675,17 @@ __export(identity_exports, {
   normalizeGitUrl: () => normalizeGitUrl
 });
 function getOrCreateSalt(projectRoot) {
-  const saltPath = (0, import_path24.join)(projectRoot, ".gossip", "local-salt");
+  const saltPath = (0, import_path26.join)(projectRoot, ".gossip", "local-salt");
   try {
-    return (0, import_fs20.readFileSync)(saltPath, "utf-8").trim();
+    return (0, import_fs21.readFileSync)(saltPath, "utf-8").trim();
   } catch {
     const salt = (0, import_crypto9.randomBytes)(16).toString("hex");
-    (0, import_fs20.mkdirSync)((0, import_path24.join)(projectRoot, ".gossip"), { recursive: true });
+    (0, import_fs21.mkdirSync)((0, import_path26.join)(projectRoot, ".gossip"), { recursive: true });
     try {
-      (0, import_fs20.writeFileSync)(saltPath, salt, { flag: "wx" });
+      (0, import_fs21.writeFileSync)(saltPath, salt, { flag: "wx" });
       return salt;
     } catch {
-      return (0, import_fs20.readFileSync)(saltPath, "utf-8").trim();
+      return (0, import_fs21.readFileSync)(saltPath, "utf-8").trim();
     }
   }
 }
@@ -11007,12 +11735,12 @@ function getProjectId(projectRoot) {
   }
   return (0, import_crypto9.createHash)("sha256").update(projectRoot).digest("hex").slice(0, 16);
 }
-var import_fs20, import_path24, import_crypto9, import_child_process5;
+var import_fs21, import_path26, import_crypto9, import_child_process5;
 var init_identity = __esm({
   "apps/cli/src/identity.ts"() {
     "use strict";
-    import_fs20 = require("fs");
-    import_path24 = require("path");
+    import_fs21 = require("fs");
+    import_path26 = require("path");
     import_crypto9 = require("crypto");
     import_child_process5 = require("child_process");
   }
@@ -24838,6 +25566,7 @@ async function getModules() {
     MainAgent: (await Promise.resolve().then(() => (init_src5(), src_exports4))).MainAgent,
     WorkerAgent: (await Promise.resolve().then(() => (init_src5(), src_exports4))).WorkerAgent,
     createProvider: (await Promise.resolve().then(() => (init_src5(), src_exports4))).createProvider,
+    PerformanceWriter: (await Promise.resolve().then(() => (init_src5(), src_exports4))).PerformanceWriter,
     ...await Promise.resolve().then(() => (init_config(), config_exports)),
     Keychain: (await Promise.resolve().then(() => (init_keychain(), keychain_exports))).Keychain
   };
@@ -24860,7 +25589,8 @@ async function doBoot() {
   keychain = new m.Keychain();
   relay = new m.RelayServer({ port: 0 });
   await relay.start();
-  toolServer = new m.ToolServer({ relayUrl: relay.url, projectRoot: process.cwd() });
+  const perfWriter = new m.PerformanceWriter(process.cwd());
+  toolServer = new m.ToolServer({ relayUrl: relay.url, projectRoot: process.cwd(), perfWriter });
   await toolServer.start();
   for (const ac of agentConfigs) {
     if (ac.native) {
@@ -24882,11 +25612,21 @@ async function doBoot() {
     }
     const key = await keychain.getKey(ac.provider);
     const llm = m.createProvider(ac.provider, ac.model, key ?? void 0);
-    const { existsSync: existsSync17, readFileSync: readFileSync18 } = require("fs");
-    const { join: join19 } = require("path");
-    const instructionsPath = join19(process.cwd(), ".gossip", "agents", ac.id, "instructions.md");
-    const instructions = existsSync17(instructionsPath) ? readFileSync18(instructionsPath, "utf-8") : void 0;
+    const { existsSync: existsSync19, readFileSync: readFileSync20 } = require("fs");
+    const { join: join22 } = require("path");
+    const instructionsPath = join22(process.cwd(), ".gossip", "agents", ac.id, "instructions.md");
+    const instructions = existsSync19(instructionsPath) ? readFileSync20(instructionsPath, "utf-8") : void 0;
     const worker = new m.WorkerAgent(ac.id, llm, relay.url, m.ALL_TOOLS, instructions);
+    worker.setOnTaskComplete?.((event) => {
+      try {
+        const now = (/* @__PURE__ */ new Date()).toISOString();
+        perfWriter.appendSignal({ type: "meta", signal: "task_completed", agentId: event.agentId, taskId: event.taskId, value: event.durationMs, timestamp: now });
+        if (event.toolCalls > 0) {
+          perfWriter.appendSignal({ type: "meta", signal: "task_tool_turns", agentId: event.agentId, taskId: event.taskId, value: event.toolCalls, timestamp: now });
+        }
+      } catch {
+      }
+    });
     await worker.start();
     workers.set(ac.id, worker);
   }
@@ -25267,16 +26007,25 @@ server.tool(
     if (nativeConfig) {
       evictStaleNativeTasks();
       const taskId = (0, import_crypto10.randomUUID)().slice(0, 8);
-      nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now() });
+      nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), planId: plan_id, step });
       try {
         mainAgent.recordNativeTask(taskId, agent_id, task);
       } catch {
       }
-      const agentPrompt = nativeConfig.instructions ? `${nativeConfig.instructions}
-
+      let chainContext = "";
+      if (plan_id && step && step > 1) {
+        chainContext = mainAgent.getChainContext(plan_id, step);
+      }
+      const agentPrompt = [
+        nativeConfig.instructions || "",
+        chainContext ? `
+${chainContext}
+` : "",
+        `
 ---
 
-Task: ${task}` : task;
+Task: ${task}`
+      ].filter(Boolean).join("").trim();
       let useWorktree = write_mode === "worktree";
       if (useWorktree) {
         try {
@@ -25469,6 +26218,17 @@ ${t.skillWarnings.map((w) => `  - ${w}`).join("\n")}`;
     let output = resultTexts.join("\n\n---\n\n");
     if (consensusReport) {
       output += "\n\n" + consensusReport.summary;
+    }
+    try {
+      const { SkillGapTracker: SkillGapTracker2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
+      const tracker = new SkillGapTracker2(process.cwd());
+      const thresholds = tracker.checkThresholds();
+      if (thresholds.count > 0) {
+        output += `
+
+\u{1F527} ${thresholds.count} skill(s) ready to build. Call gossip_build_skills() to generate them.`;
+      }
+    } catch {
     }
     return { content: [{ type: "text", text: output }] };
   }
@@ -25746,10 +26506,10 @@ server.tool(
     const { BootstrapGenerator: BootstrapGenerator2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
     const generator = new BootstrapGenerator2(process.cwd());
     const result = generator.generate();
-    const { writeFileSync: writeFileSync9, mkdirSync: mkdirSync10 } = require("fs");
-    const { join: join19 } = require("path");
-    mkdirSync10(join19(process.cwd(), ".gossip"), { recursive: true });
-    writeFileSync9(join19(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
+    const { writeFileSync: writeFileSync10, mkdirSync: mkdirSync10 } = require("fs");
+    const { join: join22 } = require("path");
+    mkdirSync10(join22(process.cwd(), ".gossip"), { recursive: true });
+    writeFileSync10(join22(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
     return { content: [{ type: "text", text: result.prompt }] };
   }
 );
@@ -25777,8 +26537,8 @@ server.tool(
     })).describe("Array of agents to create")
   },
   async ({ main_provider, main_model, agents }) => {
-    const { writeFileSync: writeFileSync9, mkdirSync: mkdirSync10, existsSync: existsSync17 } = require("fs");
-    const { join: join19 } = require("path");
+    const { writeFileSync: writeFileSync10, mkdirSync: mkdirSync10 } = require("fs");
+    const { join: join22 } = require("path");
     const root = process.cwd();
     const CLAUDE_MODEL_MAP2 = {
       opus: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -25811,9 +26571,9 @@ server.tool(
           "",
           body
         ].join("\n");
-        const agentsDir = join19(root, ".claude", "agents");
+        const agentsDir = join22(root, ".claude", "agents");
         mkdirSync10(agentsDir, { recursive: true });
-        writeFileSync9(join19(agentsDir, `${agent.id}.md`), md, "utf-8");
+        writeFileSync10(join22(agentsDir, `${agent.id}.md`), md, "utf-8");
         nativeCreated.push(agent.id);
         configAgents[agent.id] = {
           provider: mapped.provider,
@@ -25839,9 +26599,9 @@ server.tool(
         };
         customCreated.push(agent.id);
         if (agent.instructions) {
-          const instrDir = join19(root, ".gossip", "agents", agent.id);
+          const instrDir = join22(root, ".gossip", "agents", agent.id);
           mkdirSync10(instrDir, { recursive: true });
-          writeFileSync9(join19(instrDir, "instructions.md"), agent.instructions, "utf-8");
+          writeFileSync10(join22(instrDir, "instructions.md"), agent.instructions, "utf-8");
         }
       }
     }
@@ -25855,13 +26615,13 @@ server.tool(
     } catch (err) {
       return { content: [{ type: "text", text: `Invalid config: ${err.message}` }] };
     }
-    mkdirSync10(join19(root, ".gossip"), { recursive: true });
-    writeFileSync9(join19(root, ".gossip", "config.json"), JSON.stringify(config2, null, 2));
+    mkdirSync10(join22(root, ".gossip"), { recursive: true });
+    writeFileSync10(join22(root, ".gossip", "config.json"), JSON.stringify(config2, null, 2));
     const agentList = Object.entries(configAgents).map(([id, a]) => `- ${id}: ${a.provider}/${a.model} (${a.preset || "custom"})`).join("\n");
-    const rulesDir = join19(root, env.rulesDir);
-    const rulesFile = join19(root, env.rulesFile);
+    const rulesDir = join22(root, env.rulesDir);
+    const rulesFile = join22(root, env.rulesFile);
     mkdirSync10(rulesDir, { recursive: true });
-    writeFileSync9(rulesFile, `# Gossipcat \u2014 Multi-Agent Orchestration
+    writeFileSync10(rulesFile, `# Gossipcat \u2014 Multi-Agent Orchestration
 
 This project uses gossipcat for multi-agent orchestration via MCP.
 
@@ -26001,6 +26761,12 @@ server.tool(
     try {
       mainAgent.recordNativeTaskCompleted(task_id, result, error48 || void 0);
     } catch {
+    }
+    if (taskInfo.planId && taskInfo.step && !error48) {
+      try {
+        mainAgent.recordPlanStepResult(taskInfo.planId, taskInfo.step, result);
+      } catch {
+      }
     }
     if (!error48) {
       try {
@@ -26143,12 +26909,12 @@ server.tool(
     if (findings.length === 0) {
       return { content: [{ type: "text", text: "No findings to log." }] };
     }
-    const { appendFileSync: appendFileSync7, mkdirSync: mkdirSync10, existsSync: existsSync17, readFileSync: readFileSync18 } = require("fs");
-    const { join: join19 } = require("path");
+    const { appendFileSync: appendFileSync6, mkdirSync: mkdirSync10, existsSync: existsSync19 } = require("fs");
+    const { join: join22 } = require("path");
     const root = process.cwd();
-    const dir = join19(root, ".gossip");
-    if (!existsSync17(dir)) mkdirSync10(dir, { recursive: true });
-    const filePath = join19(dir, "implementation-findings.jsonl");
+    const dir = join22(root, ".gossip");
+    if (!existsSync19(dir)) mkdirSync10(dir, { recursive: true });
+    const filePath = join22(dir, "implementation-findings.jsonl");
     const timestamp = (/* @__PURE__ */ new Date()).toISOString();
     const data = findings.map((f) => JSON.stringify({
       timestamp,
@@ -26161,7 +26927,7 @@ server.tool(
       line: f.line ?? null,
       taskId: f.task_id || null
     })).join("\n") + "\n";
-    appendFileSync7(filePath, data);
+    appendFileSync6(filePath, data);
     const byAgent = /* @__PURE__ */ new Map();
     for (const f of findings) {
       const entry = byAgent.get(f.implementer_id) || { total: 0, bySeverity: {} };
@@ -26189,15 +26955,15 @@ server.tool(
     agent_id: external_exports.string().optional().describe("Filter by implementer agent ID. Omit to see all.")
   },
   async ({ agent_id }) => {
-    const { existsSync: existsSync17, readFileSync: readFileSync18 } = require("fs");
-    const { join: join19 } = require("path");
-    const filePath = join19(process.cwd(), ".gossip", "implementation-findings.jsonl");
-    if (!existsSync17(filePath)) {
+    const { existsSync: existsSync19, readFileSync: readFileSync20 } = require("fs");
+    const { join: join22 } = require("path");
+    const filePath = join22(process.cwd(), ".gossip", "implementation-findings.jsonl");
+    if (!existsSync19(filePath)) {
       return { content: [{ type: "text", text: "No implementation findings yet. Use gossip_log_finding to record findings after code reviews." }] };
     }
     const entries = [];
     try {
-      const lines = readFileSync18(filePath, "utf-8").trim().split("\n").filter(Boolean);
+      const lines = readFileSync20(filePath, "utf-8").trim().split("\n").filter(Boolean);
       for (const l of lines) {
         try {
           entries.push(JSON.parse(l));
@@ -26246,6 +27012,86 @@ Total: ${Array.from(byAgent.values()).reduce((s, arr) => s + arr.length, 0)} fin
   }
 );
 server.tool(
+  "gossip_build_skills",
+  "Build skill files from agent suggestions that hit threshold (3+ suggestions, 2+ agents). Call without skills to discover pending gaps. Call with skills array to save generated content.",
+  {
+    skill_names: external_exports.array(external_exports.string()).optional().describe("Filter to specific skills. Omit to get all pending."),
+    skills: external_exports.array(external_exports.object({
+      name: external_exports.string().describe("Skill name (kebab-case)"),
+      content: external_exports.string().describe("Full .md content with frontmatter")
+    })).optional().describe("Generated skill files to save. Omit for discovery mode.")
+  },
+  async ({ skill_names, skills }) => {
+    await boot();
+    const { SkillGapTracker: SkillGapTracker2, parseSkillFrontmatter: parseSkillFrontmatter2, normalizeSkillName: normalizeSkillName2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
+    const tracker = new SkillGapTracker2(process.cwd());
+    if (skills && skills.length > 0) {
+      const { writeFileSync: writeFileSync10, mkdirSync: mkdirSync10, existsSync: existsSync19, readFileSync: readFileSync20 } = require("fs");
+      const { join: join22 } = require("path");
+      const dir = join22(process.cwd(), ".gossip", "skills");
+      mkdirSync10(dir, { recursive: true });
+      const results = [];
+      for (const skill of skills) {
+        const name = normalizeSkillName2(skill.name);
+        const filePath = join22(dir, `${name}.md`);
+        if (existsSync19(filePath)) {
+          const existing = readFileSync20(filePath, "utf-8");
+          const fm = parseSkillFrontmatter2(existing);
+          if (fm) {
+            if (fm.generated_by === "manual") {
+              results.push(`\u26A0\uFE0F Skipped ${name}: manually created file (generated_by: manual)`);
+              continue;
+            }
+            if (fm.status === "active") {
+              results.push(`\u26A0\uFE0F Skipped ${name}: already active`);
+              continue;
+            }
+            if (fm.status === "disabled") {
+              results.push(`\u26A0\uFE0F Skipped ${name}: disabled by user`);
+              continue;
+            }
+          }
+        }
+        writeFileSync10(filePath, skill.content);
+        tracker.recordResolution(name);
+        results.push(`\u2705 Created .gossip/skills/${name}.md`);
+      }
+      return { content: [{ type: "text", text: results.join("\n") }] };
+    }
+    const thresholds = tracker.checkThresholds();
+    if (thresholds.count === 0) {
+      return { content: [{ type: "text", text: "No skills at threshold. Agents need to call suggest_skill() more." }] };
+    }
+    const targetSkills = skill_names ? skill_names.map((s) => normalizeSkillName2(s)).filter((s) => thresholds.pending.includes(s)) : thresholds.pending;
+    if (targetSkills.length === 0) {
+      return { content: [{ type: "text", text: `No matching skills at threshold. Pending: ${thresholds.pending.join(", ")}` }] };
+    }
+    const gapData = tracker.getGapData(targetSkills);
+    let text = `Skills ready to build: ${gapData.length}
+
+`;
+    for (const gap of gapData) {
+      text += `### ${gap.skill}
+`;
+      text += `Suggestions (${gap.suggestions.length} from ${gap.uniqueAgents.length} agents):
+`;
+      for (const s of gap.suggestions) {
+        text += `- ${s.agent}: "${s.reason}" (task: ${s.task_context.slice(0, 80)})
+`;
+      }
+      text += "\n";
+    }
+    text += `Generate each skill as a .md file with this frontmatter format:
+`;
+    text += "```\n---\nname: skill-name\ndescription: What this skill does.\nkeywords: [keyword1, keyword2]\ngenerated_by: orchestrator\nsources: N suggestions from agent1, agent2\nstatus: active\n---\n```\n";
+    text += `Body sections: Approach (numbered steps), Output (format), Don't (anti-patterns).
+
+`;
+    text += `Then call gossip_build_skills(skills: [{name: "...", content: "..."}]) to save.`;
+    return { content: [{ type: "text", text }] };
+  }
+);
+server.tool(
   "gossip_tools",
   "List all available gossipcat MCP tools with descriptions. Call after /mcp reconnect to discover new tools.",
   {},
@@ -26266,6 +27112,7 @@ server.tool(
       { name: "gossip_scores", desc: "View agent performance scores and dispatch weights" },
       { name: "gossip_log_finding", desc: "Log implementation quality finding (observer-only, no scoring)" },
       { name: "gossip_findings", desc: "View implementation findings per agent" },
+      { name: "gossip_build_skills", desc: "Build skill files from agent gap suggestions" },
       { name: "gossip_tools", desc: "List available tools (this command)" },
       { name: "gossip_bootstrap", desc: "Generate team context prompt with live agent state" },
       { name: "gossip_setup", desc: "Create or update team configuration" }
@@ -26279,6 +27126,8 @@ ${list}` }] };
 async function main() {
   const transport = new import_stdio.StdioServerTransport();
   await server.connect(transport);
+  boot().catch((err) => process.stderr.write(`[gossipcat] Boot failed: ${err.message}
+`));
 }
 main().catch((err) => {
   process.stderr.write(`[gossipcat] Fatal: ${err.message}

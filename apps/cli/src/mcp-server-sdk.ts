@@ -151,11 +151,13 @@ async function doBoot() {
     const worker = new m.WorkerAgent(ac.id, llm, relay.url, m.ALL_TOOLS, instructions);
     // Wire meta signal emission for ATI profiling
     worker.setOnTaskComplete?.((event: { agentId: string; taskId: string; toolCalls: number; durationMs: number }) => {
-      const now = new Date().toISOString();
-      perfWriter.appendSignal({ type: 'meta', signal: 'task_completed', agentId: event.agentId, taskId: event.taskId, value: event.durationMs, timestamp: now });
-      if (event.toolCalls > 0) {
-        perfWriter.appendSignal({ type: 'meta', signal: 'task_tool_turns', agentId: event.agentId, taskId: event.taskId, value: event.toolCalls, timestamp: now });
-      }
+      try {
+        const now = new Date().toISOString();
+        perfWriter.appendSignal({ type: 'meta', signal: 'task_completed', agentId: event.agentId, taskId: event.taskId, value: event.durationMs, timestamp: now } as any);
+        if (event.toolCalls > 0) {
+          perfWriter.appendSignal({ type: 'meta', signal: 'task_tool_turns', agentId: event.agentId, taskId: event.taskId, value: event.toolCalls, timestamp: now } as any);
+        }
+      } catch { /* ATI signal emission is best-effort */ }
     });
     await worker.start();
     workers.set(ac.id, worker);
