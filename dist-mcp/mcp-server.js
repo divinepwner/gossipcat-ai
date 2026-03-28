@@ -5622,14 +5622,83 @@ var init_memory_writer = __esm({
         const combined = `${task}
 ${result}`;
         const lines = [];
-        const fileRegex = /[`"'(]?([a-zA-Z0-9_/.:-]+\.\w{1,5})[`"')]?/g;
+        const fileRegex = /(?:^|[\s`"'(\[<])([a-zA-Z0-9_/.-]+\.[a-z]{1,7})(?=[\s`"'):,\]>]|$)/gm;
         const rawMatches = [];
         let fm;
         while ((fm = fileRegex.exec(combined)) !== null) rawMatches.push(fm[1]);
-        const skipExts = /* @__PURE__ */ new Set(["e.g", "i.e", "etc", "v1", "v2", "No", "Dr"]);
-        const files = [...new Set(rawMatches.filter(
-          (f) => f.includes("/") || /^[a-z]/i.test(f) && !skipExts.has(f.split(".")[0])
-        ))];
+        const SOURCE_EXTENSIONS = /* @__PURE__ */ new Set([
+          "ts",
+          "tsx",
+          "js",
+          "jsx",
+          "mjs",
+          "cjs",
+          "py",
+          "rb",
+          "go",
+          "rs",
+          "java",
+          "kt",
+          "swift",
+          "c",
+          "cpp",
+          "h",
+          "hpp",
+          "cs",
+          "html",
+          "css",
+          "scss",
+          "less",
+          "vue",
+          "svelte",
+          "sh",
+          "bash",
+          "zsh",
+          "sql",
+          "graphql",
+          "proto",
+          "php",
+          "lua",
+          "xml"
+        ]);
+        const CODE_PREFIXES = [
+          "this.",
+          "self.",
+          "Object.",
+          "JSON.",
+          "Math.",
+          "Array.",
+          "Promise.",
+          "console.",
+          "String.",
+          "Number.",
+          "Boolean.",
+          "process.",
+          "Buffer.",
+          "Error.",
+          "Date.",
+          "React.",
+          "Vue.",
+          "axios.",
+          "fs.",
+          "path.",
+          "crypto.",
+          "http.",
+          "https."
+        ];
+        const BARE_SKIP_EXTS = /* @__PURE__ */ new Set(["json", "lock", "yaml", "yml", "toml", "md", "txt", "env", "log", "bak"]);
+        const skipTokens = /* @__PURE__ */ new Set(["e.g", "i.e", "etc", "v1", "v2", "No", "Dr"]);
+        const files = [...new Set(rawMatches.filter((f) => {
+          if (skipTokens.has(f.split(".")[0])) return false;
+          if (CODE_PREFIXES.some((p) => f.startsWith(p))) return false;
+          const ext = f.split(".").pop().toLowerCase();
+          if (f.includes("/")) {
+            if (f.includes(".env") || f.includes("node_modules/")) return false;
+            return true;
+          }
+          if (BARE_SKIP_EXTS.has(ext)) return false;
+          return SOURCE_EXTENSIONS.has(ext);
+        }))];
         if (files.length > 0) {
           lines.push(`Files: ${files.join(", ")}`);
         }
@@ -5680,7 +5749,7 @@ ${result}`;
         if (foundTech.length > 0) {
           lines.push(`Technology: ${foundTech.join(", ")}`);
         }
-        const decisionPatterns = /(?:I (?:chose|decided|used|picked|went with|created|set up|initialized|configured)|(?:using|chose|selected) .{5,60}(?:for|because|since|as))/gi;
+        const decisionPatterns = /(?:(?:I|we|they|the team|the project) (?:chose|decided|used|picked|went with|created|set up|initialized|configured|adopted|migrated to|switched to) .{3,80}(?:for|because|since|as|due to|instead of)?)/gi;
         const decisions = combined.match(decisionPatterns) || [];
         if (decisions.length > 0) {
           lines.push(`Decisions: ${decisions.slice(0, 5).map((d) => d.trim()).join("; ")}`);
@@ -7802,7 +7871,9 @@ var init_dispatch_pipeline = __esm({
             }
           }
           try {
-            const compactResult = this.memCompactor.compactIfNeeded(t.agentId);
+            const findingsCount = (t.result || "").split("\n").filter((l) => /^\s*[-*•]\s|^#{1,3}\s.*\[/.test(l)).length;
+            const maxEntries = findingsCount >= 8 ? 30 : findingsCount <= 1 ? 12 : 20;
+            const compactResult = this.memCompactor.compactIfNeeded(t.agentId, maxEntries);
             if (compactResult.message) log2(compactResult.message);
           } catch (err) {
             log2(`Memory compact failed for ${t.agentId}: ${err.message}`);
@@ -8083,7 +8154,9 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
             });
           }
           this.memWriter.rebuildIndex(t.agentId);
-          this.memCompactor.compactIfNeeded(t.agentId);
+          const findingsCount = (t.result || "").split("\n").filter((l) => /^\s*[-*•]\s|^#{1,3}\s.*\[/.test(l)).length;
+          const maxEntries = findingsCount >= 8 ? 30 : findingsCount <= 1 ? 12 : 20;
+          this.memCompactor.compactIfNeeded(t.agentId, maxEntries);
         } catch (err) {
           log2(`Memory write failed for ${t.agentId}/${t.id}: ${err.message}`);
         }

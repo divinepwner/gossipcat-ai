@@ -105,17 +105,47 @@ export class MemoryWriter {
     const combined = `${task}\n${result}`;
     const lines: string[] = [];
 
-    // Extract file names: find anything that looks like a file path with an extension.
-    // Catches backtick-quoted (`src/app.js`), parenthesized (index.html), and bare paths.
-    const fileRegex = /[`"'(]?([a-zA-Z0-9_/.:-]+\.\w{1,5})[`"')]?/g;
+    // Extract file paths from agent output.
+    // Lookahead boundary prevents skipping back-to-back refs.
+    // Extension up to 7 chars covers .graphql, .svelte.
+    // Includes [] and <> for markdown patterns.
+    const fileRegex = /(?:^|[\s`"'(\[<])([a-zA-Z0-9_/.-]+\.[a-z]{1,7})(?=[\s`"'):,\]>]|$)/gm;
     const rawMatches: string[] = [];
     let fm: RegExpExecArray | null;
     while ((fm = fileRegex.exec(combined)) !== null) rawMatches.push(fm[1]);
-    // Filter: must have a / or start with a letter, exclude common false positives
-    const skipExts = new Set(['e.g', 'i.e', 'etc', 'v1', 'v2', 'No', 'Dr']);
-    const files = [...new Set(rawMatches.filter(f =>
-      f.includes('/') || /^[a-z]/i.test(f) && !skipExts.has(f.split('.')[0])
-    ))];
+
+    const SOURCE_EXTENSIONS = new Set([
+      'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
+      'py', 'rb', 'go', 'rs', 'java', 'kt', 'swift',
+      'c', 'cpp', 'h', 'hpp', 'cs',
+      'html', 'css', 'scss', 'less', 'vue', 'svelte',
+      'sh', 'bash', 'zsh',
+      'sql', 'graphql', 'proto',
+      'php', 'lua', 'xml',
+    ]);
+    const CODE_PREFIXES = [
+      'this.', 'self.', 'Object.', 'JSON.', 'Math.', 'Array.', 'Promise.', 'console.',
+      'String.', 'Number.', 'Boolean.', 'process.', 'Buffer.', 'Error.', 'Date.',
+      'React.', 'Vue.', 'axios.', 'fs.', 'path.', 'crypto.', 'http.', 'https.',
+    ];
+    const BARE_SKIP_EXTS = new Set(['json', 'lock', 'yaml', 'yml', 'toml', 'md', 'txt', 'env', 'log', 'bak']);
+    const skipTokens = new Set(['e.g', 'i.e', 'etc', 'v1', 'v2', 'No', 'Dr']);
+
+    const files = [...new Set(rawMatches.filter(f => {
+      // Reject known false positives
+      if (skipTokens.has(f.split('.')[0])) return false;
+      // Reject code identifiers (this.data, JSON.parse, etc.)
+      if (CODE_PREFIXES.some(p => f.startsWith(p))) return false;
+      const ext = f.split('.').pop()!.toLowerCase();
+      if (f.includes('/')) {
+        // Path-qualified: accept, but reject sensitive files
+        if (f.includes('.env') || f.includes('node_modules/')) return false;
+        return true;
+      }
+      // Bare filename: must be a recognized source extension
+      if (BARE_SKIP_EXTS.has(ext)) return false;
+      return SOURCE_EXTENSIONS.has(ext);
+    }))];
     if (files.length > 0) {
       lines.push(`Files: ${files.join(', ')}`);
     }
@@ -131,8 +161,8 @@ export class MemoryWriter {
       lines.push(`Technology: ${foundTech.join(', ')}`);
     }
 
-    // Extract key decisions/patterns (lines containing decision language)
-    const decisionPatterns = /(?:I (?:chose|decided|used|picked|went with|created|set up|initialized|configured)|(?:using|chose|selected) .{5,60}(?:for|because|since|as))/gi;
+    // Extract key decisions — requires explicit subject to avoid passive-voice false positives
+    const decisionPatterns = /(?:(?:I|we|they|the team|the project) (?:chose|decided|used|picked|went with|created|set up|initialized|configured|adopted|migrated to|switched to) .{3,80}(?:for|because|since|as|due to|instead of)?)/gi;
     const decisions = combined.match(decisionPatterns) || [];
     if (decisions.length > 0) {
       lines.push(`Decisions: ${decisions.slice(0, 5).map(d => d.trim()).join('; ')}`);

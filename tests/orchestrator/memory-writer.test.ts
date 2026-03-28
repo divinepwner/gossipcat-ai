@@ -130,6 +130,129 @@ describe('MemoryWriter', () => {
     expect(memory).toContain('grid.js');
   });
 
+  describe('file extraction (Tier 3)', () => {
+    it('rejects code identifiers: this.data, JSON.parse, Object.proto', () => {
+      const writer = new MemoryWriter(testDir);
+      writer.writeKnowledgeFromResult(agentId, {
+        taskId: 'f1', task: 'review code',
+        result: 'Found issues with this.data and JSON.parse usage. The Object.proto was polluted. Also this.save and console.log were problematic. Check src/main.ts for details.',
+      });
+      const files = readdirSync(join(memDir, 'knowledge')).filter(f => f.includes('f1'));
+      expect(files.length).toBe(1);
+      const content = readFileSync(join(memDir, 'knowledge', files[0]), 'utf-8');
+      // The Files: line should have src/main.ts but NOT code identifiers
+      const filesLine = content.split('\n').find(l => l.startsWith('Files:')) || '';
+      expect(filesLine).toContain('src/main.ts');
+      expect(filesLine).not.toContain('this.data');
+      expect(filesLine).not.toContain('JSON.parse');
+      expect(filesLine).not.toContain('Object.proto');
+      expect(filesLine).not.toContain('this.save');
+      expect(filesLine).not.toContain('console.log');
+    });
+
+    it('accepts source files with paths', () => {
+      const writer = new MemoryWriter(testDir);
+      writer.writeKnowledgeFromResult(agentId, {
+        taskId: 'f2', task: 'review code',
+        result: 'Found bug in packages/orchestrator/src/skill-index.ts at line 42.',
+      });
+      const files = readdirSync(join(memDir, 'knowledge')).filter(f => f.includes('f2'));
+      expect(files.length).toBe(1);
+      const content = readFileSync(join(memDir, 'knowledge', files[0]), 'utf-8');
+      expect(content).toContain('packages/orchestrator/src/skill-index.ts');
+    });
+
+    it('rejects bare config files without paths', () => {
+      const writer = new MemoryWriter(testDir);
+      writer.writeKnowledgeFromResult(agentId, {
+        taskId: 'f3', task: 'review config',
+        result: 'The skill-index.json file was corrupted. Also package.json needs updating.',
+      });
+      const files = readdirSync(join(memDir, 'knowledge')).filter(f => f.includes('f3'));
+      if (files.length > 0) {
+        const content = readFileSync(join(memDir, 'knowledge', files[0]), 'utf-8');
+        expect(content).not.toMatch(/Files:.*skill-index\.json/);
+        expect(content).not.toMatch(/Files:.*package\.json/);
+      }
+    });
+
+    it('accepts config files with full paths', () => {
+      const writer = new MemoryWriter(testDir);
+      writer.writeKnowledgeFromResult(agentId, {
+        taskId: 'f4', task: 'review config',
+        result: 'Updated packages/foo/tsconfig.json with strict mode.',
+      });
+      const files = readdirSync(join(memDir, 'knowledge')).filter(f => f.includes('f4'));
+      expect(files.length).toBe(1);
+      const content = readFileSync(join(memDir, 'knowledge', files[0]), 'utf-8');
+      expect(content).toContain('packages/foo/tsconfig.json');
+    });
+
+    it('rejects .env paths as sensitive', () => {
+      const writer = new MemoryWriter(testDir);
+      writer.writeKnowledgeFromResult(agentId, {
+        taskId: 'f5', task: 'review security',
+        result: 'The config/.env.local file contains API keys that should not be committed.',
+      });
+      const files = readdirSync(join(memDir, 'knowledge')).filter(f => f.includes('f5'));
+      if (files.length > 0) {
+        const content = readFileSync(join(memDir, 'knowledge', files[0]), 'utf-8');
+        expect(content).not.toMatch(/Files:.*\.env/);
+      }
+    });
+
+    it('accepts bare source files with recognized extensions', () => {
+      const writer = new MemoryWriter(testDir);
+      writer.writeKnowledgeFromResult(agentId, {
+        taskId: 'f6', task: 'review code',
+        result: 'The main issue is in app.tsx where the state is not initialized properly.',
+      });
+      const files = readdirSync(join(memDir, 'knowledge')).filter(f => f.includes('f6'));
+      expect(files.length).toBe(1);
+      const content = readFileSync(join(memDir, 'knowledge', files[0]), 'utf-8');
+      expect(content).toContain('app.tsx');
+    });
+  });
+
+  describe('decision extraction (Tier 3)', () => {
+    it('matches third-person decisions', () => {
+      const writer = new MemoryWriter(testDir);
+      writer.writeKnowledgeFromResult(agentId, {
+        taskId: 'd1', task: 'architecture review',
+        result: 'The team decided to use TypeScript for type safety. We chose React because of the ecosystem.',
+      });
+      const files = readdirSync(join(memDir, 'knowledge')).filter(f => f.includes('d1'));
+      expect(files.length).toBe(1);
+      const content = readFileSync(join(memDir, 'knowledge', files[0]), 'utf-8');
+      expect(content).toContain('Decisions:');
+    });
+
+    it('does not match passive voice', () => {
+      const writer = new MemoryWriter(testDir);
+      writer.writeKnowledgeFromResult(agentId, {
+        taskId: 'd2', task: 'review code',
+        result: 'The variable was decided by the runtime. Using a shared lock for thread safety is common.',
+      });
+      const files = readdirSync(join(memDir, 'knowledge')).filter(f => f.includes('d2'));
+      if (files.length > 0) {
+        const content = readFileSync(join(memDir, 'knowledge', files[0]), 'utf-8');
+        expect(content).not.toContain('Decisions:');
+      }
+    });
+
+    it('matches migration decisions', () => {
+      const writer = new MemoryWriter(testDir);
+      writer.writeKnowledgeFromResult(agentId, {
+        taskId: 'd3', task: 'migration review',
+        result: 'We migrated to Vitest instead of keeping Jest. The project adopted event sourcing due to audit needs.',
+      });
+      const files = readdirSync(join(memDir, 'knowledge')).filter(f => f.includes('d3'));
+      expect(files.length).toBe(1);
+      const content = readFileSync(join(memDir, 'knowledge', files[0]), 'utf-8');
+      expect(content).toContain('Decisions:');
+    });
+  });
+
   it('derives importance from scores via writeTaskEntry', async () => {
     const writer = new MemoryWriter(testDir);
     await writer.writeTaskEntry('test-agent', {
