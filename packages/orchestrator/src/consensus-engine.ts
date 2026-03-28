@@ -1,3 +1,5 @@
+import { readFile, readdir, stat } from 'fs/promises';
+import { join } from 'path';
 import { LLMMessage } from '@gossip/types';
 import { ILLMProvider } from './llm-client';
 import { AgentConfig, TaskEntry } from './types';
@@ -20,6 +22,7 @@ const VALID_ACTIONS = new Set(['agree', 'disagree', 'new']);
 export interface ConsensusEngineConfig {
   llm: ILLMProvider;
   registryGet: (agentId: string) => AgentConfig | undefined;
+  projectRoot?: string;
 }
 
 export class ConsensusEngine {
@@ -65,7 +68,7 @@ export class ConsensusEngine {
     const crossReviewEntries = await this.dispatchCrossReview(results);
     process.stderr.write(`[consensus] Cross-review complete: ${crossReviewEntries.length} entries\n`);
 
-    const report = this.synthesize(results, crossReviewEntries);
+    const report = await this.synthesize(results, crossReviewEntries);
     process.stderr.write(`[consensus] ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unique.length} unique, ${report.newFindings.length} new\n`);
 
     return report;
@@ -152,7 +155,7 @@ Return ONLY a JSON array:
   /**
    * Phase 3: Synthesize Phase 1 results and Phase 2 cross-review entries into a consensus report.
    */
-  synthesize(results: TaskEntry[], crossReviewEntries: CrossReviewEntry[]): ConsensusReport {
+  async synthesize(results: TaskEntry[], crossReviewEntries: CrossReviewEntry[]): Promise<ConsensusReport> {
     const signals: ConsensusSignal[] = [];
     const newFindings: ConsensusNewFinding[] = [];
     const successful = results.filter(r => r.status === 'completed' && r.result);
@@ -232,26 +235,33 @@ Return ONLY a JSON array:
         const matchKey = this.findMatchingFinding(findingMap, entry.peerAgentId, entry.finding);
         if (matchKey) {
           const f = findingMap.get(matchKey)!;
-          f.disputedBy.push({
-            agentId: entry.agentId,
-            reason: entry.evidence,
-            evidence: entry.evidence,
-          });
           f.confidences.push(entry.confidence);
 
-          const isHallucination = this.detectHallucination(entry.evidence);
+          const isKeywordHallucination = this.detectHallucination(entry.evidence);
+          const isCitationFabricated = !isKeywordHallucination
+            ? await this.verifyCitations(entry.evidence)
+            : false;
+          const isHallucination = isKeywordHallucination || isCitationFabricated;
+
           if (isHallucination) {
+            // Don't add fabricated disputes to the finding's disputedBy list —
+            // they should not influence the confirmed/disputed tagging.
             signals.push({
               type: 'consensus',
               taskId: agentTaskIds.get(entry.peerAgentId) ?? '',
               signal: 'hallucination_caught',
               agentId: entry.peerAgentId,
               counterpartId: entry.agentId,
-              outcome: 'incorrect',
+              outcome: isCitationFabricated ? 'fabricated_citation' : 'incorrect',
               evidence: entry.evidence,
               timestamp: now,
             });
           } else {
+            f.disputedBy.push({
+              agentId: entry.agentId,
+              reason: entry.evidence,
+              evidence: entry.evidence,
+            });
             signals.push({
               type: 'consensus',
               taskId: agentTaskIds.get(entry.agentId) ?? '',
@@ -343,6 +353,125 @@ Return ONLY a JSON array:
       signals,
       summary,
     };
+  }
+
+  /**
+   * Verify file:line citations in disagreement evidence against actual source code.
+   * Returns true if any citation is fabricated (file doesn't exist, line doesn't match claim).
+   */
+  async verifyCitations(evidence: string): Promise<boolean> {
+    if (!this.config.projectRoot) return false;
+
+    // Extract file:line patterns like "task-dispatcher.ts:146" or "consensus-engine.ts:113"
+    const citationPattern = /(?:[\w./-]+\/)?(\S+\.[a-z]{1,4}):(\d+)/g;
+    const citations: Array<{ file: string; line: number }> = [];
+    let match;
+    while ((match = citationPattern.exec(evidence)) !== null) {
+      citations.push({ file: match[0].split(':')[0], line: parseInt(match[2], 10) });
+    }
+
+    if (citations.length === 0) return false;
+
+    // Extract positive code-behavior claims tied to citations.
+    // Pattern: "[code/file] explicitly throws" or "at line X, throws" etc.
+    // Only match positive assertions, not negations like "not a guard" or "doesn't throw".
+    const claimPatterns = [
+      /(?:explicitly |directly )?(?:throws?|throw new)\b/,
+      /(?:explicitly |directly )?(?:checks?|validates?|verifies?)\b/,
+      /(?:explicitly |directly )?(?:returns?|calls?|invokes?)\b/,
+      /(?:explicitly |directly )?(?:prevents?|blocks?|rejects?)\b/,
+    ];
+
+    // Find claims near citation references (within ~50 chars of the file:line mention)
+    const lowerEvidence = evidence.toLowerCase();
+    const citationClaims: string[] = [];
+    for (const citation of citations) {
+      const citRef = `${citation.file}:${citation.line}`.toLowerCase();
+      const citIdx = lowerEvidence.indexOf(citRef);
+      if (citIdx === -1) continue;
+
+      // Look at surrounding context for positive claims (not preceded by "not", "no", "doesn't", "don't")
+      const contextStart = Math.max(0, citIdx - 30);
+      const contextEnd = Math.min(lowerEvidence.length, citIdx + citRef.length + 100);
+      const context = lowerEvidence.slice(contextStart, contextEnd);
+
+      for (const pattern of claimPatterns) {
+        const match = context.match(pattern);
+        if (match) {
+          // Skip if preceded by negation
+          const beforeMatch = context.slice(0, match.index);
+          if (/\b(not?|doesn'?t|don'?t|never|isn'?t|just a|without)\s*$/.test(beforeMatch)) continue;
+          citationClaims.push(match[0]);
+        }
+      }
+    }
+
+    for (const citation of citations) {
+      try {
+        // Resolve file path — try direct, then search common locations
+        const filePath = await this.resolveFilePath(citation.file);
+        if (!filePath) return true; // File doesn't exist — fabricated citation
+
+        const content = await readFile(filePath, 'utf-8');
+        const lines = content.split('\n');
+
+        if (citation.line > lines.length) return true; // Line number beyond file length
+
+        // Check a window around the cited line (±5 lines) for claimed behavior
+        const start = Math.max(0, citation.line - 6);
+        const end = Math.min(lines.length, citation.line + 5);
+        const window = lines.slice(start, end).join('\n').toLowerCase();
+
+        // If the agent makes positive claims about what the code does, verify those keywords exist nearby
+        if (citationClaims.length > 0) {
+          const hasAnyClaim = citationClaims.some(claim => window.includes(claim));
+          if (!hasAnyClaim) return true; // Claims behavior that doesn't exist at the cited location
+        }
+      } catch {
+        // File read failed — treat as fabricated
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Resolve a relative file reference to an absolute path within the project.
+   */
+  private async resolveFilePath(fileRef: string): Promise<string | null> {
+    const root = this.config.projectRoot!;
+    const fileName = fileRef.split('/').pop()!;
+
+    // Try the reference as-is (could be a full relative path)
+    try {
+      await stat(join(root, fileRef));
+      return join(root, fileRef);
+    } catch { /* not found at root */ }
+
+    // Recursive search in common source directories
+    const searchDirs = ['packages', 'src', 'apps'];
+    for (const dir of searchDirs) {
+      const found = await this.findFile(join(root, dir), fileName);
+      if (found) return found;
+    }
+
+    return null;
+  }
+
+  private async findFile(dir: string, fileName: string): Promise<string | null> {
+    try {
+      const entries = await readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name);
+        if (entry.isFile() && entry.name === fileName) return fullPath;
+        if (entry.isDirectory() && entry.name !== 'node_modules' && entry.name !== '.git') {
+          const found = await this.findFile(fullPath, fileName);
+          if (found) return found;
+        }
+      }
+    } catch { /* directory doesn't exist or not readable */ }
+    return null;
   }
 
   /**

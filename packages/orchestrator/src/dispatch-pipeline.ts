@@ -603,7 +603,7 @@ export class DispatchPipeline {
     let consensusReport: import('./consensus-types').ConsensusReport | undefined;
     if (options?.consensus && this.llm && results.filter(r => r.status === 'completed').length >= 2) {
       try {
-        const engine = new ConsensusEngine({ llm: this.llm, registryGet: this.registryGet });
+        const engine = new ConsensusEngine({ llm: this.llm, registryGet: this.registryGet, projectRoot: this.projectRoot });
         consensusReport = await engine.run(results);
         if (consensusReport.signals.length > 0) {
           const perfWriter = new PerformanceWriter(this.projectRoot);

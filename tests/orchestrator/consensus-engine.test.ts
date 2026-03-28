@@ -240,21 +240,21 @@ describe('ConsensusEngine', () => {
       createTaskEntry('agent-2', 'completed', '- Finding C is by agent 2'),
     ];
 
-    it('should correctly identify confirmed findings', () => {
+    it('should correctly identify confirmed findings', async () => {
       const crossReview: CrossReviewEntry[] = [
         { action: 'agree', agentId: 'agent-2', peerAgentId: 'agent-1', finding: 'Finding A from agent 1', evidence: 'I saw it too', confidence: 5 },
       ];
-      const report = engine.synthesize(results, crossReview);
+      const report = await engine.synthesize(results, crossReview);
       expect(report.confirmed.length).toBe(1);
       expect(report.confirmed[0].finding).toBe('Finding A from agent 1');
       expect(report.confirmed[0].confirmedBy).toEqual(['agent-2']);
     });
 
-    it('should emit unique_confirmed signal for confirmed unique findings', () => {
+    it('should emit unique_confirmed signal for confirmed unique findings', async () => {
       const crossReview: CrossReviewEntry[] = [
         { action: 'agree', agentId: 'agent-2', peerAgentId: 'agent-1', finding: 'Finding A from agent 1', evidence: 'Confirmed', confidence: 5 },
       ];
-      const report = engine.synthesize(results, crossReview);
+      const report = await engine.synthesize(results, crossReview);
       // Finding A was only found by agent-1 and confirmed by agent-2 → unique_confirmed
       const uniqueConfirmedSignals = report.signals.filter(s => s.signal === 'unique_confirmed');
       expect(uniqueConfirmedSignals.length).toBe(1);
@@ -264,34 +264,34 @@ describe('ConsensusEngine', () => {
       expect(agreementSignals.length).toBe(1);
     });
 
-    it('should emit unique_unconfirmed for findings with no peer interaction', () => {
-      const report = engine.synthesize(results, []);
+    it('should emit unique_unconfirmed for findings with no peer interaction', async () => {
+      const report = await engine.synthesize(results, []);
       const unconfirmedSignals = report.signals.filter(s => s.signal === 'unique_unconfirmed');
       expect(unconfirmedSignals.length).toBe(3); // all 3 findings unconfirmed
     });
 
-    it('should correctly identify disputed findings', () => {
+    it('should correctly identify disputed findings', async () => {
         const crossReview: CrossReviewEntry[] = [
           { action: 'disagree', agentId: 'agent-2', peerAgentId: 'agent-1', finding: 'Finding B is also here', evidence: 'That is not correct', confidence: 1 },
         ];
-        const report = engine.synthesize(results, crossReview);
+        const report = await engine.synthesize(results, crossReview);
         expect(report.disputed.length).toBe(1);
         expect(report.disputed[0].finding).toBe('Finding B is also here');
         expect(report.disputed[0].disputedBy[0].agentId).toBe('agent-2');
       });
   
-      it('should categorize all findings as unique when no cross-review entries are provided', () => {
-        const report = engine.synthesize(results, []);
+      it('should categorize all findings as unique when no cross-review entries are provided', async () => {
+        const report = await engine.synthesize(results, []);
         expect(report.unique.length).toBe(3); // 2 from agent-1, 1 from agent-2
         expect(report.confirmed.length).toBe(0);
         expect(report.disputed.length).toBe(0);
       });
   
-      it('should correctly handle "new" findings from cross-review', () => {
+      it('should correctly handle "new" findings from cross-review', async () => {
         const crossReview: CrossReviewEntry[] = [
           { action: 'new', agentId: 'agent-2', peerAgentId: '', finding: 'A totally new idea', evidence: 'It came to me', confidence: 4 },
         ];
-        const report = engine.synthesize(results, crossReview);
+        const report = await engine.synthesize(results, crossReview);
         expect(report.newFindings.length).toBe(1);
         expect(report.newFindings[0].finding).toBe('A totally new idea');
         expect(report.newFindings[0].agentId).toBe('agent-2');
@@ -378,7 +378,7 @@ describe('ConsensusEngine', () => {
       expect(summary.length).toBeLessThanOrEqual(3000);
     });
 
-    it('does not emit signals for unmatched agree entries', () => {
+    it('does not emit signals for unmatched agree entries', async () => {
       const results: TaskEntry[] = [
         { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed', result: '## Consensus Summary\n- Bug A', startedAt: 0 },
         { id: 't2', agentId: 'agent-b', task: 'review', status: 'completed', result: '## Consensus Summary\n- Bug B', startedAt: 0 },
@@ -388,12 +388,12 @@ describe('ConsensusEngine', () => {
         { action: 'agree', agentId: 'agent-b', peerAgentId: 'agent-a', finding: 'completely unrelated finding that matches nothing', evidence: 'confirmed', confidence: 5 },
       ];
 
-      const report = engine.synthesize(results, crossReviewEntries);
+      const report = await engine.synthesize(results, crossReviewEntries);
       // No agreement signal should be emitted since the finding didn't match
       expect(report.signals.filter(s => s.signal === 'agreement')).toHaveLength(0);
     });
 
-    it('does not emit signals for unmatched disagree entries', () => {
+    it('does not emit signals for unmatched disagree entries', async () => {
       const results: TaskEntry[] = [
         { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed', result: '## Consensus Summary\n- Bug A', startedAt: 0 },
         { id: 't2', agentId: 'agent-b', task: 'review', status: 'completed', result: '## Consensus Summary\n- Bug B', startedAt: 0 },
@@ -403,7 +403,7 @@ describe('ConsensusEngine', () => {
         { action: 'disagree', agentId: 'agent-b', peerAgentId: 'agent-a', finding: 'nonexistent finding xyz', evidence: 'this does not exist in codebase', confidence: 5 },
       ];
 
-      const report = engine.synthesize(results, crossReviewEntries);
+      const report = await engine.synthesize(results, crossReviewEntries);
       // No disagreement or hallucination signal since finding didn't match
       expect(report.signals.filter(s => s.signal === 'disagreement' || s.signal === 'hallucination_caught')).toHaveLength(0);
     });
