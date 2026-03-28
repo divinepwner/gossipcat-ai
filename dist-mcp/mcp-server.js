@@ -5675,6 +5675,118 @@ ${truncateStartAndEnd(result, 4e3)}`
         const response = await this.summaryLlm.generate(messages, { temperature: 0 });
         return (response.text || "").slice(0, 1500);
       }
+      /**
+       * Write a session summary to the _project virtual agent's memory.
+       * Dedicated method with higher output cap (3000 chars) and session-specific prompt.
+       * Falls back to raw data save if LLM fails.
+       */
+      async writeSessionSummary(data) {
+        const memDir = this.ensureDirs("_project");
+        const knowledgeDir = (0, import_path7.join)(memDir, "knowledge");
+        const now = /* @__PURE__ */ new Date();
+        const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        const filename = `${timestamp}-session.md`;
+        const today = now.toISOString().split("T")[0];
+        this.pruneProjectKnowledge(knowledgeDir);
+        const rawInput = [
+          data.gossip ? `## Task Summaries
+${data.gossip}` : "",
+          data.consensus ? `## Consensus Runs
+${data.consensus}` : "",
+          data.performance ? `## Agent Performance
+${data.performance}` : "",
+          data.gitLog ? `## Git Log
+${data.gitLog}` : "",
+          data.notes ? `## User Notes
+${data.notes}` : ""
+        ].filter(Boolean).join("\n\n");
+        let summaryBody;
+        let pinned = false;
+        if (this.summaryLlm) {
+          try {
+            const messages = [
+              {
+                role: "system",
+                content: `You are writing a project memory entry that will be loaded into the orchestrator's context at the start of the next session. This helps the orchestrator make better decisions about agent dispatch, task planning, and avoiding past mistakes.
+
+Write as a briefing for a new team lead taking over. Focus on:
+
+1. WHAT SHIPPED \u2014 concrete deliverables. Name features, cite file paths.
+2. WHAT FAILED AND WHY \u2014 approaches that didn't work. Format: "We tried X because Y. It failed because Z. The fix was W."
+3. AGENT OBSERVATIONS \u2014 which agents are reliable for what, who hallucinates, who finds things others miss.
+4. IN PROGRESS \u2014 specs in review, half-built features. Include file paths and what needs to happen next.
+5. USER PREFERENCES \u2014 how the user works (e.g., "always runs multi-agent review before merging").
+
+Rules:
+- Max 500 words. No preamble. Start with "## What shipped"
+- Cite file paths when referencing code or specs
+- Include specific numbers (commit count, finding count, test count)
+- Warnings > accomplishments \u2014 what NOT to do is more useful
+- If ANY section has a "never do this again" lesson, respond with PINNED:true on the first line, then the summary`
+              },
+              {
+                role: "user",
+                content: truncateStartAndEnd(rawInput, 6e3)
+              }
+            ];
+            const response = await this.summaryLlm.generate(messages, { temperature: 0 });
+            summaryBody = (response.text || "").slice(0, 3e3);
+            if (summaryBody.startsWith("PINNED:true")) {
+              pinned = true;
+              summaryBody = summaryBody.replace(/^PINNED:true\s*\n?/, "");
+            }
+          } catch {
+            summaryBody = rawInput.slice(0, 3e3);
+          }
+        } else {
+          summaryBody = rawInput.slice(0, 3e3);
+        }
+        const content = [
+          "---",
+          `name: Session ${today}`,
+          `description: Session summary`,
+          `importance: 0.95`,
+          pinned ? `pinned: true` : "",
+          `lastAccessed: ${today}`,
+          `accessCount: 0`,
+          "---",
+          "",
+          summaryBody
+        ].filter((l) => l !== "").join("\n");
+        (0, import_fs5.writeFileSync)((0, import_path7.join)(knowledgeDir, filename), content);
+        await this.writeTaskEntry("_project", {
+          taskId: `session-${timestamp}`,
+          task: `Session ${today}`,
+          skills: [],
+          scores: { relevance: 5, accuracy: 5, uniqueness: 5 }
+        });
+        this.rebuildIndex("_project");
+        return summaryBody;
+      }
+      /** Warmth-aware pruning for _project knowledge files (respects pinned) */
+      pruneProjectKnowledge(knowledgeDir) {
+        try {
+          const existing = (0, import_fs5.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
+          const MAX_KNOWLEDGE_FILES = 10;
+          if (existing.length < MAX_KNOWLEDGE_FILES) return;
+          const scored = existing.map((f) => {
+            const content = (0, import_fs5.readFileSync)((0, import_path7.join)(knowledgeDir, f), "utf-8");
+            const importance = parseFloat(content.match(/importance:\s*([\d.]+)/)?.[1] ?? "0.5");
+            const isPinned = /pinned:\s*true/i.test(content);
+            const ts = f.slice(0, 19).replace(/T/, "T").replace(/-(\d\d)-(\d\d)-/, ":$1:$2:");
+            const days = Math.max(0, (Date.now() - new Date(ts).getTime()) / 864e5);
+            const warmth = isPinned ? Infinity : importance * (1 / (1 + days / 30));
+            return { file: f, warmth, isPinned };
+          });
+          scored.sort((a, b) => a.warmth - b.warmth);
+          const toRemove = scored.slice(0, existing.length - MAX_KNOWLEDGE_FILES + 1);
+          for (const item of toRemove) {
+            if (item.isPinned) continue;
+            (0, import_fs5.unlinkSync)((0, import_path7.join)(knowledgeDir, item.file));
+          }
+        } catch {
+        }
+      }
       /** Extract structured knowledge from task + result without LLM calls */
       extractFacts(task, result) {
         const combined = `${task}
@@ -7561,6 +7673,8 @@ var init_dispatch_pipeline = __esm({
       dispatchDifferentiator = null;
       consensusJudge = null;
       skillIndex = null;
+      sessionStartTime = /* @__PURE__ */ new Date();
+      sessionConsensusHistory = [];
       taskProgressCallback = null;
       setTaskProgressCallback(cb) {
         this.taskProgressCallback = cb;
@@ -7587,6 +7701,13 @@ var init_dispatch_pipeline = __esm({
           log2(`SkillCatalog unavailable: ${err.message}`);
         }
         this.worktreeManager.pruneOrphans().catch((err) => log2(`Orphan cleanup failed: ${err.message}`));
+        try {
+          const gossipPath = (0, import_path16.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
+          (0, import_fs11.mkdirSync)((0, import_path16.dirname)(gossipPath), { recursive: true });
+          require("fs").writeFileSync(gossipPath, "");
+        } catch {
+        }
+        this.sessionStartTime = /* @__PURE__ */ new Date();
       }
       /** Build chain context string for a plan step (used by native agent bridge) */
       getChainContext(planId, step) {
@@ -8382,6 +8503,28 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
             } catch {
             }
           }
+          this.sessionConsensusHistory.push({
+            timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+            confirmed: consensusReport.confirmed.length,
+            disputed: consensusReport.disputed.length,
+            unverified: consensusReport.unverified.length,
+            unique: consensusReport.unique.length,
+            summary: consensusReport.summary.slice(0, 2e3)
+          });
+          if (this.memWriter && consensusReport.confirmed.length + consensusReport.disputed.length > 0) {
+            const agentList = results.filter((r) => r.status === "completed").map((r) => r.agentId).join(", ");
+            const topFindings = consensusReport.confirmed.slice(0, 3).map((f) => `- ${f.finding}`).join("\n");
+            const body = `Consensus run: ${results.length} agents (${agentList})
+${consensusReport.confirmed.length} confirmed, ${consensusReport.disputed.length} disputed, ${consensusReport.unverified.length} unverified
+
+Key findings:
+${topFindings}`;
+            this.memWriter.writeKnowledgeFromResult("_project", {
+              taskId: `consensus-${Date.now()}`,
+              task: `Consensus review by ${agentList}`,
+              result: body
+            }).catch((err) => log2(`Project consensus knowledge write failed: ${err.message}`));
+          }
           return consensusReport;
         } catch (err) {
           process.stderr.write(`[gossipcat] Consensus failed: ${err.message}
@@ -8426,6 +8569,15 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
        * Detect agents weak in categories where peers are strong.
        * Returns suggestions like: "sonnet-reviewer needs a skill in error_handling (score: 0.2, team median: 0.7)"
        */
+      getSessionConsensusHistory() {
+        return this.sessionConsensusHistory;
+      }
+      getSessionStartTime() {
+        return this.sessionStartTime;
+      }
+      getSessionGossip() {
+        return this.sessionGossip;
+      }
       getSkillGapSuggestions() {
         if (!this.competencyProfiler) return [];
         const profiles = this.competencyProfiler.getProfiles();
@@ -8465,6 +8617,12 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
             this.sessionGossip.push({ agentId, taskSummary: summary, timestamp: Date.now() });
             if (this.sessionGossip.length > _DispatchPipeline.MAX_SESSION_GOSSIP) {
               this.sessionGossip.shift();
+            }
+            try {
+              const gossipPath = (0, import_path16.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
+              (0, import_fs11.mkdirSync)((0, import_path16.dirname)(gossipPath), { recursive: true });
+              (0, import_fs11.appendFileSync)(gossipPath, JSON.stringify({ agentId, taskSummary: summary, timestamp: Date.now() }) + "\n");
+            } catch {
             }
           }
         } catch (err) {
@@ -9356,8 +9514,8 @@ Keep it SHORT \u2014 under 30 lines. This is a working document, not a design do
         ]);
         const specContent = response.text || "";
         try {
-          const { mkdirSync: mkdirSync12, writeFileSync: writeFS } = require("fs");
-          mkdirSync12((0, import_path17.join)(this.projectRoot, ".gossip"), { recursive: true });
+          const { mkdirSync: mkdirSync13, writeFileSync: writeFS } = require("fs");
+          mkdirSync13((0, import_path17.join)(this.projectRoot, ".gossip"), { recursive: true });
           writeFS(specPath, specContent, "utf-8");
         } catch (err) {
           return { text: `Spec generated but failed to save: ${err.message}
@@ -10621,6 +10779,15 @@ message: Your question?
       setSummaryLlm(llm) {
         this.pipeline.setSummaryLlm(llm);
       }
+      getSessionConsensusHistory() {
+        return this.pipeline.getSessionConsensusHistory();
+      }
+      getSessionStartTime() {
+        return this.pipeline.getSessionStartTime();
+      }
+      getSessionGossip() {
+        return this.pipeline.getSessionGossip();
+      }
       getSkillIndex() {
         return this.pipeline.getSkillIndex();
       }
@@ -11248,7 +11415,7 @@ var init_skill_index = __esm({
     import_fs18 = require("fs");
     import_path23 = require("path");
     init_skill_name();
-    DANGEROUS_KEYS = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
+    DANGEROUS_KEYS = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype", "_project"]);
     SkillIndex = class {
       data = {};
       filePath;
@@ -11864,12 +12031,18 @@ To auto-allow writes, add to \`.claude/settings.local.json\`:
           }
           return line;
         }).join("\n\n");
+        const sessionContext = this.readProjectMemory();
+        const sessionSection = sessionContext ? `
+## Session Context
+
+${sessionContext}
+` : "";
         return `# Gossipcat \u2014 Multi-Agent Orchestration
 
 ## Your Team
 
 ${teamSection}
-
+${sessionSection}
 ## Tools
 
 | Tool | Description |
@@ -11959,6 +12132,37 @@ Agent memory is auto-managed:
 - **Native Claude Agent tool**: Bypasses gossipcat pipeline. Manually read .gossip/agents/<id>/memory/MEMORY.md and include in prompt. Write task entry to tasks.jsonl after completion.
 
 Skills are auto-injected from agent config. Project-wide skills in .gossip/skills/.`;
+      }
+      /**
+       * Read _project session memory using warmth-only selection (no relevance filtering).
+       * Returns the body content of the top knowledge files, capped at 2500 chars.
+       */
+      readProjectMemory() {
+        const knowledgeDir = (0, import_path25.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "knowledge");
+        if (!(0, import_fs20.existsSync)(knowledgeDir)) return null;
+        const files = (0, import_fs20.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
+        if (files.length === 0) return null;
+        const scored = files.map((f) => {
+          try {
+            const content = (0, import_fs20.readFileSync)((0, import_path25.join)(knowledgeDir, f), "utf-8");
+            const importance = parseFloat(content.match(/importance:\s*([\d.]+)/)?.[1] ?? "0.5");
+            const isPinned = /pinned:\s*true/i.test(content);
+            const tsPart = f.slice(0, 19);
+            const isoApprox = tsPart.replace(/T(\d\d)-(\d\d)-(\d\d)/, "T$1:$2:$3");
+            const days = Math.max(0, (Date.now() - new Date(isoApprox).getTime()) / 864e5);
+            const warmth = isPinned ? Infinity : importance * (1 / (1 + days / 30));
+            const bodyStart = content.indexOf("---", 4);
+            const body = bodyStart !== -1 ? content.slice(bodyStart + 3).trim() : "";
+            return { warmth, body };
+          } catch {
+            return null;
+          }
+        }).filter((s) => s !== null && s.body.length > 0);
+        if (scored.length === 0) return null;
+        scored.sort((a, b) => b.warmth - a.warmth);
+        const top = scored.slice(0, 3);
+        const combined = top.map((s) => s.body).join("\n\n---\n\n");
+        return combined.slice(0, 2500) || null;
       }
     };
   }
@@ -27731,9 +27935,9 @@ server.tool(
     const { BootstrapGenerator: BootstrapGenerator2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
     const generator = new BootstrapGenerator2(process.cwd());
     const result = generator.generate();
-    const { writeFileSync: writeFileSync12, mkdirSync: mkdirSync12 } = require("fs");
+    const { writeFileSync: writeFileSync12, mkdirSync: mkdirSync13 } = require("fs");
     const { join: join25 } = require("path");
-    mkdirSync12(join25(process.cwd(), ".gossip"), { recursive: true });
+    mkdirSync13(join25(process.cwd(), ".gossip"), { recursive: true });
     writeFileSync12(join25(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
     return { content: [{ type: "text", text: result.prompt }] };
   }
@@ -27762,7 +27966,7 @@ server.tool(
     })).describe("Array of agents to create")
   },
   async ({ main_provider, main_model, agents }) => {
-    const { writeFileSync: writeFileSync12, mkdirSync: mkdirSync12 } = require("fs");
+    const { writeFileSync: writeFileSync12, mkdirSync: mkdirSync13 } = require("fs");
     const { join: join25 } = require("path");
     const root = process.cwd();
     const CLAUDE_MODEL_MAP2 = {
@@ -27774,7 +27978,12 @@ server.tool(
     const nativeCreated = [];
     const customCreated = [];
     const errors = [];
+    const RESERVED_IDS = /* @__PURE__ */ new Set(["_project", "__proto__", "constructor", "prototype"]);
     for (const agent of agents) {
+      if (RESERVED_IDS.has(agent.id)) {
+        errors.push(`${agent.id}: reserved ID, cannot be used for agents`);
+        continue;
+      }
       if (agent.type === "native") {
         const modelTier = agent.model || "sonnet";
         const mapped = CLAUDE_MODEL_MAP2[modelTier];
@@ -27797,7 +28006,7 @@ server.tool(
           body
         ].join("\n");
         const agentsDir = join25(root, ".claude", "agents");
-        mkdirSync12(agentsDir, { recursive: true });
+        mkdirSync13(agentsDir, { recursive: true });
         writeFileSync12(join25(agentsDir, `${agent.id}.md`), md, "utf-8");
         nativeCreated.push(agent.id);
         configAgents[agent.id] = {
@@ -27825,7 +28034,7 @@ server.tool(
         customCreated.push(agent.id);
         if (agent.instructions) {
           const instrDir = join25(root, ".gossip", "agents", agent.id);
-          mkdirSync12(instrDir, { recursive: true });
+          mkdirSync13(instrDir, { recursive: true });
           writeFileSync12(join25(instrDir, "instructions.md"), agent.instructions, "utf-8");
         }
       }
@@ -27840,12 +28049,12 @@ server.tool(
     } catch (err) {
       return { content: [{ type: "text", text: `Invalid config: ${err.message}` }] };
     }
-    mkdirSync12(join25(root, ".gossip"), { recursive: true });
+    mkdirSync13(join25(root, ".gossip"), { recursive: true });
     writeFileSync12(join25(root, ".gossip", "config.json"), JSON.stringify(config2, null, 2));
     const agentList = Object.entries(configAgents).map(([id, a]) => `- ${id}: ${a.provider}/${a.model} (${a.preset || "custom"})`).join("\n");
     const rulesDir = join25(root, env.rulesDir);
     const rulesFile = join25(root, env.rulesFile);
-    mkdirSync12(rulesDir, { recursive: true });
+    mkdirSync13(rulesDir, { recursive: true });
     writeFileSync12(rulesFile, `# Gossipcat \u2014 Multi-Agent Orchestration
 
 This project uses gossipcat for multi-agent orchestration via MCP.
@@ -28278,11 +28487,11 @@ server.tool(
     if (findings.length === 0) {
       return { content: [{ type: "text", text: "No findings to log." }] };
     }
-    const { appendFileSync: appendFileSync6, mkdirSync: mkdirSync12, existsSync: existsSync21 } = require("fs");
+    const { appendFileSync: appendFileSync7, mkdirSync: mkdirSync13, existsSync: existsSync21 } = require("fs");
     const { join: join25 } = require("path");
     const root = process.cwd();
     const dir = join25(root, ".gossip");
-    if (!existsSync21(dir)) mkdirSync12(dir, { recursive: true });
+    if (!existsSync21(dir)) mkdirSync13(dir, { recursive: true });
     const filePath = join25(dir, "implementation-findings.jsonl");
     const timestamp = (/* @__PURE__ */ new Date()).toISOString();
     const data = findings.map((f) => JSON.stringify({
@@ -28296,7 +28505,7 @@ server.tool(
       line: f.line ?? null,
       taskId: f.task_id || null
     })).join("\n") + "\n";
-    appendFileSync6(filePath, data);
+    appendFileSync7(filePath, data);
     const byAgent = /* @__PURE__ */ new Map();
     for (const f of findings) {
       const entry = byAgent.get(f.implementer_id) || { total: 0, bySeverity: {} };
@@ -28395,10 +28604,10 @@ server.tool(
     const { SkillGapTracker: SkillGapTracker2, parseSkillFrontmatter: parseSkillFrontmatter2, normalizeSkillName: normalizeSkillName2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
     const tracker = new SkillGapTracker2(process.cwd());
     if (skills && skills.length > 0) {
-      const { writeFileSync: writeFileSync12, mkdirSync: mkdirSync12, existsSync: existsSync21, readFileSync: readFileSync23 } = require("fs");
+      const { writeFileSync: writeFileSync12, mkdirSync: mkdirSync13, existsSync: existsSync21, readFileSync: readFileSync23 } = require("fs");
       const { join: join25 } = require("path");
       const dir = join25(process.cwd(), ".gossip", "skills");
-      mkdirSync12(dir, { recursive: true });
+      mkdirSync13(dir, { recursive: true });
       const results = [];
       for (const skill of skills) {
         const name = normalizeSkillName2(skill.name);
@@ -28557,6 +28766,85 @@ server.tool(
   }
 );
 server.tool(
+  "gossip_session_save",
+  "Save a cognitive session summary to project memory. The next session will load this context via gossip_bootstrap(). Call before ending your session to preserve what was learned.",
+  {
+    notes: external_exports.string().optional().describe('Optional freeform user context (e.g., "focusing on security hardening")')
+  },
+  async ({ notes }) => {
+    await boot();
+    let gossipText = "";
+    try {
+      const { existsSync: ex, readFileSync: rf } = require("fs");
+      const { join: j } = require("path");
+      const gossipPath = j(process.cwd(), ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
+      if (ex(gossipPath)) {
+        const lines = rf(gossipPath, "utf-8").trim().split("\n").filter(Boolean);
+        gossipText = lines.map((l) => {
+          try {
+            const e = JSON.parse(l);
+            return `- ${e.agentId}: ${e.taskSummary}`;
+          } catch {
+            return "";
+          }
+        }).filter(Boolean).join("\n");
+      }
+    } catch {
+    }
+    if (!gossipText) {
+      const memGossip = mainAgent.getSessionGossip();
+      if (memGossip.length > 0) {
+        gossipText = memGossip.map((g) => `- ${g.agentId}: ${g.taskSummary}`).join("\n");
+      }
+    }
+    const consensusHistory = mainAgent.getSessionConsensusHistory();
+    const consensusText = consensusHistory.length > 0 ? consensusHistory.map((c) => `- ${c.timestamp.split("T")[0]}: ${c.confirmed} confirmed, ${c.disputed} disputed, ${c.unverified} unverified`).join("\n") : "";
+    let performanceText = "";
+    try {
+      const { PerformanceReader: PerformanceReader2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
+      const reader = new PerformanceReader2(process.cwd());
+      const scores = reader.getScores();
+      performanceText = Array.from(scores.entries()).map(
+        ([id, s]) => `- ${id}: acc=${s.accuracy.toFixed(2)} uniq=${s.uniqueness.toFixed(2)} signals=${s.totalSignals}`
+      ).join("\n");
+    } catch {
+    }
+    let gitLog = "";
+    try {
+      const since = mainAgent.getSessionStartTime().toISOString();
+      gitLog = require("child_process").execSync(
+        `git log --oneline --max-count=50 --since="${since}"`,
+        { cwd: process.cwd(), encoding: "utf-8" }
+      ).trim();
+    } catch {
+    }
+    const { MemoryWriter: MemoryWriter2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
+    const writer = new MemoryWriter2(process.cwd());
+    try {
+      if (mainAgent.getLLM()) writer.setSummaryLlm(mainAgent.getLLM());
+    } catch {
+    }
+    const summary = await writer.writeSessionSummary({
+      gossip: gossipText,
+      consensus: consensusText,
+      performance: performanceText,
+      gitLog,
+      notes
+    });
+    try {
+      const { writeFileSync: wf } = require("fs");
+      const { join: j } = require("path");
+      wf(j(process.cwd(), ".gossip", "agents", "_project", "memory", "session-gossip.jsonl"), "");
+    } catch {
+    }
+    let output = `Session saved to .gossip/agents/_project/memory/
+
+${summary}`;
+    output += "\n\n---\nNext session: gossip_bootstrap() will load this context automatically.";
+    return { content: [{ type: "text", text: output }] };
+  }
+);
+server.tool(
   "gossip_tools",
   "List all available gossipcat MCP tools with descriptions. Call after /mcp reconnect to discover new tools.",
   {},
@@ -28581,6 +28869,7 @@ server.tool(
       { name: "gossip_findings", desc: "View implementation findings per agent" },
       { name: "gossip_build_skills", desc: "Build skill files from agent gap suggestions" },
       { name: "gossip_develop_skill", desc: "Generate agent-specific skill from ATI competency data" },
+      { name: "gossip_session_save", desc: "Save cognitive session summary for next session context" },
       { name: "gossip_skill_index", desc: "Show per-agent skill slots (enabled/disabled/version)" },
       { name: "gossip_skill_bind", desc: "Bind/enable/disable a skill slot on an agent" },
       { name: "gossip_skill_unbind", desc: "Remove a skill slot from an agent" },

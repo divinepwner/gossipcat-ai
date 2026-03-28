@@ -231,6 +231,9 @@ export class MainAgent {
   getSkillGapSuggestions(): string[] { return this.pipeline.getSkillGapSuggestions(); }
   setSkillIndex(index: any): void { this.pipeline.setSkillIndex(index); }
   setSummaryLlm(llm: any): void { this.pipeline.setSummaryLlm(llm); }
+  getSessionConsensusHistory() { return this.pipeline.getSessionConsensusHistory(); }
+  getSessionStartTime() { return this.pipeline.getSessionStartTime(); }
+  getSessionGossip() { return this.pipeline.getSessionGossip(); }
   getSkillIndex(): any { return this.pipeline.getSkillIndex(); }
 
   /** Health check for active tasks — diagnostics for "is it working?" */

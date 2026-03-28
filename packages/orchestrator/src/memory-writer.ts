@@ -161,6 +161,142 @@ Rules:
     return (response.text || '').slice(0, 1500);
   }
 
+  /**
+   * Write a session summary to the _project virtual agent's memory.
+   * Dedicated method with higher output cap (3000 chars) and session-specific prompt.
+   * Falls back to raw data save if LLM fails.
+   */
+  async writeSessionSummary(data: {
+    gossip: string;
+    consensus: string;
+    performance: string;
+    gitLog: string;
+    notes?: string;
+  }): Promise<string> {
+    const memDir = this.ensureDirs('_project');
+    const knowledgeDir = join(memDir, 'knowledge');
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `${timestamp}-session.md`;
+    const today = now.toISOString().split('T')[0];
+
+    // Prune knowledge files (warmth-aware for _project)
+    this.pruneProjectKnowledge(knowledgeDir);
+
+    // Assemble raw data for LLM input
+    const rawInput = [
+      data.gossip ? `## Task Summaries\n${data.gossip}` : '',
+      data.consensus ? `## Consensus Runs\n${data.consensus}` : '',
+      data.performance ? `## Agent Performance\n${data.performance}` : '',
+      data.gitLog ? `## Git Log\n${data.gitLog}` : '',
+      data.notes ? `## User Notes\n${data.notes}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    let summaryBody: string;
+    let pinned = false;
+
+    if (this.summaryLlm) {
+      try {
+        const messages: LLMMessage[] = [
+          {
+            role: 'system',
+            content: `You are writing a project memory entry that will be loaded into the orchestrator's context at the start of the next session. This helps the orchestrator make better decisions about agent dispatch, task planning, and avoiding past mistakes.
+
+Write as a briefing for a new team lead taking over. Focus on:
+
+1. WHAT SHIPPED — concrete deliverables. Name features, cite file paths.
+2. WHAT FAILED AND WHY — approaches that didn't work. Format: "We tried X because Y. It failed because Z. The fix was W."
+3. AGENT OBSERVATIONS — which agents are reliable for what, who hallucinates, who finds things others miss.
+4. IN PROGRESS — specs in review, half-built features. Include file paths and what needs to happen next.
+5. USER PREFERENCES — how the user works (e.g., "always runs multi-agent review before merging").
+
+Rules:
+- Max 500 words. No preamble. Start with "## What shipped"
+- Cite file paths when referencing code or specs
+- Include specific numbers (commit count, finding count, test count)
+- Warnings > accomplishments — what NOT to do is more useful
+- If ANY section has a "never do this again" lesson, respond with PINNED:true on the first line, then the summary`,
+          },
+          {
+            role: 'user',
+            content: truncateStartAndEnd(rawInput, 6000),
+          },
+        ];
+
+        const response = await this.summaryLlm.generate(messages, { temperature: 0 });
+        summaryBody = (response.text || '').slice(0, 3000);
+
+        // Check if LLM flagged as pinned
+        if (summaryBody.startsWith('PINNED:true')) {
+          pinned = true;
+          summaryBody = summaryBody.replace(/^PINNED:true\s*\n?/, '');
+        }
+      } catch {
+        // Fallback: save raw data as structured markdown
+        summaryBody = rawInput.slice(0, 3000);
+      }
+    } else {
+      // No LLM available — save raw data
+      summaryBody = rawInput.slice(0, 3000);
+    }
+
+    const content = [
+      '---',
+      `name: Session ${today}`,
+      `description: Session summary`,
+      `importance: 0.95`,
+      pinned ? `pinned: true` : '',
+      `lastAccessed: ${today}`,
+      `accessCount: 0`,
+      '---',
+      '',
+      summaryBody,
+    ].filter(l => l !== '').join('\n');
+
+    writeFileSync(join(knowledgeDir, filename), content);
+
+    // Write task entry for session tracking
+    await this.writeTaskEntry('_project', {
+      taskId: `session-${timestamp}`,
+      task: `Session ${today}`,
+      skills: [],
+      scores: { relevance: 5, accuracy: 5, uniqueness: 5 },
+    });
+
+    this.rebuildIndex('_project');
+    return summaryBody;
+  }
+
+  /** Warmth-aware pruning for _project knowledge files (respects pinned) */
+  private pruneProjectKnowledge(knowledgeDir: string): void {
+    try {
+      const existing = readdirSync(knowledgeDir).filter(f => f.endsWith('.md')).sort();
+      const MAX_KNOWLEDGE_FILES = 10;
+      if (existing.length < MAX_KNOWLEDGE_FILES) return;
+
+      // Score each file by warmth, skip pinned
+      const scored = existing.map(f => {
+        const content = readFileSync(join(knowledgeDir, f), 'utf-8');
+        const importance = parseFloat(content.match(/importance:\s*([\d.]+)/)?.[1] ?? '0.5');
+        const isPinned = /pinned:\s*true/i.test(content);
+        // Approximate timestamp from filename (YYYY-MM-DDTHH-MM-SS)
+        const ts = f.slice(0, 19).replace(/T/, 'T').replace(/-(\d\d)-(\d\d)-/, ':$1:$2:');
+        const days = Math.max(0, (Date.now() - new Date(ts).getTime()) / 86400000);
+        const warmth = isPinned ? Infinity : importance * (1 / (1 + days / 30));
+        return { file: f, warmth, isPinned };
+      });
+
+      scored.sort((a, b) => a.warmth - b.warmth);
+
+      // Remove lowest-warmth files until we're under the cap
+      const toRemove = scored.slice(0, existing.length - MAX_KNOWLEDGE_FILES + 1);
+      for (const item of toRemove) {
+        if (item.isPinned) continue; // never delete pinned
+        unlinkSync(join(knowledgeDir, item.file));
+      }
+    } catch { /* best-effort */ }
+  }
+
   /** Extract structured knowledge from task + result without LLM calls */
   private extractFacts(task: string, result: string): { description: string; importance: number; body: string; metadata: string } | null {
     const combined = `${task}\n${result}`;

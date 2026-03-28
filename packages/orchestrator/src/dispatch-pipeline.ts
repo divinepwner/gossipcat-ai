@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
-import { readFileSync } from 'fs';
-import { resolve as resolvePath, join } from 'path';
+import { readFileSync, appendFileSync, mkdirSync } from 'fs';
+import { resolve as resolvePath, join, dirname } from 'path';
 import { AgentConfig, DispatchOptions, TaskEntry, TaskExecutionResult, SessionGossipEntry, PlanState } from './types';
 import { ILLMProvider } from './llm-client';
 import { LLMMessage } from '@gossip/types';
@@ -85,6 +85,8 @@ export class DispatchPipeline {
   private dispatchDifferentiator: DispatchDifferentiator | null = null;
   private consensusJudge: IConsensusJudge | null = null;
   private skillIndex: SkillIndex | null = null;
+  private sessionStartTime: Date = new Date();
+  private sessionConsensusHistory: Array<{ timestamp: string; confirmed: number; disputed: number; unverified: number; unique: number; summary: string }> = [];
 
   private taskProgressCallback: ((taskId: string, event: { toolCalls: number; inputTokens: number; outputTokens: number; currentTool: string; turn: number }) => void) | null = null;
 
@@ -114,6 +116,16 @@ export class DispatchPipeline {
 
     // Clean up orphaned worktrees from previous runs
     this.worktreeManager.pruneOrphans().catch(err => log(`Orphan cleanup failed: ${(err as Error).message}`));
+
+    // Clear session gossip file on boot (new session)
+    try {
+      const gossipPath = join(config.projectRoot, '.gossip', 'agents', '_project', 'memory', 'session-gossip.jsonl');
+      mkdirSync(dirname(gossipPath), { recursive: true });
+      require('fs').writeFileSync(gossipPath, '');
+    } catch { /* best-effort */ }
+
+    // Track session start time for git log range
+    this.sessionStartTime = new Date();
   }
 
   /** Build chain context string for a plan step (used by native agent bridge) */
@@ -978,6 +990,28 @@ export class DispatchPipeline {
         } catch { /* best-effort cross-agent learning */ }
       }
 
+      // Cache consensus for session save + write project knowledge (fire-and-forget)
+      this.sessionConsensusHistory.push({
+        timestamp: new Date().toISOString(),
+        confirmed: consensusReport.confirmed.length,
+        disputed: consensusReport.disputed.length,
+        unverified: consensusReport.unverified.length,
+        unique: consensusReport.unique.length,
+        summary: consensusReport.summary.slice(0, 2000),
+      });
+
+      // Auto-write consensus knowledge to _project (fire-and-forget)
+      if (this.memWriter && consensusReport.confirmed.length + consensusReport.disputed.length > 0) {
+        const agentList = results.filter(r => r.status === 'completed').map(r => r.agentId).join(', ');
+        const topFindings = consensusReport.confirmed.slice(0, 3).map(f => `- ${f.finding}`).join('\n');
+        const body = `Consensus run: ${results.length} agents (${agentList})\n${consensusReport.confirmed.length} confirmed, ${consensusReport.disputed.length} disputed, ${consensusReport.unverified.length} unverified\n\nKey findings:\n${topFindings}`;
+        this.memWriter.writeKnowledgeFromResult('_project', {
+          taskId: `consensus-${Date.now()}`,
+          task: `Consensus review by ${agentList}`,
+          result: body,
+        }).catch(err => log(`Project consensus knowledge write failed: ${(err as Error).message}`));
+      }
+
       return consensusReport;
     } catch (err) {
       process.stderr.write(`[gossipcat] Consensus failed: ${(err as Error).message}\n`);
@@ -1030,6 +1064,10 @@ export class DispatchPipeline {
    * Detect agents weak in categories where peers are strong.
    * Returns suggestions like: "sonnet-reviewer needs a skill in error_handling (score: 0.2, team median: 0.7)"
    */
+  getSessionConsensusHistory() { return this.sessionConsensusHistory; }
+  getSessionStartTime() { return this.sessionStartTime; }
+  getSessionGossip() { return this.sessionGossip; }
+
   getSkillGapSuggestions(): string[] {
     if (!this.competencyProfiler) return [];
 
@@ -1077,6 +1115,12 @@ export class DispatchPipeline {
         if (this.sessionGossip.length > DispatchPipeline.MAX_SESSION_GOSSIP) {
           this.sessionGossip.shift();
         }
+        // Persist to disk for crash safety — gossip_session_save reads this file
+        try {
+          const gossipPath = join(this.projectRoot, '.gossip', 'agents', '_project', 'memory', 'session-gossip.jsonl');
+          mkdirSync(dirname(gossipPath), { recursive: true });
+          appendFileSync(gossipPath, JSON.stringify({ agentId, taskSummary: summary, timestamp: Date.now() }) + '\n');
+        } catch { /* best-effort disk persistence */ }
       }
     } catch (err) {
       log(`Session gossip summarization failed for ${agentId}: ${(err as Error).message}`);

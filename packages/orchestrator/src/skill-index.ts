@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { normalizeSkillName } from './skill-name';
 
-const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype', '_project']);
 
 /** A single skill binding for an agent — like a smart contract storage slot */
 export interface SkillSlot {

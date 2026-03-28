@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, copyFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, mkdirSync, copyFileSync } from 'fs';
 import { resolve, join } from 'path';
 
 export interface BootstrapResult {
@@ -194,12 +194,15 @@ To auto-allow writes, add to \`.claude/settings.local.json\`:
       return line;
     }).join('\n\n');
 
+    const sessionContext = this.readProjectMemory();
+    const sessionSection = sessionContext ? `\n## Session Context\n\n${sessionContext}\n` : '';
+
     return `# Gossipcat — Multi-Agent Orchestration
 
 ## Your Team
 
 ${teamSection}
-
+${sessionSection}
 ## Tools
 
 | Tool | Description |
@@ -289,5 +292,43 @@ Agent memory is auto-managed:
 - **Native Claude Agent tool**: Bypasses gossipcat pipeline. Manually read .gossip/agents/<id>/memory/MEMORY.md and include in prompt. Write task entry to tasks.jsonl after completion.
 
 Skills are auto-injected from agent config. Project-wide skills in .gossip/skills/.`;
+  }
+
+  /**
+   * Read _project session memory using warmth-only selection (no relevance filtering).
+   * Returns the body content of the top knowledge files, capped at 2500 chars.
+   */
+  private readProjectMemory(): string | null {
+    const knowledgeDir = join(this.projectRoot, '.gossip', 'agents', '_project', 'memory', 'knowledge');
+    if (!existsSync(knowledgeDir)) return null;
+
+    const files = readdirSync(knowledgeDir).filter(f => f.endsWith('.md'));
+    if (files.length === 0) return null;
+
+    // Score by warmth (importance × recency decay). Pinned files get warmth = Infinity.
+    const scored = files.map(f => {
+      try {
+        const content = readFileSync(join(knowledgeDir, f), 'utf-8');
+        const importance = parseFloat(content.match(/importance:\s*([\d.]+)/)?.[1] ?? '0.5');
+        const isPinned = /pinned:\s*true/i.test(content);
+        // Extract timestamp from filename: 2026-03-29T22-32-45
+        const tsPart = f.slice(0, 19);
+        const isoApprox = tsPart.replace(/T(\d\d)-(\d\d)-(\d\d)/, 'T$1:$2:$3');
+        const days = Math.max(0, (Date.now() - new Date(isoApprox).getTime()) / 86400000);
+        const warmth = isPinned ? Infinity : importance * (1 / (1 + days / 30));
+
+        // Extract body (everything after second ---)
+        const bodyStart = content.indexOf('---', 4);
+        const body = bodyStart !== -1 ? content.slice(bodyStart + 3).trim() : '';
+        return { warmth, body };
+      } catch { return null; }
+    }).filter((s): s is { warmth: number; body: string } => s !== null && s.body.length > 0);
+
+    if (scored.length === 0) return null;
+
+    scored.sort((a, b) => b.warmth - a.warmth);
+    const top = scored.slice(0, 3);
+    const combined = top.map(s => s.body).join('\n\n---\n\n');
+    return combined.slice(0, 2500) || null;
   }
 }

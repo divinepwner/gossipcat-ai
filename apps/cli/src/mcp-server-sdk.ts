@@ -1271,7 +1271,12 @@ server.tool(
     const customCreated: string[] = [];
     const errors: string[] = [];
 
+    const RESERVED_IDS = new Set(['_project', '__proto__', 'constructor', 'prototype']);
     for (const agent of agents) {
+      if (RESERVED_IDS.has(agent.id)) {
+        errors.push(`${agent.id}: reserved ID, cannot be used for agents`);
+        continue;
+      }
       if (agent.type === 'native') {
         // Create .claude/agents/<id>.md
         const modelTier = agent.model || 'sonnet';
@@ -2132,6 +2137,87 @@ server.tool(
 );
 
 // ── Tool: list available gossipcat tools ──────────────────────────────────
+// ── Session Memory: save session context for next session ────────────────
+server.tool(
+  'gossip_session_save',
+  'Save a cognitive session summary to project memory. The next session will load this context via gossip_bootstrap(). Call before ending your session to preserve what was learned.',
+  {
+    notes: z.string().optional().describe('Optional freeform user context (e.g., "focusing on security hardening")'),
+  },
+  async ({ notes }) => {
+    await boot();
+
+    // 1. Gather session gossip from disk (crash-safe)
+    let gossipText = '';
+    try {
+      const { existsSync: ex, readFileSync: rf } = require('fs');
+      const { join: j } = require('path');
+      const gossipPath = j(process.cwd(), '.gossip', 'agents', '_project', 'memory', 'session-gossip.jsonl');
+      if (ex(gossipPath)) {
+        const lines = rf(gossipPath, 'utf-8').trim().split('\n').filter(Boolean);
+        gossipText = lines.map((l: string) => {
+          try { const e = JSON.parse(l); return `- ${e.agentId}: ${e.taskSummary}`; } catch { return ''; }
+        }).filter(Boolean).join('\n');
+      }
+    } catch { /* no gossip */ }
+
+    if (!gossipText) {
+      const memGossip = mainAgent.getSessionGossip();
+      if (memGossip.length > 0) {
+        gossipText = memGossip.map((g: any) => `- ${g.agentId}: ${g.taskSummary}`).join('\n');
+      }
+    }
+
+    // 2. Consensus history
+    const consensusHistory = mainAgent.getSessionConsensusHistory();
+    const consensusText = consensusHistory.length > 0
+      ? consensusHistory.map((c: any) => `- ${c.timestamp.split('T')[0]}: ${c.confirmed} confirmed, ${c.disputed} disputed, ${c.unverified} unverified`).join('\n')
+      : '';
+
+    // 3. Agent performance
+    let performanceText = '';
+    try {
+      const { PerformanceReader } = await import('@gossip/orchestrator');
+      const reader = new PerformanceReader(process.cwd());
+      const scores = reader.getScores();
+      performanceText = Array.from(scores.entries()).map(([id, s]: [string, any]) =>
+        `- ${id}: acc=${s.accuracy.toFixed(2)} uniq=${s.uniqueness.toFixed(2)} signals=${s.totalSignals}`
+      ).join('\n');
+    } catch { /* no perf data */ }
+
+    // 4. Git log since session start
+    let gitLog = '';
+    try {
+      const since = mainAgent.getSessionStartTime().toISOString();
+      gitLog = require('child_process').execSync(
+        `git log --oneline --max-count=50 --since="${since}"`,
+        { cwd: process.cwd(), encoding: 'utf-8' }
+      ).trim();
+    } catch { /* no git */ }
+
+    // 5. Write session summary
+    const { MemoryWriter } = await import('@gossip/orchestrator');
+    const writer = new MemoryWriter(process.cwd());
+    try { if (mainAgent.getLLM()) writer.setSummaryLlm(mainAgent.getLLM()); } catch {}
+
+    const summary = await writer.writeSessionSummary({
+      gossip: gossipText, consensus: consensusText,
+      performance: performanceText, gitLog, notes,
+    });
+
+    // 6. Clear consumed gossip
+    try {
+      const { writeFileSync: wf } = require('fs');
+      const { join: j } = require('path');
+      wf(j(process.cwd(), '.gossip', 'agents', '_project', 'memory', 'session-gossip.jsonl'), '');
+    } catch {}
+
+    let output = `Session saved to .gossip/agents/_project/memory/\n\n${summary}`;
+    output += '\n\n---\nNext session: gossip_bootstrap() will load this context automatically.';
+    return { content: [{ type: 'text' as const, text: output }] };
+  }
+);
+
 server.tool(
   'gossip_tools',
   'List all available gossipcat MCP tools with descriptions. Call after /mcp reconnect to discover new tools.',
@@ -2157,6 +2243,7 @@ server.tool(
       { name: 'gossip_findings', desc: 'View implementation findings per agent' },
       { name: 'gossip_build_skills', desc: 'Build skill files from agent gap suggestions' },
       { name: 'gossip_develop_skill', desc: 'Generate agent-specific skill from ATI competency data' },
+      { name: 'gossip_session_save', desc: 'Save cognitive session summary for next session context' },
       { name: 'gossip_skill_index', desc: 'Show per-agent skill slots (enabled/disabled/version)' },
       { name: 'gossip_skill_bind', desc: 'Bind/enable/disable a skill slot on an agent' },
       { name: 'gossip_skill_unbind', desc: 'Remove a skill slot from an agent' },
