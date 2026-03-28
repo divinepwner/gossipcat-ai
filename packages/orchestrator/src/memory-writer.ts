@@ -1,6 +1,8 @@
 import { appendFileSync, writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { TaskMemoryEntry } from './types';
+import type { ILLMProvider } from './llm-client';
+import type { LLMMessage } from '@gossip/types';
 
 /** Truncate text at a word boundary, appending "..." if truncated */
 function truncateAtWord(text: string, maxLen: number): string {
@@ -11,7 +13,14 @@ function truncateAtWord(text: string, maxLen: number): string {
 }
 
 export class MemoryWriter {
+  private summaryLlm: ILLMProvider | null = null;
+
   constructor(private projectRoot: string) {}
+
+  /** Set the LLM used for cognitive summaries (utility model preferred) */
+  setSummaryLlm(llm: ILLMProvider): void {
+    this.summaryLlm = llm;
+  }
 
   private getMemDir(agentId: string): string {
     return join(this.projectRoot, '.gossip', 'agents', agentId, 'memory');
@@ -51,14 +60,14 @@ export class MemoryWriter {
 
   /**
    * Extract key facts from a task result and write as a knowledge entry.
-   * This is what enables agents to "remember" what happened in prior tasks —
-   * file names, technology choices, patterns used — without LLM summarization.
+   * Uses LLM for cognitive summary when available, falls back to regex extraction.
+   * This is what enables agents to "remember" what happened in prior tasks.
    */
-  writeKnowledgeFromResult(agentId: string, data: {
+  async writeKnowledgeFromResult(agentId: string, data: {
     taskId: string;
     task: string;
     result: string;
-  }): void {
+  }): Promise<void> {
     const memDir = this.ensureDirs(agentId);
     const knowledgeDir = join(memDir, 'knowledge');
 
@@ -67,9 +76,17 @@ export class MemoryWriter {
     const facts = this.extractFacts(data.task, safeResult);
     if (!facts) return; // nothing useful to remember
 
+    // Generate cognitive summary via LLM (fire-and-forget if fails)
+    let cognitiveSummary: string | null = null;
+    if (this.summaryLlm) {
+      try {
+        cognitiveSummary = await this.generateCognitiveSummary(agentId, data.task, safeResult);
+      } catch { /* fall back to regex extraction */ }
+    }
+
     // Timestamp prefix for chronological ordering + taskId for uniqueness
     const now = new Date();
-    const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19); // 2026-03-25T12-30-45
+    const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const filename = `${timestamp}-${data.taskId}.md`;
     const today = now.toISOString().split('T')[0];
 
@@ -85,6 +102,11 @@ export class MemoryWriter {
       }
     } catch { /* skip cleanup on error */ }
 
+    // Build knowledge body: metadata (regex) + understanding (LLM or regex fallback)
+    const body = cognitiveSummary
+      ? `${facts.metadata}\n\n${cognitiveSummary}`
+      : facts.body;
+
     const content = [
       '---',
       `name: ${truncateAtWord(data.task, 80).replace(/\n/g, ' ')}`,
@@ -94,16 +116,49 @@ export class MemoryWriter {
       `accessCount: 0`,
       '---',
       '',
-      facts.body,
+      body,
     ].join('\n');
 
     writeFileSync(join(knowledgeDir, filename), content);
   }
 
+  /**
+   * Generate a cognitive summary — what the agent learned, not just what it saw.
+   * Uses the utility LLM (cheapest available model).
+   */
+  private async generateCognitiveSummary(agentId: string, task: string, result: string): Promise<string> {
+    const messages: LLMMessage[] = [
+      {
+        role: 'system',
+        content: `You are writing a memory entry for an AI agent named "${agentId}". This entry will be loaded into the agent's context on future tasks to help it remember what it learned.
+
+Write in second person ("You reviewed...", "You found..."). Be specific and actionable. Focus on:
+1. What was the key finding or outcome?
+2. What was surprising or non-obvious?
+3. What pattern or lesson should be remembered for future tasks?
+
+Rules:
+- Max 300 words
+- No preamble, no "Here is the summary"
+- Cite specific file:line when referencing code
+- If the task found bugs, name them concretely
+- If the task confirmed something works, say what and why it matters`,
+      },
+      {
+        role: 'user',
+        content: `Task: ${task.slice(0, 500)}\n\nResult:\n${result.slice(0, 4000)}`,
+      },
+    ];
+
+    const response = await this.summaryLlm!.generate(messages, { temperature: 0 });
+    return (response.text || '').slice(0, 1500);
+  }
+
   /** Extract structured knowledge from task + result without LLM calls */
-  private extractFacts(task: string, result: string): { description: string; importance: number; body: string } | null {
+  private extractFacts(task: string, result: string): { description: string; importance: number; body: string; metadata: string } | null {
     const combined = `${task}\n${result}`;
     const lines: string[] = [];
+    const metadataLines: string[] = [];
 
     // Extract file paths from agent output.
     // Lookahead boundary prevents skipping back-to-back refs.
@@ -147,7 +202,9 @@ export class MemoryWriter {
       return SOURCE_EXTENSIONS.has(ext);
     }))];
     if (files.length > 0) {
-      lines.push(`Files: ${files.join(', ')}`);
+      const fileLine = `Files: ${files.join(', ')}`;
+      lines.push(fileLine);
+      metadataLines.push(fileLine);
     }
 
     // Extract technology mentions
@@ -158,7 +215,9 @@ export class MemoryWriter {
       'jest', 'vitest', 'mocha', 'postgresql', 'mysql', 'mongodb', 'redis', 'supabase', 'firebase'];
     const foundTech = techKeywords.filter(kw => combined.toLowerCase().includes(kw));
     if (foundTech.length > 0) {
-      lines.push(`Technology: ${foundTech.join(', ')}`);
+      const techLine = `Technology: ${foundTech.join(', ')}`;
+      lines.push(techLine);
+      metadataLines.push(techLine);
     }
 
     // Extract key decisions — requires explicit subject to avoid passive-voice false positives
@@ -194,6 +253,7 @@ export class MemoryWriter {
       description,
       importance: (files.length > 3 ? 0.9 : files.length > 0 ? 0.7 : 0.5) + (hasFailures ? 0.1 : 0),
       body: lines.join('\n'),
+      metadata: metadataLines.join('\n'),
     };
   }
 

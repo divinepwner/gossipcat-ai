@@ -275,6 +275,7 @@ async function doBoot() {
     
     mainAgent.setOverlapDetector(new OverlapDetector());
     mainAgent.setLensGenerator(new LensGenerator(utilityLlm));
+    mainAgent.setSummaryLlm(utilityLlm);
     process.stderr.write(`[gossipcat] Adaptive team intelligence ready (utility: ${utilityModelId})\n`);
   } catch (err) {
     process.stderr.write(`[gossipcat] Adaptive team intelligence failed: ${(err as Error).message}\n`);

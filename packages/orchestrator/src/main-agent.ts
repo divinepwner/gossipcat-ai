@@ -230,6 +230,7 @@ export class MainAgent {
   setLensGenerator(generator: any): void { this.pipeline.setLensGenerator(generator); }
   getSkillGapSuggestions(): string[] { return this.pipeline.getSkillGapSuggestions(); }
   setSkillIndex(index: any): void { this.pipeline.setSkillIndex(index); }
+  setSummaryLlm(llm: any): void { this.pipeline.setSummaryLlm(llm); }
   getSkillIndex(): any { return this.pipeline.getSkillIndex(); }
 
   /** Health check for active tasks — diagnostics for "is it working?" */

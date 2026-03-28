@@ -5552,6 +5552,11 @@ var init_memory_writer = __esm({
       constructor(projectRoot) {
         this.projectRoot = projectRoot;
       }
+      summaryLlm = null;
+      /** Set the LLM used for cognitive summaries (utility model preferred) */
+      setSummaryLlm(llm) {
+        this.summaryLlm = llm;
+      }
       getMemDir(agentId) {
         return (0, import_path7.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
       }
@@ -5580,15 +5585,22 @@ var init_memory_writer = __esm({
       }
       /**
        * Extract key facts from a task result and write as a knowledge entry.
-       * This is what enables agents to "remember" what happened in prior tasks —
-       * file names, technology choices, patterns used — without LLM summarization.
+       * Uses LLM for cognitive summary when available, falls back to regex extraction.
+       * This is what enables agents to "remember" what happened in prior tasks.
        */
-      writeKnowledgeFromResult(agentId, data) {
+      async writeKnowledgeFromResult(agentId, data) {
         const memDir = this.ensureDirs(agentId);
         const knowledgeDir = (0, import_path7.join)(memDir, "knowledge");
         const safeResult = data.result.length > 5e4 ? data.result.slice(0, 5e4) : data.result;
         const facts = this.extractFacts(data.task, safeResult);
         if (!facts) return;
+        let cognitiveSummary = null;
+        if (this.summaryLlm) {
+          try {
+            cognitiveSummary = await this.generateCognitiveSummary(agentId, data.task, safeResult);
+          } catch {
+          }
+        }
         const now = /* @__PURE__ */ new Date();
         const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
         const filename = `${timestamp}-${data.taskId}.md`;
@@ -5604,6 +5616,9 @@ var init_memory_writer = __esm({
           }
         } catch {
         }
+        const body = cognitiveSummary ? `${facts.metadata}
+
+${cognitiveSummary}` : facts.body;
         const content = [
           "---",
           `name: ${truncateAtWord(data.task, 80).replace(/\n/g, " ")}`,
@@ -5613,15 +5628,49 @@ var init_memory_writer = __esm({
           `accessCount: 0`,
           "---",
           "",
-          facts.body
+          body
         ].join("\n");
         (0, import_fs5.writeFileSync)((0, import_path7.join)(knowledgeDir, filename), content);
+      }
+      /**
+       * Generate a cognitive summary — what the agent learned, not just what it saw.
+       * Uses the utility LLM (cheapest available model).
+       */
+      async generateCognitiveSummary(agentId, task, result) {
+        const messages = [
+          {
+            role: "system",
+            content: `You are writing a memory entry for an AI agent named "${agentId}". This entry will be loaded into the agent's context on future tasks to help it remember what it learned.
+
+Write in second person ("You reviewed...", "You found..."). Be specific and actionable. Focus on:
+1. What was the key finding or outcome?
+2. What was surprising or non-obvious?
+3. What pattern or lesson should be remembered for future tasks?
+
+Rules:
+- Max 300 words
+- No preamble, no "Here is the summary"
+- Cite specific file:line when referencing code
+- If the task found bugs, name them concretely
+- If the task confirmed something works, say what and why it matters`
+          },
+          {
+            role: "user",
+            content: `Task: ${task.slice(0, 500)}
+
+Result:
+${result.slice(0, 4e3)}`
+          }
+        ];
+        const response = await this.summaryLlm.generate(messages, { temperature: 0 });
+        return (response.text || "").slice(0, 1500);
       }
       /** Extract structured knowledge from task + result without LLM calls */
       extractFacts(task, result) {
         const combined = `${task}
 ${result}`;
         const lines = [];
+        const metadataLines = [];
         const fileRegex = /(?:^|[\s`"'(\[<])([a-zA-Z0-9_/.-]+\.[a-z]{1,7})(?=[\s`"'):,\]>]|$)/gm;
         const rawMatches = [];
         let fm;
@@ -5700,7 +5749,9 @@ ${result}`;
           return SOURCE_EXTENSIONS.has(ext);
         }))];
         if (files.length > 0) {
-          lines.push(`Files: ${files.join(", ")}`);
+          const fileLine = `Files: ${files.join(", ")}`;
+          lines.push(fileLine);
+          metadataLines.push(fileLine);
         }
         const techKeywords = [
           "typescript",
@@ -5747,7 +5798,9 @@ ${result}`;
         ];
         const foundTech = techKeywords.filter((kw) => combined.toLowerCase().includes(kw));
         if (foundTech.length > 0) {
-          lines.push(`Technology: ${foundTech.join(", ")}`);
+          const techLine = `Technology: ${foundTech.join(", ")}`;
+          lines.push(techLine);
+          metadataLines.push(techLine);
         }
         const decisionPatterns = /(?:(?:I|we|they|the team|the project) (?:chose|decided|used|picked|went with|created|set up|initialized|configured|adopted|migrated to|switched to) .{3,80}(?:for|because|since|as|due to|instead of)?)/gi;
         const decisions = combined.match(decisionPatterns) || [];
@@ -5770,7 +5823,8 @@ ${result}`;
         return {
           description,
           importance: (files.length > 3 ? 0.9 : files.length > 0 ? 0.7 : 0.5) + (hasFailures ? 0.1 : 0),
-          body: lines.join("\n")
+          body: lines.join("\n"),
+          metadata: metadataLines.join("\n")
         };
       }
       deriveImportance(scores) {
@@ -7858,7 +7912,7 @@ var init_dispatch_pipeline = __esm({
                 }
               });
               if (t.result) {
-                this.memWriter.writeKnowledgeFromResult(t.agentId, {
+                await this.memWriter.writeKnowledgeFromResult(t.agentId, {
                   taskId: t.id,
                   task: t.task,
                   result: t.result
@@ -8157,7 +8211,7 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
             }
           });
           if (t.result) {
-            this.memWriter.writeKnowledgeFromResult(t.agentId, {
+            await this.memWriter.writeKnowledgeFromResult(t.agentId, {
               taskId: t.id,
               task: t.task,
               result: t.result
@@ -8200,6 +8254,9 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
       }
       setSkillIndex(index) {
         this.skillIndex = index;
+      }
+      setSummaryLlm(llm) {
+        this.memWriter.setSummaryLlm(llm);
       }
       getSkillIndex() {
         return this.skillIndex;
@@ -10550,6 +10607,9 @@ message: Your question?
       }
       setSkillIndex(index) {
         this.pipeline.setSkillIndex(index);
+      }
+      setSummaryLlm(llm) {
+        this.pipeline.setSummaryLlm(llm);
       }
       getSkillIndex() {
         return this.pipeline.getSkillIndex();
@@ -26793,6 +26853,7 @@ async function doBoot() {
     }
     mainAgent.setOverlapDetector(new OverlapDetector2());
     mainAgent.setLensGenerator(new LensGenerator2(utilityLlm));
+    mainAgent.setSummaryLlm(utilityLlm);
     process.stderr.write(`[gossipcat] Adaptive team intelligence ready (utility: ${utilityModelId})
 `);
   } catch (err) {

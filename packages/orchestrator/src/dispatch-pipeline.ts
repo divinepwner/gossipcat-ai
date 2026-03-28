@@ -477,7 +477,7 @@ export class DispatchPipeline {
           // Extract and persist knowledge from the task result (files, tech, decisions)
           // so the agent remembers what it did on subsequent tasks
           if (t.result) {
-            this.memWriter.writeKnowledgeFromResult(t.agentId, {
+            await this.memWriter.writeKnowledgeFromResult(t.agentId, {
               taskId: t.id, task: t.task, result: t.result,
             });
           }
@@ -805,7 +805,7 @@ export class DispatchPipeline {
       });
       // Fix 8: extract knowledge from result (was missing in writeMemoryForTask path)
       if (t.result) {
-        this.memWriter.writeKnowledgeFromResult(t.agentId, {
+        await this.memWriter.writeKnowledgeFromResult(t.agentId, {
           taskId: t.id, task: t.task, result: t.result,
         });
       }
@@ -854,6 +854,10 @@ export class DispatchPipeline {
 
   setSkillIndex(index: SkillIndex): void {
     this.skillIndex = index;
+  }
+
+  setSummaryLlm(llm: import('./llm-client').ILLMProvider): void {
+    this.memWriter.setSummaryLlm(llm);
   }
 
   getSkillIndex(): SkillIndex | null {

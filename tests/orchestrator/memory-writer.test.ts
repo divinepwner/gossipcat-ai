@@ -253,6 +253,63 @@ describe('MemoryWriter', () => {
     });
   });
 
+  describe('cognitive summary (LLM)', () => {
+    it('uses LLM summary when summaryLlm is set', async () => {
+      const writer = new MemoryWriter(testDir);
+      writer.setSummaryLlm({
+        generate: jest.fn().mockResolvedValue({ text: 'You reviewed skill-index.ts and found a prototype pollution vulnerability via unsanitized agentId. The key lesson: always validate object keys from external input.' }),
+      } as any);
+
+      await writer.writeKnowledgeFromResult(agentId, {
+        taskId: 'cog1', task: 'review skill-index.ts',
+        result: 'Found prototype pollution via __proto__ in skill-index.ts:44. The agentId parameter is used directly as an object key.',
+      });
+
+      const files = readdirSync(join(memDir, 'knowledge')).filter(f => f.includes('cog1'));
+      expect(files.length).toBe(1);
+      const content = readFileSync(join(memDir, 'knowledge', files[0]), 'utf-8');
+      // Should contain LLM summary, not regex fragments
+      expect(content).toContain('prototype pollution vulnerability');
+      expect(content).toContain('always validate object keys');
+      // Should still have metadata
+      expect(content).toContain('Files:');
+    });
+
+    it('falls back to regex extraction when LLM fails', async () => {
+      const writer = new MemoryWriter(testDir);
+      writer.setSummaryLlm({
+        generate: jest.fn().mockRejectedValue(new Error('API error')),
+      } as any);
+
+      await writer.writeKnowledgeFromResult(agentId, {
+        taskId: 'cog2', task: 'review code',
+        result: 'Found bug in src/auth.ts where input is not validated. I chose to add Zod for schema validation.',
+      });
+
+      const files = readdirSync(join(memDir, 'knowledge')).filter(f => f.includes('cog2'));
+      expect(files.length).toBe(1);
+      const content = readFileSync(join(memDir, 'knowledge', files[0]), 'utf-8');
+      // Should fall back to regex — has Decisions and Summary
+      expect(content).toContain('src/auth.ts');
+    });
+
+    it('produces no LLM call when summaryLlm not set', async () => {
+      const writer = new MemoryWriter(testDir);
+      // No setSummaryLlm call
+
+      await writer.writeKnowledgeFromResult(agentId, {
+        taskId: 'cog3', task: 'review code',
+        result: 'Found issues in src/main.ts with error handling.',
+      });
+
+      const files = readdirSync(join(memDir, 'knowledge')).filter(f => f.includes('cog3'));
+      expect(files.length).toBe(1);
+      // Should still work with regex fallback
+      const content = readFileSync(join(memDir, 'knowledge', files[0]), 'utf-8');
+      expect(content).toContain('src/main.ts');
+    });
+  });
+
   it('derives importance from scores via writeTaskEntry', async () => {
     const writer = new MemoryWriter(testDir);
     await writer.writeTaskEntry('test-agent', {
