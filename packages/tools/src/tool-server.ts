@@ -14,6 +14,7 @@ export interface ToolServerConfig {
   projectRoot: string;
   agentId?: string;
   allowedCallers?: string[];  // If set, only these agent IDs can call tools
+  perfWriter?: { appendSignal(signal: unknown): void };
 }
 
 function truncateAtLine(text: string, maxLength: number): string {
@@ -36,6 +37,7 @@ export class ToolServer {
   private pendingReviews: Map<string, { resolve: (r: string) => void; reject: (e: Error) => void }> = new Map();
   private agentWrittenFiles: Map<string, Set<string>> = new Map(); // agentId → written file paths
   private static readonly MAX_WRITTEN_FILES_PER_AGENT = 1024;
+  private perfWriter?: { appendSignal(signal: unknown): void };
 
   constructor(config: ToolServerConfig) {
     this.allowedCallers = config.allowedCallers ? new Set(config.allowedCallers) : null;
@@ -44,6 +46,7 @@ export class ToolServer {
     this.shellTools = new ShellTools();
     this.gitTools = new GitTools(config.projectRoot);
     this.skillTools = new SkillTools(config.projectRoot);
+    this.perfWriter = config.perfWriter;
     this.agent = new GossipAgent({
       agentId: config.agentId || 'tool-server',
       relayUrl: config.relayUrl,
@@ -318,8 +321,33 @@ export class ToolServer {
       reviewResult = `Peer review unavailable: ${(err as Error).message}`;
     }
 
-    // 4. Format result
+    // Emit impl signals
     const testStatus = testResult.includes('FAIL') ? 'FAIL' : 'PASS';
+    if (this.perfWriter) {
+      const now = new Date().toISOString();
+      this.perfWriter.appendSignal({
+        type: 'impl',
+        signal: testStatus === 'PASS' ? 'impl_test_pass' : 'impl_test_fail',
+        agentId: callerId,
+        taskId: callerId,
+        evidence: testStatus === 'FAIL' ? testResult.slice(-500) : undefined,
+        timestamp: now,
+      });
+
+      if (reviewResult && !reviewResult.includes('unavailable')) {
+        const approved = !reviewResult.toLowerCase().includes('reject') && !reviewResult.toLowerCase().includes('fail');
+        this.perfWriter.appendSignal({
+          type: 'impl',
+          signal: approved ? 'impl_peer_approved' : 'impl_peer_rejected',
+          agentId: callerId,
+          taskId: callerId,
+          evidence: reviewResult.slice(0, 500),
+          timestamp: now,
+        });
+      }
+    }
+
+    // 4. Format result
     return `## Verification Result\n\n### Tests: ${testStatus}\n${testResult.slice(-2000)}\n\n### Peer Review\n${reviewResult || 'No reviewer available'}\n\n### Diff Summary\n${truncateAtLine(fullDiff, 3000)}`;
   }
 
