@@ -77,13 +77,46 @@ Same structure, but:
 
 Both agents get skills: `["implementation", "typescript", "testing"]`
 
-Registered via `gossip_setup` update or manual config edit. The skill index auto-seeds from config.
+**CRITICAL:** Skills MUST be set in `.gossip/config.json`, not just in the `.claude/agents/*.md` frontmatter. The gossipcat bridge (`loadClaudeSubagents` in `config.ts`) only reads `name`, `model`, `description` from frontmatter — the `tools:` and `skills` fields are ignored. Additionally, `inferSkills()` has no pattern for "implementation" or "TDD", so agents discovered via subagent scan alone get `skills: ['general']` and will never be routed to WRITE tasks.
+
+### Config.json Entry (Required)
+
+**WARNING:** `gossip_setup` replaces the entire config — it does not merge. To add 2 new agents to the existing 5-agent team, you must pass all 7 agents. Alternatively, manually edit `.gossip/config.json` to add these entries:
+
+```json
+{
+  "sonnet-implementer": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "preset": "implementer",
+    "skills": ["implementation", "typescript", "testing"],
+    "native": true
+  },
+  "opus-implementer": {
+    "provider": "anthropic",
+    "model": "claude-opus-4-6",
+    "preset": "implementer",
+    "skills": ["implementation", "typescript", "testing"],
+    "native": true
+  }
+}
+```
 
 ### Dispatch Routing
 
 No changes to the dispatch differentiator needed. The existing `AgentRegistry.findBestMatch()` already matches on skills. When a task requires `implementation` + `typescript`, it will prefer `sonnet-implementer` or `opus-implementer` over `sonnet-reviewer` (which has `code_review`, `security_audit`).
 
 `gossip_plan` already classifies tasks as READ or WRITE and assigns agents via the registry. Adding implementer agents with `implementation` skill means the planner will auto-assign them to WRITE tasks.
+
+### Scope Propagation Fix
+
+`gossip_run` for native agents truncates the task to 200 chars in the dispatch instructions (mcp-server-sdk.ts:1631). When `write_mode: 'scoped'` is used with a `scope` parameter, the scope is not injected into the agent's prompt. Fix: when scope is set, prepend it to the native dispatch prompt:
+
+```
+SCOPE RESTRICTION: Only modify files within ${scope}. Do not edit files outside this directory.
+```
+
+This must be added to the native dispatch template in `gossip_run`, not to the agent definition (since scope varies per task).
 
 ### When to Use Which
 
@@ -127,14 +160,17 @@ private verifyToolClaims(content: string): string {
   const mcpPath = join(this.projectRoot, 'apps', 'cli', 'src', 'mcp-server-sdk.ts');
   if (!existsSync(mcpPath)) return content; // can't verify without source
 
-  const mcpSource = readFileSync(mcpPath, 'utf-8');
+  // Strip comments ONCE before matching — avoids false positives from
+  // tool names in gossip_tools() listing or inline comments
+  const rawSource = readFileSync(mcpPath, 'utf-8');
+  const source = rawSource.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '');
 
   return content.replace(
-    /^(.*(?:TODO|remaining|deferred|needed).*)(gossip_\w+)(.*)/gim,
-    (match, before, toolName, after) => {
-      // Check if tool is registered: server.tool('tool_name', ...)
-      const registered = mcpSource.includes(`'${toolName}'`) || mcpSource.includes(`"${toolName}"`);
-      if (registered) {
+    /^(.*(?:TODO|remaining|deferred|needed|pending).*)(gossip_\w+)(.*)/gim,
+    (match, _before, toolName, _after) => {
+      // Check for actual tool registration: server.tool('tool_name', ...)
+      const pattern = new RegExp(`server\\.tool\\(\\s*['"]${toolName}['"]`);
+      if (pattern.test(source)) {
         return `~~${match.trim()}~~ *(verified: ${toolName} exists in MCP server)*`;
       }
       return match;
@@ -147,13 +183,17 @@ Called from `readNextSessionNotes()` before returning content.
 
 ### Bootstrap Tools Table
 
-The tools table in `renderTeamPrompt()` is hardcoded and missing `gossip_run` / `gossip_run_complete`. Update it to include all current tools:
+The tools table in `renderTeamPrompt()` is hardcoded and missing key tools. Add these rows:
 
 ```
 | `gossip_run(agent_id, task)` | Single-agent dispatch. Relay: returns result. Native: returns Agent() instructions + callback. |
 | `gossip_run_complete(task_id, result)` | Complete a native agent gossip_run — relays result, writes memory, emits signals. |
 | `gossip_relay_result(task_id, result)` | Feed native Agent() result back into relay for consensus. |
+| `gossip_session_save()` | Save cognitive session summary for next session context. |
+| `gossip_scores()` | View agent performance scores and dispatch weights. |
 ```
+
+The remaining tools (`gossip_record_signals`, `gossip_log_finding`, `gossip_findings`, `gossip_build_skills`, `gossip_develop_skill`, `gossip_skill_index`, `gossip_skill_bind`, `gossip_skill_unbind`) are specialist tools discoverable via `gossip_tools()`. Adding all 20+ tools to the bootstrap would bloat the prompt.
 
 ## File Changes
 
@@ -161,8 +201,9 @@ The tools table in `renderTeamPrompt()` is hardcoded and missing `gossip_run` / 
 |------|--------|
 | `.claude/agents/sonnet-implementer.md` | **New** — native sonnet implementer agent definition |
 | `.claude/agents/opus-implementer.md` | **New** — native opus implementer agent definition |
-| `.gossip/config.json` | **Modify** — add sonnet-implementer and opus-implementer to agents |
+| `.gossip/config.json` | **Modify** — add sonnet-implementer and opus-implementer to agents (manual edit, not gossip_setup) |
 | `packages/orchestrator/src/bootstrap.ts` | **Modify** — add `verifyToolClaims()`, update tools table, call verify in `readNextSessionNotes()` |
+| `apps/cli/src/mcp-server-sdk.ts` | **Modify** — inject scope into native dispatch prompt when `write_mode: 'scoped'` |
 | `tests/orchestrator/bootstrap.test.ts` | **Modify** — add tests for tool claim verification |
 
 ## Non-Goals
@@ -171,6 +212,8 @@ The tools table in `renderTeamPrompt()` is hardcoded and missing `gossip_run` / 
 - Validating non-tool claims in session notes (too broad, diminishing returns)
 - Changing how `gossip_session_save()` writes data (fix on read, not write)
 - Modifying the dispatch differentiator (it already handles skill-based routing)
+- Fixing `findBestMatch` hardcoded `'review'` perfWeight for impl tasks (pre-existing bug, tracked separately)
+- Adding merge mode to `gossip_setup` (useful but separate scope)
 
 ## Risk
 
