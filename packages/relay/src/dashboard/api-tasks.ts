@@ -20,7 +20,7 @@ export async function tasksHandler(projectRoot: string): Promise<TasksResponse> 
   if (!existsSync(graphPath)) return { tasks: [], total: 0 };
 
   const created = new Map<string, { agentId: string; task: string; timestamp: string }>();
-  const completed = new Map<string, { duration?: number; timestamp: string; failed: boolean }>();
+  const completed = new Map<string, { duration?: number; timestamp: string; failed: boolean; cancelled?: boolean }>();
 
   try {
     const lines = readFileSync(graphPath, 'utf-8').trim().split('\n').filter(Boolean);
@@ -48,6 +48,7 @@ export async function tasksHandler(projectRoot: string): Promise<TasksResponse> 
           completed.set(entry.taskId, {
             timestamp: entry.timestamp,
             failed: false,
+            cancelled: true,
           });
         }
       } catch { /* skip malformed */ }
@@ -61,7 +62,7 @@ export async function tasksHandler(projectRoot: string): Promise<TasksResponse> 
       taskId,
       agentId: info.agentId,
       task: info.task.slice(0, 200),
-      status: result ? (result.failed ? 'failed' : 'completed') : 'running',
+      status: result ? (result.cancelled ? 'cancelled' : result.failed ? 'failed' : 'completed') : 'running',
       duration: result?.duration,
       timestamp: result?.timestamp || info.timestamp,
     });

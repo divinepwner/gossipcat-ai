@@ -3507,7 +3507,8 @@ async function tasksHandler(projectRoot) {
         } else if (entry.type === "task.cancelled") {
           completed.set(entry.taskId, {
             timestamp: entry.timestamp,
-            failed: false
+            failed: false,
+            cancelled: true
           });
         }
       } catch {
@@ -3523,7 +3524,7 @@ async function tasksHandler(projectRoot) {
       taskId,
       agentId: info.agentId,
       task: info.task.slice(0, 200),
-      status: result ? result.failed ? "failed" : "completed" : "running",
+      status: result ? result.cancelled ? "cancelled" : result.failed ? "failed" : "completed" : "running",
       duration: result?.duration,
       timestamp: result?.timestamp || info.timestamp
     });
@@ -3618,9 +3619,15 @@ var init_routes = __esm({
         return true;
       }
       async handleAuth(req, res) {
+        const now = Date.now();
         const ip = req.socket?.remoteAddress || "unknown";
+        if (this.authAttempts.size > 100) {
+          for (const [k, v] of this.authAttempts) {
+            if (v.lockedUntil > 0 && v.lockedUntil < now) this.authAttempts.delete(k);
+          }
+        }
         const attempt = this.authAttempts.get(ip);
-        if (attempt && attempt.lockedUntil > Date.now()) {
+        if (attempt && attempt.lockedUntil > now) {
           this.json(res, 429, { error: "Too many attempts. Try again later." });
           return true;
         }

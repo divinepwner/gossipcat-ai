@@ -79,10 +79,16 @@ export class DashboardRouter {
   }
 
   private async handleAuth(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-    // Rate limiting per IP
+    // Rate limiting per IP — prune expired entries to prevent memory leak
+    const now = Date.now();
     const ip = req.socket?.remoteAddress || 'unknown';
+    if (this.authAttempts.size > 100) {
+      for (const [k, v] of this.authAttempts) {
+        if (v.lockedUntil > 0 && v.lockedUntil < now) this.authAttempts.delete(k);
+      }
+    }
     const attempt = this.authAttempts.get(ip);
-    if (attempt && attempt.lockedUntil > Date.now()) {
+    if (attempt && attempt.lockedUntil > now) {
       this.json(res, 429, { error: 'Too many attempts. Try again later.' });
       return true;
     }
