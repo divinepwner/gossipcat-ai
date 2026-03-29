@@ -1156,7 +1156,7 @@ server.tool(
   async () => {
     const { loadClaudeSubagents } = await import('./config');
     const claudeCount = loadClaudeSubagents(process.cwd()).length;
-    return { content: [{ type: 'text' as const, text: [
+    const lines = [
       'Gossip Mesh Status:',
       `  Host: ${env.host}${env.supportsNativeAgents ? ' (native agents supported)' : ''}`,
       `  Native agent dir: ${env.nativeAgentDir || 'n/a'}`,
@@ -1164,7 +1164,11 @@ server.tool(
       `  Tool Server: ${toolServer ? 'running' : 'not started'}`,
       `  Workers: ${workers.size} (${Array.from(workers.keys()).join(', ') || 'none'})`,
       `  Claude subagents found: ${claudeCount}`,
-    ].join('\n') }] };
+    ];
+    if (relay?.dashboardUrl) {
+      lines.push(`  Dashboard: ${relay.dashboardUrl} (key: ${relay.dashboardKeyPrefix}...)`);
+    }
+    return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
   }
 );
 

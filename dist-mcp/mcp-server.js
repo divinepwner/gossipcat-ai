@@ -2779,19 +2779,781 @@ var init_agent_connection = __esm({
   }
 });
 
+// packages/relay/src/dashboard/auth.ts
+var import_crypto3, import_fs, import_path, KEY_LENGTH, SESSION_TTL_MS, DashboardAuth;
+var init_auth = __esm({
+  "packages/relay/src/dashboard/auth.ts"() {
+    "use strict";
+    import_crypto3 = require("crypto");
+    import_fs = require("fs");
+    import_path = require("path");
+    KEY_LENGTH = 16;
+    SESSION_TTL_MS = 24 * 60 * 60 * 1e3;
+    DashboardAuth = class {
+      keyPath;
+      key = "";
+      sessions = /* @__PURE__ */ new Map();
+      constructor(projectRoot) {
+        this.keyPath = (0, import_path.join)(projectRoot, ".gossip", "dashboard-key");
+      }
+      init() {
+        if ((0, import_fs.existsSync)(this.keyPath)) {
+          this.key = (0, import_fs.readFileSync)(this.keyPath, "utf-8").trim();
+          if (this.key.length === KEY_LENGTH * 2) return;
+        }
+        this.regenerateKey();
+      }
+      regenerateKey() {
+        this.key = (0, import_crypto3.randomBytes)(KEY_LENGTH).toString("hex");
+        const dir = (0, import_path.dirname)(this.keyPath);
+        (0, import_fs.mkdirSync)(dir, { recursive: true });
+        (0, import_fs.writeFileSync)(this.keyPath, this.key + "\n", { mode: 384 });
+        this.sessions.clear();
+      }
+      getKey() {
+        return this.key;
+      }
+      /** Returns first 8 chars for display in CLI boot message */
+      getKeyPrefix() {
+        return this.key.slice(0, 8);
+      }
+      createSession(candidateKey) {
+        if (!candidateKey || typeof candidateKey !== "string") return null;
+        const a = (0, import_crypto3.createHash)("sha256").update(candidateKey).digest();
+        const b = (0, import_crypto3.createHash)("sha256").update(this.key).digest();
+        if (!(0, import_crypto3.timingSafeEqual)(a, b)) return null;
+        const token = (0, import_crypto3.randomBytes)(32).toString("hex");
+        this.sessions.set(token, { token, expiresAt: Date.now() + SESSION_TTL_MS });
+        return token;
+      }
+      validateSession(token) {
+        if (!token || typeof token !== "string") return false;
+        const session = this.sessions.get(token);
+        if (!session) return false;
+        if (Date.now() > session.expiresAt) {
+          this.sessions.delete(token);
+          return false;
+        }
+        return true;
+      }
+    };
+  }
+});
+
+// packages/relay/src/dashboard/api-overview.ts
+async function overviewHandler(projectRoot, ctx) {
+  const nativeCount = ctx.agentConfigs.filter((a) => a.native).length;
+  const relayCount = ctx.relayConnections;
+  const agentsOnline = ctx.agentConfigs.length;
+  let totalSignals = 0;
+  let totalFindings = 0;
+  let confirmedFindings = 0;
+  let consensusRuns = 0;
+  const perfPath = (0, import_path2.join)(projectRoot, ".gossip", "agent-performance.jsonl");
+  if ((0, import_fs2.existsSync)(perfPath)) {
+    try {
+      const lines = (0, import_fs2.readFileSync)(perfPath, "utf-8").trim().split("\n").filter(Boolean);
+      totalSignals = lines.length;
+    } catch {
+    }
+  }
+  const historyPath = (0, import_path2.join)(projectRoot, ".gossip", "consensus-history.jsonl");
+  if ((0, import_fs2.existsSync)(historyPath)) {
+    try {
+      const lines = (0, import_fs2.readFileSync)(historyPath, "utf-8").trim().split("\n").filter(Boolean);
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+          consensusRuns++;
+          totalFindings += (entry.confirmed ?? 0) + (entry.disputed ?? 0) + (entry.unverified ?? 0) + (entry.unique ?? 0) + (entry.newFindings ?? 0);
+          confirmedFindings += entry.confirmed ?? 0;
+        } catch {
+        }
+      }
+    } catch {
+    }
+  }
+  return { agentsOnline, relayCount, nativeCount, consensusRuns, totalFindings, confirmedFindings, totalSignals };
+}
+var import_fs2, import_path2;
+var init_api_overview = __esm({
+  "packages/relay/src/dashboard/api-overview.ts"() {
+    "use strict";
+    import_fs2 = require("fs");
+    import_path2 = require("path");
+  }
+});
+
+// packages/orchestrator/src/performance-reader.ts
+var performance_reader_exports = {};
+__export(performance_reader_exports, {
+  PerformanceReader: () => PerformanceReader
+});
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+var import_fs3, import_path3, SIGNAL_WEIGHTS, PerformanceReader;
+var init_performance_reader = __esm({
+  "packages/orchestrator/src/performance-reader.ts"() {
+    "use strict";
+    import_fs3 = require("fs");
+    import_path3 = require("path");
+    SIGNAL_WEIGHTS = {
+      agreement: { accuracy: 0.1 },
+      disagreement: { accuracy: -0.15 },
+      // losing side; winning side gets bonus via counterpart
+      unverified: { accuracy: -0.03 },
+      // tiny penalty — couldn't verify, less useful than agree/disagree
+      unique_confirmed: { uniqueness: 0.2 },
+      unique_unconfirmed: { uniqueness: 0.05 },
+      new_finding: { uniqueness: 0.15 },
+      hallucination_caught: { accuracy: -0.3 },
+      category_confirmed: { accuracy: 0.1 },
+      consensus_verified: { accuracy: 0.15 }
+      // Judge confirmed a finding
+    };
+    PerformanceReader = class {
+      filePath;
+      // Cache: avoid re-reading file on every dispatch call
+      cachedScores = null;
+      cachedMtimeMs = 0;
+      constructor(projectRoot) {
+        this.filePath = (0, import_path3.join)(projectRoot, ".gossip", "agent-performance.jsonl");
+      }
+      /** Read all signals and compute per-agent scores (cached by file mtime) */
+      getScores() {
+        let mtimeMs = 0;
+        try {
+          mtimeMs = (0, import_fs3.statSync)(this.filePath).mtimeMs;
+        } catch {
+        }
+        if (this.cachedScores && mtimeMs === this.cachedMtimeMs) {
+          return this.cachedScores;
+        }
+        const signals = this.readSignals();
+        this.cachedScores = this.computeScores(signals);
+        this.cachedMtimeMs = mtimeMs;
+        return this.cachedScores;
+      }
+      /** Get score for a specific agent (returns null if no data) */
+      getAgentScore(agentId) {
+        return this.getScores().get(agentId) ?? null;
+      }
+      /** Get a reliability multiplier for dispatch weighting (0.5 to 1.5) */
+      getDispatchWeight(agentId) {
+        const score = this.getAgentScore(agentId);
+        if (!score || score.totalSignals < 3) return 1;
+        return 0.5 + score.reliability;
+      }
+      readSignals() {
+        if (!(0, import_fs3.existsSync)(this.filePath)) return [];
+        try {
+          const lines = (0, import_fs3.readFileSync)(this.filePath, "utf-8").trim().split("\n").filter(Boolean);
+          return lines.map((line) => {
+            try {
+              return JSON.parse(line);
+            } catch {
+              return null;
+            }
+          }).filter(
+            (s) => s !== null && typeof s.agentId === "string" && s.agentId.length > 0
+          );
+        } catch {
+          return [];
+        }
+      }
+      computeScores(signals) {
+        const scores = /* @__PURE__ */ new Map();
+        const ensure = (id) => {
+          if (!scores.has(id)) {
+            scores.set(id, {
+              agentId: id,
+              accuracy: 0.5,
+              uniqueness: 0.5,
+              reliability: 0.5,
+              totalSignals: 0,
+              agreements: 0,
+              disagreements: 0,
+              uniqueFindings: 0,
+              hallucinations: 0
+            });
+          }
+          return scores.get(id);
+        };
+        for (const signal of signals) {
+          const agent = ensure(signal.agentId);
+          const weights = SIGNAL_WEIGHTS[signal.signal];
+          if (!weights) continue;
+          agent.totalSignals++;
+          if ("accuracy" in weights && weights.accuracy) {
+            agent.accuracy = clamp(agent.accuracy + weights.accuracy, 0, 1);
+          }
+          if ("uniqueness" in weights && weights.uniqueness) {
+            agent.uniqueness = clamp(agent.uniqueness + weights.uniqueness, 0, 1);
+          }
+          switch (signal.signal) {
+            case "agreement":
+              agent.agreements++;
+              break;
+            case "disagreement":
+              agent.disagreements++;
+              break;
+            case "unique_confirmed":
+            case "unique_unconfirmed":
+            case "new_finding":
+              agent.uniqueFindings++;
+              break;
+            case "hallucination_caught":
+              agent.hallucinations++;
+              break;
+            case "consensus_verified":
+              break;
+            // just a score change
+            case "category_confirmed":
+              break;
+          }
+          if (signal.counterpartId && typeof signal.counterpartId === "string" && signal.counterpartId.length > 0 && signal.signal === "disagreement") {
+            const winner = ensure(signal.counterpartId);
+            winner.accuracy = clamp(winner.accuracy + 0.1, 0, 1);
+            winner.totalSignals++;
+          }
+        }
+        for (const score of scores.values()) {
+          score.reliability = clamp(score.accuracy * 0.7 + score.uniqueness * 0.3, 0, 1);
+        }
+        return scores;
+      }
+    };
+  }
+});
+
+// packages/relay/src/dashboard/api-agents.ts
+async function agentsHandler(projectRoot, configs) {
+  const reader = new PerformanceReader(projectRoot);
+  const scores = reader.getScores();
+  return configs.map((config2) => {
+    const score = scores.get(config2.id) ?? { ...DEFAULT_SCORE, agentId: config2.id };
+    return {
+      id: config2.id,
+      provider: config2.provider,
+      model: config2.model,
+      preset: config2.preset,
+      native: config2.native ?? false,
+      skills: config2.skills,
+      scores: {
+        accuracy: score.accuracy,
+        uniqueness: score.uniqueness,
+        reliability: score.reliability,
+        dispatchWeight: reader.getDispatchWeight(config2.id),
+        signals: score.totalSignals,
+        agreements: score.agreements,
+        disagreements: score.disagreements,
+        hallucinations: score.hallucinations
+      }
+    };
+  });
+}
+var DEFAULT_SCORE;
+var init_api_agents = __esm({
+  "packages/relay/src/dashboard/api-agents.ts"() {
+    "use strict";
+    init_performance_reader();
+    DEFAULT_SCORE = {
+      agentId: "",
+      accuracy: 0.5,
+      uniqueness: 0.5,
+      reliability: 0.5,
+      totalSignals: 0,
+      agreements: 0,
+      disagreements: 0,
+      uniqueFindings: 0,
+      hallucinations: 0
+    };
+  }
+});
+
+// packages/orchestrator/src/skill-name.ts
+function normalizeSkillName(name) {
+  if (!name || typeof name !== "string") return "";
+  return name.slice(0, 128).toLowerCase().replace(/[_\s]+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "");
+}
+var init_skill_name = __esm({
+  "packages/orchestrator/src/skill-name.ts"() {
+    "use strict";
+  }
+});
+
+// packages/orchestrator/src/skill-index.ts
+var import_fs4, import_path4, DANGEROUS_KEYS, SkillIndex;
+var init_skill_index = __esm({
+  "packages/orchestrator/src/skill-index.ts"() {
+    "use strict";
+    import_fs4 = require("fs");
+    import_path4 = require("path");
+    init_skill_name();
+    DANGEROUS_KEYS = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype", "_project"]);
+    SkillIndex = class {
+      data = {};
+      filePath;
+      dirty = false;
+      _exists = false;
+      constructor(projectRoot) {
+        this.filePath = (0, import_path4.join)(projectRoot, ".gossip", "skill-index.json");
+        this.load();
+      }
+      /** Bind a skill to an agent (creates or updates the slot) */
+      bind(agentId, skill, options) {
+        this.validateAgentId(agentId);
+        const name = this.validateSkillName(skill);
+        if (!this.data[agentId]) this.data[agentId] = /* @__PURE__ */ Object.create(null);
+        const existing = this.data[agentId][name];
+        const slot = {
+          skill: name,
+          enabled: options?.enabled ?? true,
+          source: options?.source ?? existing?.source ?? "manual",
+          version: existing ? existing.version + 1 : 1,
+          boundAt: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        this.data[agentId][name] = slot;
+        this.dirty = true;
+        this.save();
+        return slot;
+      }
+      /** Unbind a skill from an agent (removes the slot entirely) */
+      unbind(agentId, skill) {
+        this.validateAgentId(agentId);
+        const name = normalizeSkillName(skill);
+        if (!this.data[agentId]?.[name]) return false;
+        delete this.data[agentId][name];
+        if (Object.keys(this.data[agentId]).length === 0) delete this.data[agentId];
+        this.dirty = true;
+        this.save();
+        return true;
+      }
+      /** Enable a previously disabled skill slot */
+      enable(agentId, skill) {
+        this.validateAgentId(agentId);
+        const slot = this.resolveSlot(agentId, skill);
+        if (!slot) return false;
+        slot.enabled = true;
+        slot.version++;
+        this.dirty = true;
+        this.save();
+        return true;
+      }
+      /** Disable a skill slot without removing it */
+      disable(agentId, skill) {
+        this.validateAgentId(agentId);
+        const slot = this.resolveSlot(agentId, skill);
+        if (!slot) return false;
+        slot.enabled = false;
+        slot.version++;
+        this.dirty = true;
+        this.save();
+        return true;
+      }
+      /**
+       * Resolve a skill slot by normalized name, falling back to raw key lookup.
+       * This handles on-disk data that was written without normalization.
+       */
+      resolveSlot(agentId, skill) {
+        const agentSlots = this.data[agentId];
+        if (!agentSlots) return void 0;
+        const name = normalizeSkillName(skill);
+        if (agentSlots[name]) return agentSlots[name];
+        for (const key of Object.keys(agentSlots)) {
+          if (normalizeSkillName(key) === name) return agentSlots[key];
+        }
+        return void 0;
+      }
+      /** Get all enabled skill names for an agent */
+      getEnabledSkills(agentId) {
+        const agentSlots = this.data[agentId];
+        if (!agentSlots) return [];
+        return Object.values(agentSlots).filter((s) => s.enabled).map((s) => s.skill);
+      }
+      /** Get all slots for an agent (enabled and disabled) — returns copies */
+      getAgentSlots(agentId) {
+        const agentSlots = this.data[agentId];
+        if (!agentSlots) return [];
+        return Object.values(agentSlots).map((s) => ({ ...s }));
+      }
+      /** Get a specific slot — returns a copy */
+      getSlot(agentId, skill) {
+        const slot = this.data[agentId]?.[normalizeSkillName(skill)];
+        return slot ? { ...slot } : void 0;
+      }
+      /** Get the full index data — returns a deep copy */
+      getIndex() {
+        return JSON.parse(JSON.stringify(this.data));
+      }
+      /** Get all agent IDs in the index */
+      getAgentIds() {
+        return Object.keys(this.data);
+      }
+      /** Check if an index file exists (for backward compat detection) */
+      exists() {
+        return this._exists;
+      }
+      /**
+       * Seed index from agent configs — call once on first load when no index file exists.
+       * Imports existing config.skills[] as 'config' source slots.
+       */
+      seedFromConfigs(agents) {
+        for (const agent of agents) {
+          if (DANGEROUS_KEYS.has(agent.id) || !agent.id) continue;
+          if (!this.data[agent.id]) this.data[agent.id] = /* @__PURE__ */ Object.create(null);
+          for (const skill of agent.skills) {
+            if (typeof skill !== "string" || !skill) continue;
+            const name = normalizeSkillName(skill);
+            if (!name) continue;
+            if (!this.data[agent.id][name]) {
+              this.data[agent.id][name] = {
+                skill: name,
+                enabled: true,
+                source: "config",
+                version: 1,
+                boundAt: (/* @__PURE__ */ new Date()).toISOString()
+              };
+            }
+          }
+        }
+        this.dirty = true;
+        this.save();
+      }
+      validateAgentId(agentId) {
+        if (!agentId || typeof agentId !== "string" || DANGEROUS_KEYS.has(agentId)) {
+          throw new Error(`Invalid agentId: "${agentId}"`);
+        }
+      }
+      validateSkillName(skill) {
+        const name = normalizeSkillName(skill);
+        if (!name) throw new Error(`Invalid skill name: "${skill}"`);
+        return name;
+      }
+      load() {
+        try {
+          const raw = (0, import_fs4.readFileSync)(this.filePath, "utf-8");
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            for (const key of Object.keys(parsed)) {
+              if (DANGEROUS_KEYS.has(key)) delete parsed[key];
+            }
+            this.data = parsed;
+            this._exists = true;
+          }
+        } catch {
+        }
+      }
+      save() {
+        if (!this.dirty) return;
+        const dir = (0, import_path4.dirname)(this.filePath);
+        (0, import_fs4.mkdirSync)(dir, { recursive: true });
+        (0, import_fs4.writeFileSync)(this.filePath, JSON.stringify(this.data, null, 2) + "\n");
+        this._exists = true;
+        this.dirty = false;
+      }
+    };
+  }
+});
+
+// packages/relay/src/dashboard/api-skills.ts
+async function skillsGetHandler(projectRoot) {
+  const index = new SkillIndex(projectRoot);
+  return { index: index.getIndex(), suggestions: [] };
+}
+async function skillsBindHandler(projectRoot, body) {
+  if (!body.agent_id || !AGENT_ID_RE.test(body.agent_id)) return { success: false, error: "Invalid agent_id" };
+  if (!body.skill || typeof body.skill !== "string") return { success: false, error: "Invalid skill name" };
+  try {
+    const index = new SkillIndex(projectRoot);
+    const changed = body.enabled ? index.enable(body.agent_id, body.skill) : index.disable(body.agent_id, body.skill);
+    if (!changed) return { success: false, error: "Skill not bound to agent" };
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+var AGENT_ID_RE;
+var init_api_skills = __esm({
+  "packages/relay/src/dashboard/api-skills.ts"() {
+    "use strict";
+    init_skill_index();
+    AGENT_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+  }
+});
+
+// packages/relay/src/dashboard/api-memory.ts
+async function memoryHandler(projectRoot, agentId) {
+  if (!agentId || !AGENT_ID_RE2.test(agentId) || DANGEROUS_IDS.has(agentId)) throw new Error("Invalid agent ID");
+  const memDir = (0, import_path5.join)(projectRoot, ".gossip", "agents", agentId, "memory");
+  let index = "";
+  const indexPath = (0, import_path5.join)(memDir, "MEMORY.md");
+  if ((0, import_fs5.existsSync)(indexPath)) {
+    try {
+      index = (0, import_fs5.readFileSync)(indexPath, "utf-8");
+    } catch {
+    }
+  }
+  const knowledge = [];
+  if ((0, import_fs5.existsSync)(memDir)) {
+    try {
+      const files = (0, import_fs5.readdirSync)(memDir).filter((f) => f.endsWith(".md") && f !== "MEMORY.md");
+      for (const filename of files) {
+        try {
+          const raw = (0, import_fs5.readFileSync)((0, import_path5.join)(memDir, filename), "utf-8");
+          const { frontmatter, content } = parseFrontmatter(raw);
+          knowledge.push({ filename, frontmatter, content });
+        } catch {
+        }
+      }
+    } catch {
+    }
+  }
+  const tasks = [];
+  const tasksPath = (0, import_path5.join)(memDir, "tasks.jsonl");
+  if ((0, import_fs5.existsSync)(tasksPath)) {
+    try {
+      const lines = (0, import_fs5.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean).slice(-200);
+      for (const line of lines) {
+        try {
+          tasks.push(JSON.parse(line));
+        } catch {
+        }
+      }
+    } catch {
+    }
+  }
+  return { index, knowledge, tasks };
+}
+function parseFrontmatter(raw) {
+  if (!raw.startsWith("---")) return { frontmatter: {}, content: raw };
+  const end = raw.indexOf("---", 3);
+  if (end === -1) return { frontmatter: {}, content: raw };
+  const fm = {};
+  const fmBlock = raw.slice(3, end).trim();
+  for (const line of fmBlock.split("\n")) {
+    const colon = line.indexOf(":");
+    if (colon > 0) fm[line.slice(0, colon).trim()] = line.slice(colon + 1).trim();
+  }
+  return { frontmatter: fm, content: raw.slice(end + 3).trim() };
+}
+var import_fs5, import_path5, AGENT_ID_RE2, DANGEROUS_IDS;
+var init_api_memory = __esm({
+  "packages/relay/src/dashboard/api-memory.ts"() {
+    "use strict";
+    import_fs5 = require("fs");
+    import_path5 = require("path");
+    AGENT_ID_RE2 = /^[a-zA-Z0-9_-]{1,64}$/;
+    DANGEROUS_IDS = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype", "_project"]);
+  }
+});
+
+// packages/relay/src/dashboard/routes.ts
+function readBody(req) {
+  return new Promise((resolve12, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY_SIZE) {
+        req.destroy();
+        reject(new Error("Request body too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve12(Buffer.concat(chunks).toString("utf-8")));
+    req.on("error", reject);
+  });
+}
+var import_fs6, import_path6, DashboardRouter, MAX_BODY_SIZE;
+var init_routes = __esm({
+  "packages/relay/src/dashboard/routes.ts"() {
+    "use strict";
+    init_api_overview();
+    init_api_agents();
+    init_api_skills();
+    init_api_memory();
+    import_fs6 = require("fs");
+    import_path6 = require("path");
+    DashboardRouter = class {
+      constructor(auth, projectRoot, ctx) {
+        this.auth = auth;
+        this.projectRoot = projectRoot;
+        this.ctx = ctx;
+      }
+      /** Update live context (call when agents connect/disconnect) */
+      updateContext(ctx) {
+        if (ctx.agentConfigs !== void 0) this.ctx.agentConfigs = ctx.agentConfigs;
+        if (ctx.relayConnections !== void 0) this.ctx.relayConnections = ctx.relayConnections;
+      }
+      /**
+       * Handle an HTTP request. Returns true if the route was handled, false otherwise.
+       * Caller should only call this for URLs starting with /dashboard.
+       */
+      async handle(req, res) {
+        const url2 = req.url ?? "";
+        if (!url2.startsWith("/dashboard")) return false;
+        if (url2 === "/dashboard/api/auth" && req.method === "POST") {
+          return this.handleAuth(req, res);
+        }
+        if (url2 === "/dashboard" || url2 === "/dashboard/") {
+          return this.serveDashboard(res);
+        }
+        if (url2.startsWith("/dashboard/api/")) {
+          const token = this.extractSessionToken(req);
+          if (!token || !this.auth.validateSession(token)) {
+            this.json(res, 401, { error: "Unauthorized" });
+            return true;
+          }
+          return this.handleApi(req, res, url2);
+        }
+        if (url2.startsWith("/dashboard/assets/")) {
+          return this.serveAsset(res, url2);
+        }
+        this.json(res, 404, { error: "Not found" });
+        return true;
+      }
+      async handleAuth(req, res) {
+        const body = await readBody(req);
+        try {
+          const { key } = JSON.parse(body);
+          const token = this.auth.createSession(key);
+          if (!token) {
+            this.json(res, 401, { error: "Invalid key" });
+            return true;
+          }
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Set-Cookie": `dashboard_session=${token}; HttpOnly; SameSite=Strict; Path=/dashboard; Max-Age=86400`
+          });
+          res.end(JSON.stringify({ ok: true }));
+        } catch {
+          this.json(res, 400, { error: "Invalid request body" });
+        }
+        return true;
+      }
+      async handleApi(req, res, url2) {
+        try {
+          if (url2 === "/dashboard/api/overview" && req.method === "GET") {
+            const data = await overviewHandler(this.projectRoot, this.ctx);
+            this.json(res, 200, data);
+            return true;
+          }
+          if (url2 === "/dashboard/api/agents" && req.method === "GET") {
+            const data = await agentsHandler(this.projectRoot, this.ctx.agentConfigs);
+            this.json(res, 200, data);
+            return true;
+          }
+          if (url2 === "/dashboard/api/skills" && req.method === "GET") {
+            const data = await skillsGetHandler(this.projectRoot);
+            this.json(res, 200, data);
+            return true;
+          }
+          if (url2 === "/dashboard/api/skills/bind" && req.method === "POST") {
+            const body = JSON.parse(await readBody(req));
+            const data = await skillsBindHandler(this.projectRoot, body);
+            this.json(res, data.success ? 200 : 400, data);
+            return true;
+          }
+          const memoryMatch = url2.match(/^\/dashboard\/api\/memory\/([^/]+)$/);
+          if (memoryMatch && req.method === "GET") {
+            try {
+              const data = await memoryHandler(this.projectRoot, memoryMatch[1]);
+              this.json(res, 200, data);
+            } catch (err) {
+              this.json(res, 400, { error: err instanceof Error ? err.message : "Bad request" });
+            }
+            return true;
+          }
+          this.json(res, 404, { error: "Unknown API endpoint" });
+        } catch (err) {
+          this.json(res, 500, { error: "Internal server error" });
+        }
+        return true;
+      }
+      serveDashboard(res) {
+        const htmlPath = (0, import_path6.join)(this.projectRoot, "dist-dashboard", "index.html");
+        if (!(0, import_fs6.existsSync)(htmlPath)) {
+          res.writeHead(503, { "Content-Type": "text/plain" });
+          res.end("Dashboard not built. Run: npm run build:dashboard");
+          return true;
+        }
+        const html = (0, import_fs6.readFileSync)(htmlPath, "utf-8");
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(html);
+        return true;
+      }
+      serveAsset(res, _url2) {
+        res.writeHead(404);
+        res.end();
+        return true;
+      }
+      extractSessionToken(req) {
+        const cookie = req.headers.cookie;
+        if (!cookie) return null;
+        const match = cookie.match(/dashboard_session=([^;]+)/);
+        return match ? match[1] : null;
+      }
+      json(res, status, data) {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(data));
+      }
+    };
+    MAX_BODY_SIZE = 8 * 1024;
+  }
+});
+
+// packages/relay/src/dashboard/ws.ts
+var import_ws2, DashboardWs;
+var init_ws = __esm({
+  "packages/relay/src/dashboard/ws.ts"() {
+    "use strict";
+    import_ws2 = require("ws");
+    DashboardWs = class {
+      clients = /* @__PURE__ */ new Set();
+      addClient(ws) {
+        this.clients.add(ws);
+      }
+      removeClient(ws) {
+        this.clients.delete(ws);
+      }
+      get clientCount() {
+        return this.clients.size;
+      }
+      broadcast(event) {
+        const payload = JSON.stringify(event);
+        for (const ws of this.clients) {
+          if (ws.readyState === import_ws2.WebSocket.OPEN) {
+            try {
+              ws.send(payload);
+            } catch {
+            }
+          }
+        }
+      }
+    };
+  }
+});
+
 // packages/relay/src/server.ts
-var import_ws2, import_http, import_crypto3, RelayServer;
+var import_ws3, import_http, import_crypto4, RelayServer;
 var init_server = __esm({
   "packages/relay/src/server.ts"() {
     "use strict";
-    import_ws2 = require("ws");
+    import_ws3 = require("ws");
     import_http = require("http");
-    import_crypto3 = require("crypto");
+    import_crypto4 = require("crypto");
     init_src();
     init_connection_manager();
     init_router();
     init_agent_connection();
+    init_auth();
+    init_routes();
+    init_ws();
     RelayServer = class {
+      // single instance — avoids per-request leak
       constructor(config2) {
         this.config = config2;
         this.connectionManager = new ConnectionManager();
@@ -2808,6 +3570,10 @@ var init_server = __esm({
       connectionsByIp = /* @__PURE__ */ new Map();
       maxConnectionsPerIp = 10;
       maxTotalConnections = 500;
+      dashboardAuth = null;
+      dashboardRouter = null;
+      dashboardWs = null;
+      dashboardUpgrader = null;
       get port() {
         return this._port;
       }
@@ -2817,12 +3583,43 @@ var init_server = __esm({
       async start() {
         return new Promise((resolve12) => {
           this.httpServer = (0, import_http.createServer)(this.handleHttp.bind(this));
-          this.wss = new import_ws2.WebSocketServer({
-            server: this.httpServer,
-            maxPayload: 1 * 1024 * 1024
-            // S1: 1 MiB — rejects oversized frames before buffering
-          });
+          if (this.config.dashboard) {
+            this.dashboardAuth = new DashboardAuth(this.config.dashboard.projectRoot);
+            this.dashboardAuth.init();
+            this.dashboardWs = new DashboardWs();
+            this.dashboardUpgrader = new import_ws3.WebSocketServer({ noServer: true });
+            this.dashboardRouter = new DashboardRouter(
+              this.dashboardAuth,
+              this.config.dashboard.projectRoot,
+              {
+                agentConfigs: this.config.dashboard.agentConfigs,
+                relayConnections: this.connectionManager.count
+              }
+            );
+          }
+          this.wss = new import_ws3.WebSocketServer({ noServer: true, maxPayload: 1 * 1024 * 1024 });
           this.wss.on("connection", this.handleConnection.bind(this));
+          this.httpServer.on("upgrade", (req, socket, head) => {
+            const url2 = req.url ?? "";
+            if (url2 === "/dashboard/ws" && this.dashboardWs && this.dashboardUpgrader) {
+              const cookie = req.headers.cookie ?? "";
+              const match = cookie.match(/dashboard_session=([^;]+)/);
+              const token = match ? match[1] : null;
+              if (!token || !this.dashboardAuth?.validateSession(token)) {
+                socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+                socket.destroy();
+                return;
+              }
+              this.dashboardUpgrader.handleUpgrade(req, socket, head, (ws) => {
+                this.dashboardWs.addClient(ws);
+                ws.on("close", () => this.dashboardWs.removeClient(ws));
+              });
+            } else {
+              this.wss.handleUpgrade(req, socket, head, (ws) => {
+                this.wss.emit("connection", ws, req);
+              });
+            }
+          });
           this.httpServer.listen(this.config.port, this.config.host || "0.0.0.0", () => {
             const addr = this.httpServer.address();
             this._port = addr.port;
@@ -2872,6 +3669,7 @@ var init_server = __esm({
           if (connection) {
             this.router.onAgentDisconnect(connection.sessionId);
             this.connectionManager.unregister(connection.sessionId);
+            this.updateDashboardConnectionCount();
           }
         };
         ws.on("message", (data) => {
@@ -2893,7 +3691,7 @@ var init_server = __esm({
                 if (expectedKey) {
                   const a = Buffer.from(String(authMsg.apiKey));
                   const b = Buffer.from(expectedKey);
-                  if (a.length !== b.length || !(0, import_crypto3.timingSafeEqual)(a, b)) {
+                  if (a.length !== b.length || !(0, import_crypto4.timingSafeEqual)(a, b)) {
                     clearTimeout(authTimer);
                     ws.close(1008, "Invalid API key");
                     return;
@@ -2905,7 +3703,7 @@ var init_server = __esm({
                   return;
                 }
                 clearTimeout(authTimer);
-                const sessionId = (0, import_crypto3.randomUUID)();
+                const sessionId = (0, import_crypto4.randomUUID)();
                 try {
                   connection = new AgentConnection(sessionId, authMsg.agentId, ws);
                   this.connectionManager.register(sessionId, connection);
@@ -2914,6 +3712,7 @@ var init_server = __esm({
                   return;
                 }
                 authenticated = true;
+                this.updateDashboardConnectionCount();
                 ws.send(JSON.stringify({ type: "auth_ok", sessionId, agentId: authMsg.agentId }));
                 return;
               }
@@ -2951,10 +3750,35 @@ var init_server = __esm({
           res.end(JSON.stringify({ status: "ok", connections: this.connectionManager.count }));
           return;
         }
+        if (req.url?.startsWith("/dashboard") && this.dashboardRouter) {
+          this.dashboardRouter.handle(req, res);
+          return;
+        }
         res.writeHead(404);
         res.end();
       }
+      get dashboardKeyPrefix() {
+        return this.dashboardAuth?.getKeyPrefix() ?? "";
+      }
+      get dashboardUrl() {
+        if (!this.dashboardAuth) return "";
+        return `http://localhost:${this._port}/dashboard`;
+      }
+      /** Call from handleConnection cleanup to keep relay count current */
+      updateDashboardConnectionCount() {
+        this.dashboardRouter?.updateContext({ relayConnections: this.connectionManager.count });
+      }
     };
+  }
+});
+
+// packages/relay/src/dashboard/index.ts
+var init_dashboard = __esm({
+  "packages/relay/src/dashboard/index.ts"() {
+    "use strict";
+    init_auth();
+    init_routes();
+    init_ws();
   }
 });
 
@@ -2964,6 +3788,9 @@ __export(src_exports, {
   AgentConnection: () => AgentConnection,
   ChannelManager: () => ChannelManager,
   ConnectionManager: () => ConnectionManager,
+  DashboardAuth: () => DashboardAuth,
+  DashboardRouter: () => DashboardRouter,
+  DashboardWs: () => DashboardWs,
   MessageRouter: () => MessageRouter,
   PresenceTracker: () => PresenceTracker,
   RelayServer: () => RelayServer,
@@ -2979,16 +3806,17 @@ var init_src2 = __esm({
     init_channels();
     init_subscription_manager();
     init_presence();
+    init_dashboard();
   }
 });
 
 // packages/client/src/gossip-agent.ts
-var import_events, import_ws3, import_msgpack2, WS_CLOSE_LABELS, GossipAgent;
+var import_events, import_ws6, import_msgpack2, WS_CLOSE_LABELS, GossipAgent;
 var init_gossip_agent = __esm({
   "packages/client/src/gossip-agent.ts"() {
     "use strict";
     import_events = require("events");
-    import_ws3 = __toESM(require("ws"));
+    import_ws6 = __toESM(require("ws"));
     init_src();
     import_msgpack2 = __toESM(require_dist());
     WS_CLOSE_LABELS = {
@@ -3039,12 +3867,12 @@ var init_gossip_agent = __esm({
         return this._sessionId;
       }
       isConnected() {
-        return this._connected && this.ws !== null && this.ws.readyState === import_ws3.default.OPEN;
+        return this._connected && this.ws !== null && this.ws.readyState === import_ws6.default.OPEN;
       }
       // ─── Public API ─────────────────────────────────────────────────────────────
       connect() {
         return new Promise((resolve12, reject) => {
-          const ws = new import_ws3.default(this.config.relayUrl);
+          const ws = new import_ws6.default(this.config.relayUrl);
           const timeout = setTimeout(() => {
             ws.removeAllListeners();
             ws.on("error", () => {
@@ -3251,12 +4079,12 @@ var init_src3 = __esm({
 });
 
 // packages/tools/src/file-tools.ts
-var import_promises, import_path, FileTools;
+var import_promises, import_path7, FileTools;
 var init_file_tools = __esm({
   "packages/tools/src/file-tools.ts"() {
     "use strict";
     import_promises = require("fs/promises");
-    import_path = require("path");
+    import_path7 = require("path");
     FileTools = class {
       constructor(sandbox) {
         this.sandbox = sandbox;
@@ -3281,7 +4109,7 @@ var init_file_tools = __esm({
       }
       async fileWrite(args) {
         const absPath = this.sandbox.validatePath(args.path);
-        const dir = (0, import_path.resolve)(absPath, "..");
+        const dir = (0, import_path7.resolve)(absPath, "..");
         await (0, import_promises.mkdir)(dir, { recursive: true });
         await (0, import_promises.writeFile)(absPath, args.content, "utf-8");
         return `Written ${args.content.length} bytes to ${args.path}`;
@@ -3326,7 +4154,7 @@ var init_file_tools = __esm({
         }
         for (const entry of entries) {
           if (entry === "node_modules" || entry === ".git") continue;
-          const fullPath = (0, import_path.join)(dir, entry);
+          const fullPath = (0, import_path7.join)(dir, entry);
           let info;
           try {
             info = await (0, import_promises.stat)(fullPath);
@@ -3338,7 +4166,7 @@ var init_file_tools = __esm({
           } else {
             const regexStr = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
             const regex = new RegExp(regexStr);
-            const relPath = (0, import_path.relative)(this.sandbox.projectRoot, fullPath);
+            const relPath = (0, import_path7.relative)(this.sandbox.projectRoot, fullPath);
             if (regex.test(entry) || regex.test(relPath)) {
               results.push(relPath);
             }
@@ -3355,7 +4183,7 @@ var init_file_tools = __esm({
         }
         for (const entry of entries) {
           if (entry === "node_modules" || entry === ".git") continue;
-          const fullPath = (0, import_path.join)(dir, entry);
+          const fullPath = (0, import_path7.join)(dir, entry);
           let info;
           try {
             info = await (0, import_promises.stat)(fullPath);
@@ -3368,7 +4196,7 @@ var init_file_tools = __esm({
             try {
               const content = await (0, import_promises.readFile)(fullPath, "utf-8");
               const lines = content.split("\n");
-              const relPath = (0, import_path.relative)(this.sandbox.projectRoot, fullPath);
+              const relPath = (0, import_path7.relative)(this.sandbox.projectRoot, fullPath);
               lines.forEach((line, idx) => {
                 if (regex.test(line)) {
                   results.push(`${relPath}:${idx + 1}: ${line}`);
@@ -3392,7 +4220,7 @@ var init_file_tools = __esm({
           const entry = filtered[i];
           const isLast = i === filtered.length - 1;
           const connector = isLast ? "\u2514\u2500\u2500 " : "\u251C\u2500\u2500 ";
-          const fullPath = (0, import_path.join)(dir, entry);
+          const fullPath = (0, import_path7.join)(dir, entry);
           let info;
           try {
             info = await (0, import_promises.stat)(fullPath);
@@ -3597,20 +4425,20 @@ var init_git_tools = __esm({
 });
 
 // packages/tools/src/skill-tools.ts
-var import_fs, import_path2, SkillTools;
+var import_fs7, import_path8, SkillTools;
 var init_skill_tools = __esm({
   "packages/tools/src/skill-tools.ts"() {
     "use strict";
-    import_fs = require("fs");
-    import_path2 = require("path");
+    import_fs7 = require("fs");
+    import_path8 = require("path");
     SkillTools = class {
       gapLogPath;
       constructor(projectRoot) {
-        const gossipDir = (0, import_path2.join)(projectRoot, ".gossip");
-        if (!(0, import_fs.existsSync)(gossipDir)) {
-          (0, import_fs.mkdirSync)(gossipDir, { recursive: true });
+        const gossipDir = (0, import_path8.join)(projectRoot, ".gossip");
+        if (!(0, import_fs7.existsSync)(gossipDir)) {
+          (0, import_fs7.mkdirSync)(gossipDir, { recursive: true });
         }
-        this.gapLogPath = (0, import_path2.join)(gossipDir, "skill-gaps.jsonl");
+        this.gapLogPath = (0, import_path8.join)(gossipDir, "skill-gaps.jsonl");
       }
       async suggestSkill(args, callerId) {
         const entry = {
@@ -3621,16 +4449,16 @@ var init_skill_tools = __esm({
           task_context: args.task_context,
           timestamp: (/* @__PURE__ */ new Date()).toISOString()
         };
-        (0, import_fs.appendFileSync)(this.gapLogPath, JSON.stringify(entry) + "\n");
+        (0, import_fs7.appendFileSync)(this.gapLogPath, JSON.stringify(entry) + "\n");
         this.truncateIfNeeded();
         return `Suggestion noted: '${args.skill_name}'. Continue with your current skills.`;
       }
       truncateIfNeeded() {
         try {
-          const content = (0, import_fs.readFileSync)(this.gapLogPath, "utf-8");
+          const content = (0, import_fs7.readFileSync)(this.gapLogPath, "utf-8");
           const lines = content.trim().split("\n").filter(Boolean);
           if (lines.length > 5e3) {
-            (0, import_fs.writeFileSync)(this.gapLogPath, lines.slice(-1e3).join("\n") + "\n");
+            (0, import_fs7.writeFileSync)(this.gapLogPath, lines.slice(-1e3).join("\n") + "\n");
           }
         } catch {
         }
@@ -3640,16 +4468,16 @@ var init_skill_tools = __esm({
 });
 
 // packages/tools/src/sandbox.ts
-var import_path3, import_fs2, Sandbox;
+var import_path9, import_fs8, Sandbox;
 var init_sandbox = __esm({
   "packages/tools/src/sandbox.ts"() {
     "use strict";
-    import_path3 = require("path");
-    import_fs2 = require("fs");
+    import_path9 = require("path");
+    import_fs8 = require("fs");
     Sandbox = class {
       root;
       constructor(projectRoot) {
-        this.root = (0, import_fs2.realpathSync)((0, import_path3.resolve)(projectRoot));
+        this.root = (0, import_fs8.realpathSync)((0, import_path9.resolve)(projectRoot));
       }
       get projectRoot() {
         return this.root;
@@ -3661,14 +4489,14 @@ var init_sandbox = __esm({
        * Resolves symlinks to prevent symlink escape attacks.
        */
       validatePath(filePath) {
-        const resolved = (0, import_path3.resolve)(this.root, filePath);
+        const resolved = (0, import_path9.resolve)(this.root, filePath);
         let checkPath = resolved;
-        while (!(0, import_fs2.existsSync)(checkPath)) {
-          const parent = (0, import_path3.dirname)(checkPath);
+        while (!(0, import_fs8.existsSync)(checkPath)) {
+          const parent = (0, import_path9.dirname)(checkPath);
           if (parent === checkPath) break;
           checkPath = parent;
         }
-        const real = (0, import_fs2.existsSync)(checkPath) ? (0, import_fs2.realpathSync)(checkPath) : checkPath;
+        const real = (0, import_fs8.existsSync)(checkPath) ? (0, import_fs8.realpathSync)(checkPath) : checkPath;
         const remainder = resolved.slice(checkPath.length);
         const fullReal = real + remainder;
         if (!fullReal.startsWith(this.root + "/") && fullReal !== this.root) {
@@ -3686,20 +4514,20 @@ function truncateAtLine(text, maxLength) {
   const cut = text.lastIndexOf("\n", maxLength);
   return text.slice(0, cut !== -1 ? cut : maxLength);
 }
-var import_msgpack3, import_crypto4, import_path4, ToolServer;
+var import_msgpack3, import_crypto5, import_path10, ToolServer;
 var init_tool_server = __esm({
   "packages/tools/src/tool-server.ts"() {
     "use strict";
     init_src3();
     init_src();
     import_msgpack3 = __toESM(require_dist());
-    import_crypto4 = require("crypto");
+    import_crypto5 = require("crypto");
     init_file_tools();
     init_shell_tools();
     init_git_tools();
     init_skill_tools();
     init_sandbox();
-    import_path4 = require("path");
+    import_path10 = require("path");
     ToolServer = class _ToolServer {
       agent;
       fileTools;
@@ -3812,8 +4640,8 @@ var init_tool_server = __esm({
         if (toolName === "file_write") {
           const filePath = args.path;
           if (scope) {
-            const resolved = (0, import_path4.resolve)(this.sandbox.projectRoot, filePath);
-            const rel = (0, import_path4.relative)(this.sandbox.projectRoot, resolved);
+            const resolved = (0, import_path10.resolve)(this.sandbox.projectRoot, filePath);
+            const rel = (0, import_path10.relative)(this.sandbox.projectRoot, resolved);
             if (rel.startsWith("..")) {
               throw new Error(`Write blocked: "${filePath}" resolves outside project root`);
             }
@@ -3823,7 +4651,7 @@ var init_tool_server = __esm({
             }
           }
           if (root) {
-            const resolved = (0, import_path4.resolve)(root, filePath);
+            const resolved = (0, import_path10.resolve)(root, filePath);
             if (!resolved.startsWith(root)) {
               throw new Error(`Write blocked: "${filePath}" is outside worktree root "${root}"`);
             }
@@ -3995,7 +4823,7 @@ ${reviewResult || "No reviewer available"}
 ${truncateAtLine(fullDiff, 3e3)}`;
       }
       async requestPeerReview(callerId, diff, testResult) {
-        const requestId = (0, import_crypto4.randomUUID)();
+        const requestId = (0, import_crypto5.randomUUID)();
         const reviewPromise = new Promise((resolve12, reject) => {
           const timer = setTimeout(() => {
             this.pendingReviews.delete(requestId);
@@ -4255,11 +5083,11 @@ function createProvider(provider, model, apiKey) {
       throw new Error(`Unknown provider: ${provider}`);
   }
 }
-var import_crypto5, AnthropicProvider, OpenAIProvider, GeminiProvider, OllamaProvider;
+var import_crypto6, AnthropicProvider, OpenAIProvider, GeminiProvider, OllamaProvider;
 var init_llm_client = __esm({
   "packages/orchestrator/src/llm-client.ts"() {
     "use strict";
-    import_crypto5 = require("crypto");
+    import_crypto6 = require("crypto");
     AnthropicProvider = class {
       constructor(apiKey, model) {
         this.apiKey = apiKey;
@@ -4526,7 +5354,7 @@ var init_llm_client = __esm({
           if (part.functionCall) {
             const fc = part.functionCall;
             toolCalls.push({
-              id: fc.id || (0, import_crypto5.randomUUID)().slice(0, 12),
+              id: fc.id || (0, import_crypto6.randomUUID)().slice(0, 12),
               name: fc.name,
               arguments: fc.args || {}
             });
@@ -4580,17 +5408,6 @@ var init_llm_client = __esm({
         return { text: msg.content };
       }
     };
-  }
-});
-
-// packages/orchestrator/src/skill-name.ts
-function normalizeSkillName(name) {
-  if (!name || typeof name !== "string") return "";
-  return name.slice(0, 128).toLowerCase().replace(/[_\s]+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "");
-}
-var init_skill_name = __esm({
-  "packages/orchestrator/src/skill-name.ts"() {
-    "use strict";
   }
 });
 
@@ -4681,11 +5498,11 @@ var init_agent_registry = __esm({
 });
 
 // packages/orchestrator/src/task-dispatcher.ts
-var import_crypto6, TaskDispatcher;
+var import_crypto7, TaskDispatcher;
 var init_task_dispatcher = __esm({
   "packages/orchestrator/src/task-dispatcher.ts"() {
     "use strict";
-    import_crypto6 = require("crypto");
+    import_crypto7 = require("crypto");
     TaskDispatcher = class {
       constructor(llm, registry2) {
         this.llm = llm;
@@ -4743,7 +5560,7 @@ Use "sequential" ONLY when a later task genuinely needs output from an earlier o
             originalTask: task,
             strategy: plan.strategy || "single",
             subTasks: (plan.subTasks || []).map((st) => ({
-              id: (0, import_crypto6.randomUUID)(),
+              id: (0, import_crypto7.randomUUID)(),
               description: st.description,
               requiredSkills: st.requiredSkills || [],
               status: "pending"
@@ -4755,7 +5572,7 @@ Use "sequential" ONLY when a later task genuinely needs output from an earlier o
             originalTask: task,
             strategy: "single",
             subTasks: [{
-              id: (0, import_crypto6.randomUUID)(),
+              id: (0, import_crypto7.randomUUID)(),
               description: task,
               requiredSkills: [],
               status: "pending"
@@ -4862,14 +5679,14 @@ function parseTextToolCalls(text, validTools) {
   while ((match = blockRe.exec(text)) !== null) {
     const content = match[1].trim();
     const parsed = parseToolContent(content, validTools);
-    if (parsed) calls.push({ id: (0, import_crypto7.randomUUID)().slice(0, 12), ...parsed });
+    if (parsed) calls.push({ id: (0, import_crypto8.randomUUID)().slice(0, 12), ...parsed });
   }
   if (calls.length === 0) {
     const fenceRe = /```tool_call\s*\n([\s\S]*?)```/g;
     while ((match = fenceRe.exec(text)) !== null) {
       const content = match[1].trim();
       const parsed = parseToolContent(content, validTools);
-      if (parsed) calls.push({ id: (0, import_crypto7.randomUUID)().slice(0, 12), ...parsed });
+      if (parsed) calls.push({ id: (0, import_crypto8.randomUUID)().slice(0, 12), ...parsed });
     }
   }
   if (calls.length === 0 && validTools.size > 0) {
@@ -4879,7 +5696,7 @@ function parseTextToolCalls(text, validTools) {
       if (!validTools.has(match[1])) continue;
       try {
         const args = JSON.parse(match[2].replace(/,\s*([}\]])/g, "$1"));
-        calls.push({ id: (0, import_crypto7.randomUUID)().slice(0, 12), name: match[1], arguments: args });
+        calls.push({ id: (0, import_crypto8.randomUUID)().slice(0, 12), name: match[1], arguments: args });
       } catch {
       }
     }
@@ -4915,11 +5732,11 @@ function parseToolContent(content, validTools) {
   }
   return null;
 }
-var import_crypto7, import_msgpack4, MAX_TOOL_TURNS, TOOL_CALL_TIMEOUT_MS, log, WorkerAgent;
+var import_crypto8, import_msgpack4, MAX_TOOL_TURNS, TOOL_CALL_TIMEOUT_MS, log, WorkerAgent;
 var init_worker_agent = __esm({
   "packages/orchestrator/src/worker-agent.ts"() {
     "use strict";
-    import_crypto7 = require("crypto");
+    import_crypto8 = require("crypto");
     init_src3();
     init_src();
     import_msgpack4 = __toESM(require_dist());
@@ -5173,7 +5990,7 @@ ${context}` : ""}
       }
       /** Send RPC_REQUEST to tool-server via relay */
       async callTool(name, args) {
-        const requestId = (0, import_crypto7.randomUUID)();
+        const requestId = (0, import_crypto8.randomUUID)();
         const resultPromise = new Promise((resolve12, reject) => {
           const timer = setTimeout(() => {
             if (this.pendingToolCalls.has(requestId)) {
@@ -5267,25 +6084,25 @@ function resolveSkill(agentId, skill, projectRoot) {
   const filename = `${sanitized}.md`;
   const hyphenFilename = `${sanitized.replace(/_/g, "-")}.md`;
   const bases = [
-    (0, import_path5.resolve)(projectRoot, ".gossip", "agents", agentId, "skills"),
-    (0, import_path5.resolve)(projectRoot, ".gossip", "skills"),
-    (0, import_path5.resolve)(__dirname, "default-skills")
+    (0, import_path11.resolve)(projectRoot, ".gossip", "agents", agentId, "skills"),
+    (0, import_path11.resolve)(projectRoot, ".gossip", "skills"),
+    (0, import_path11.resolve)(__dirname, "default-skills")
   ];
   for (const base of bases) {
     for (const fname of [filename, hyphenFilename]) {
-      const candidate = (0, import_path5.resolve)(base, fname);
+      const candidate = (0, import_path11.resolve)(base, fname);
       if (!candidate.startsWith(base + "/")) continue;
-      if ((0, import_fs3.existsSync)(candidate)) return (0, import_fs3.readFileSync)(candidate, "utf-8");
+      if ((0, import_fs9.existsSync)(candidate)) return (0, import_fs9.readFileSync)(candidate, "utf-8");
     }
   }
   return null;
 }
-var import_fs3, import_path5;
+var import_fs9, import_path11;
 var init_skill_loader = __esm({
   "packages/orchestrator/src/skill-loader.ts"() {
     "use strict";
-    import_fs3 = require("fs");
-    import_path5 = require("path");
+    import_fs9 = require("fs");
+    import_path11 = require("path");
   }
 });
 
@@ -5415,29 +6232,29 @@ var init_prompt_assembler = __esm({
 });
 
 // packages/orchestrator/src/agent-memory.ts
-var import_fs4, import_path6, AgentMemoryReader;
+var import_fs10, import_path12, AgentMemoryReader;
 var init_agent_memory = __esm({
   "packages/orchestrator/src/agent-memory.ts"() {
     "use strict";
-    import_fs4 = require("fs");
-    import_path6 = require("path");
+    import_fs10 = require("fs");
+    import_path12 = require("path");
     AgentMemoryReader = class {
       constructor(projectRoot) {
         this.projectRoot = projectRoot;
       }
       loadMemory(agentId, taskText) {
-        const memDir = (0, import_path6.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
-        const indexPath = (0, import_path6.join)(memDir, "MEMORY.md");
-        if (!(0, import_fs4.existsSync)(indexPath)) return null;
+        const memDir = (0, import_path12.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
+        const indexPath = (0, import_path12.join)(memDir, "MEMORY.md");
+        if (!(0, import_fs10.existsSync)(indexPath)) return null;
         const parts = [];
-        const indexContent = (0, import_fs4.readFileSync)(indexPath, "utf-8");
+        const indexContent = (0, import_fs10.readFileSync)(indexPath, "utf-8");
         const indexLines = indexContent.split("\n");
         parts.push(indexLines.length > 200 ? indexLines.slice(0, 200).join("\n") + "\n[Truncated]" : indexContent);
-        const knowledgeDir = (0, import_path6.join)(memDir, "knowledge");
-        if ((0, import_fs4.existsSync)(knowledgeDir)) {
+        const knowledgeDir = (0, import_path12.join)(memDir, "knowledge");
+        if ((0, import_fs10.existsSync)(knowledgeDir)) {
           const files = this.selectKnowledgeFiles(knowledgeDir, taskText);
           for (const file2 of files) {
-            let content = (0, import_fs4.readFileSync)(file2.path, "utf-8");
+            let content = (0, import_fs10.readFileSync)(file2.path, "utf-8");
             content = content.replace(/<\/?(?:agent-memory|system|instructions)>/gi, "");
             parts.push(`<agent-memory>
 ${content}
@@ -5447,19 +6264,19 @@ ${content}
             }
           }
         }
-        const calPath = (0, import_path6.join)(memDir, "calibration", "accuracy.md");
-        if ((0, import_fs4.existsSync)(calPath)) {
-          parts.push((0, import_fs4.readFileSync)(calPath, "utf-8"));
+        const calPath = (0, import_path12.join)(memDir, "calibration", "accuracy.md");
+        if ((0, import_fs10.existsSync)(calPath)) {
+          parts.push((0, import_fs10.readFileSync)(calPath, "utf-8"));
         }
         return parts.join("\n\n");
       }
       selectKnowledgeFiles(knowledgeDir, taskText) {
-        const files = (0, import_fs4.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
+        const files = (0, import_fs10.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
         const scored = [];
         const lower = taskText.toLowerCase();
         for (const file2 of files) {
-          const filePath = (0, import_path6.join)(knowledgeDir, file2);
-          const content = (0, import_fs4.readFileSync)(filePath, "utf-8");
+          const filePath = (0, import_path12.join)(knowledgeDir, file2);
+          const content = (0, import_fs10.readFileSync)(filePath, "utf-8");
           const frontmatter = this.parseFrontmatter(content);
           if (frontmatter) {
             const warmth = this.calculateWarmth(frontmatter.importance, frontmatter.lastAccessed);
@@ -5473,7 +6290,7 @@ ${content}
           } else {
             const relevance = this.calculateRelevance(content.slice(0, 500), lower);
             try {
-              const mtime = (0, import_fs4.statSync)(filePath).mtimeMs;
+              const mtime = (0, import_fs10.statSync)(filePath).mtimeMs;
               const ageDays = (Date.now() - mtime) / 864e5;
               const ageFactor = 1 / (1 + ageDays / 30);
               scored.push({ path: filePath, score: Math.max(relevance * ageFactor, 0.05) });
@@ -5530,7 +6347,7 @@ ${content}
           const newCount = parseInt(countMatch[1]) + 1;
           updated = updated.replace(/accessCount:\s*\d+/, `accessCount: ${newCount}`);
         }
-        (0, import_fs4.writeFileSync)(filePath, updated);
+        (0, import_fs10.writeFileSync)(filePath, updated);
       }
     };
   }
@@ -5552,12 +6369,12 @@ function truncateStartAndEnd(text, maxLen) {
 
 ${text.slice(-half)}`;
 }
-var import_fs5, import_path7, MemoryWriter;
+var import_fs11, import_path13, MemoryWriter;
 var init_memory_writer = __esm({
   "packages/orchestrator/src/memory-writer.ts"() {
     "use strict";
-    import_fs5 = require("fs");
-    import_path7 = require("path");
+    import_fs11 = require("fs");
+    import_path13 = require("path");
     MemoryWriter = class {
       constructor(projectRoot) {
         this.projectRoot = projectRoot;
@@ -5568,12 +6385,12 @@ var init_memory_writer = __esm({
         this.summaryLlm = llm;
       }
       getMemDir(agentId) {
-        return (0, import_path7.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
+        return (0, import_path13.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
       }
       ensureDirs(agentId) {
         const memDir = this.getMemDir(agentId);
-        (0, import_fs5.mkdirSync)((0, import_path7.join)(memDir, "knowledge"), { recursive: true });
-        (0, import_fs5.mkdirSync)((0, import_path7.join)(memDir, "calibration"), { recursive: true });
+        (0, import_fs11.mkdirSync)((0, import_path13.join)(memDir, "knowledge"), { recursive: true });
+        (0, import_fs11.mkdirSync)((0, import_path13.join)(memDir, "calibration"), { recursive: true });
         return memDir;
       }
       async writeTaskEntry(agentId, data) {
@@ -5591,7 +6408,7 @@ var init_memory_writer = __esm({
           importance: this.deriveImportance(data.scores),
           timestamp: (/* @__PURE__ */ new Date()).toISOString()
         };
-        (0, import_fs5.appendFileSync)((0, import_path7.join)(memDir, "tasks.jsonl"), JSON.stringify(entry) + "\n");
+        (0, import_fs11.appendFileSync)((0, import_path13.join)(memDir, "tasks.jsonl"), JSON.stringify(entry) + "\n");
       }
       /**
        * Extract key facts from a task result and write as a knowledge entry.
@@ -5600,7 +6417,7 @@ var init_memory_writer = __esm({
        */
       async writeKnowledgeFromResult(agentId, data) {
         const memDir = this.ensureDirs(agentId);
-        const knowledgeDir = (0, import_path7.join)(memDir, "knowledge");
+        const knowledgeDir = (0, import_path13.join)(memDir, "knowledge");
         const safeResult = data.result.length > 5e4 ? data.result.slice(0, 5e4) : data.result;
         const facts = this.extractFacts(data.task, safeResult);
         if (!facts) return;
@@ -5616,12 +6433,12 @@ var init_memory_writer = __esm({
         const filename = `${timestamp}-${data.taskId}.md`;
         const today = now.toISOString().split("T")[0];
         try {
-          const existing = (0, import_fs5.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
+          const existing = (0, import_fs11.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
           const MAX_KNOWLEDGE_FILES = 10;
           if (existing.length >= MAX_KNOWLEDGE_FILES) {
             const toRemove = existing.slice(0, existing.length - MAX_KNOWLEDGE_FILES + 1);
             for (const old of toRemove) {
-              (0, import_fs5.unlinkSync)((0, import_path7.join)(knowledgeDir, old));
+              (0, import_fs11.unlinkSync)((0, import_path13.join)(knowledgeDir, old));
             }
           }
         } catch {
@@ -5640,7 +6457,7 @@ ${cognitiveSummary}` : facts.body;
           "",
           body
         ].join("\n");
-        (0, import_fs5.writeFileSync)((0, import_path7.join)(knowledgeDir, filename), content);
+        (0, import_fs11.writeFileSync)((0, import_path13.join)(knowledgeDir, filename), content);
       }
       /**
        * Generate a cognitive summary — what the agent learned, not just what it saw.
@@ -5682,7 +6499,7 @@ ${truncateStartAndEnd(result, 4e3)}`
        */
       async writeSessionSummary(data) {
         const memDir = this.ensureDirs("_project");
-        const knowledgeDir = (0, import_path7.join)(memDir, "knowledge");
+        const knowledgeDir = (0, import_path13.join)(memDir, "knowledge");
         const now = /* @__PURE__ */ new Date();
         const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
         const filename = `${timestamp}-session.md`;
@@ -5754,7 +6571,7 @@ Rules:
           "",
           summaryBody
         ].filter((l) => l !== "").join("\n");
-        (0, import_fs5.writeFileSync)((0, import_path7.join)(knowledgeDir, filename), content);
+        (0, import_fs11.writeFileSync)((0, import_path13.join)(knowledgeDir, filename), content);
         await this.writeTaskEntry("_project", {
           taskId: `session-${timestamp}`,
           task: `Session ${today}`,
@@ -5767,11 +6584,11 @@ Rules:
       /** Warmth-aware pruning for _project knowledge files (respects pinned) */
       pruneProjectKnowledge(knowledgeDir) {
         try {
-          const existing = (0, import_fs5.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
+          const existing = (0, import_fs11.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
           const MAX_KNOWLEDGE_FILES = 10;
           if (existing.length < MAX_KNOWLEDGE_FILES) return;
           const scored = existing.map((f) => {
-            const content = (0, import_fs5.readFileSync)((0, import_path7.join)(knowledgeDir, f), "utf-8");
+            const content = (0, import_fs11.readFileSync)((0, import_path13.join)(knowledgeDir, f), "utf-8");
             const importance = parseFloat(content.match(/importance:\s*([\d.]+)/)?.[1] ?? "0.5");
             const isPinned = /pinned:\s*true/i.test(content);
             const ts = f.slice(0, 19).replace(/T/, "T").replace(/-(\d\d)-(\d\d)-/, ":$1:$2:");
@@ -5783,7 +6600,7 @@ Rules:
           const toRemove = scored.slice(0, existing.length - MAX_KNOWLEDGE_FILES + 1);
           for (const item of toRemove) {
             if (item.isPinned) continue;
-            (0, import_fs5.unlinkSync)((0, import_path7.join)(knowledgeDir, item.file));
+            (0, import_fs11.unlinkSync)((0, import_path13.join)(knowledgeDir, item.file));
           }
         } catch {
         }
@@ -5956,7 +6773,7 @@ ${result}`;
       writeConsensusKnowledge(agentId, findings) {
         if (findings.length === 0) return;
         const memDir = this.ensureDirs(agentId);
-        const knowledgeDir = (0, import_path7.join)(memDir, "knowledge");
+        const knowledgeDir = (0, import_path13.join)(memDir, "knowledge");
         const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
         const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
         const filename = `${timestamp}-consensus.md`;
@@ -5976,17 +6793,17 @@ ${result}`;
           ...peerFindings.map((f) => `- [${f.originalAgentId}] ${f.finding}`)
         ].join("\n");
         try {
-          const existing = (0, import_fs5.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
+          const existing = (0, import_fs11.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
           const MAX_KNOWLEDGE_FILES = 10;
           if (existing.length >= MAX_KNOWLEDGE_FILES) {
             const toRemove = existing.slice(0, existing.length - MAX_KNOWLEDGE_FILES + 1);
             for (const old of toRemove) {
-              (0, import_fs5.unlinkSync)((0, import_path7.join)(knowledgeDir, old));
+              (0, import_fs11.unlinkSync)((0, import_path13.join)(knowledgeDir, old));
             }
           }
         } catch {
         }
-        (0, import_fs5.writeFileSync)((0, import_path7.join)(knowledgeDir, filename), content);
+        (0, import_fs11.writeFileSync)((0, import_path13.join)(knowledgeDir, filename), content);
       }
       /**
        * Update task memory importance based on consensus signals.
@@ -6009,13 +6826,13 @@ ${result}`;
           taskAdj.set(s.taskId, (taskAdj.get(s.taskId) ?? 0) + weight);
         }
         for (const [agentId, taskAdjustments] of adjustments) {
-          const memDir = (0, import_path7.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
-          const tasksPath = (0, import_path7.join)(memDir, "tasks.jsonl");
-          const lockPath = (0, import_path7.join)(memDir, "tasks.jsonl.lock");
-          if (!(0, import_fs5.existsSync)(tasksPath)) continue;
-          if ((0, import_fs5.existsSync)(lockPath)) continue;
+          const memDir = (0, import_path13.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
+          const tasksPath = (0, import_path13.join)(memDir, "tasks.jsonl");
+          const lockPath = (0, import_path13.join)(memDir, "tasks.jsonl.lock");
+          if (!(0, import_fs11.existsSync)(tasksPath)) continue;
+          if ((0, import_fs11.existsSync)(lockPath)) continue;
           try {
-            const lines = (0, import_fs5.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+            const lines = (0, import_fs11.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
             let modified = false;
             const updated = lines.map((line) => {
               try {
@@ -6032,7 +6849,7 @@ ${result}`;
               }
             });
             if (modified) {
-              (0, import_fs5.writeFileSync)(tasksPath, updated.join("\n") + "\n");
+              (0, import_fs11.writeFileSync)(tasksPath, updated.join("\n") + "\n");
             }
           } catch {
           }
@@ -6042,13 +6859,13 @@ ${result}`;
         const memDir = this.getMemDir(agentId);
         const parts = [`# Agent Memory \u2014 ${agentId}
 `];
-        const knowledgeDir = (0, import_path7.join)(memDir, "knowledge");
-        if ((0, import_fs5.existsSync)(knowledgeDir)) {
-          const files = (0, import_fs5.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort().reverse();
+        const knowledgeDir = (0, import_path13.join)(memDir, "knowledge");
+        if ((0, import_fs11.existsSync)(knowledgeDir)) {
+          const files = (0, import_fs11.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort().reverse();
           if (files.length > 0) {
             parts.push("## Knowledge (most recent first)");
             for (const file2 of files) {
-              const content = (0, import_fs5.readFileSync)((0, import_path7.join)(knowledgeDir, file2), "utf-8");
+              const content = (0, import_fs11.readFileSync)((0, import_path13.join)(knowledgeDir, file2), "utf-8");
               const descMatch = content.match(/description:\s*(.+)/);
               const desc = descMatch ? descMatch[1].trim() : file2.replace(".md", "");
               parts.push(`- [${file2.replace(".md", "")}](knowledge/${file2}) \u2014 ${desc}`);
@@ -6056,17 +6873,17 @@ ${result}`;
             parts.push("");
           }
         }
-        const calPath = (0, import_path7.join)(memDir, "calibration", "accuracy.md");
-        if ((0, import_fs5.existsSync)(calPath)) {
-          const content = (0, import_fs5.readFileSync)(calPath, "utf-8");
+        const calPath = (0, import_path13.join)(memDir, "calibration", "accuracy.md");
+        if ((0, import_fs11.existsSync)(calPath)) {
+          const content = (0, import_fs11.readFileSync)(calPath, "utf-8");
           const descMatch = content.match(/description:\s*(.+)/);
           parts.push("## Calibration");
           parts.push(`- [accuracy](calibration/accuracy.md) \u2014 ${descMatch ? descMatch[1].trim() : "accuracy data"}`);
           parts.push("");
         }
-        const tasksPath = (0, import_path7.join)(memDir, "tasks.jsonl");
-        if ((0, import_fs5.existsSync)(tasksPath)) {
-          const lines = (0, import_fs5.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+        const tasksPath = (0, import_path13.join)(memDir, "tasks.jsonl");
+        if ((0, import_fs11.existsSync)(tasksPath)) {
+          const lines = (0, import_fs11.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
           const recent = lines.slice(-5).reverse();
           if (recent.length > 0) {
             parts.push("## Recent Tasks");
@@ -6083,12 +6900,12 @@ ${result}`;
           }
         }
         try {
-          const knowledgeDir2 = (0, import_path7.join)(memDir, "knowledge");
-          if ((0, import_fs5.existsSync)(knowledgeDir2)) {
-            const knowledgeFiles = (0, import_fs5.readdirSync)(knowledgeDir2).filter((f) => f.endsWith(".md")).sort().reverse().slice(0, 5);
+          const knowledgeDir2 = (0, import_path13.join)(memDir, "knowledge");
+          if ((0, import_fs11.existsSync)(knowledgeDir2)) {
+            const knowledgeFiles = (0, import_fs11.readdirSync)(knowledgeDir2).filter((f) => f.endsWith(".md")).sort().reverse().slice(0, 5);
             const patterns = [];
             for (const kf of knowledgeFiles) {
-              const kContent = (0, import_fs5.readFileSync)((0, import_path7.join)(knowledgeDir2, kf), "utf-8");
+              const kContent = (0, import_fs11.readFileSync)((0, import_path13.join)(knowledgeDir2, kf), "utf-8");
               const decisionsMatch = kContent.match(/Decisions: (.+)/);
               if (decisionsMatch) patterns.push(decisionsMatch[1].trim());
               const failuresMatch = kContent.match(/Failures: (.+)/);
@@ -6100,19 +6917,19 @@ ${result}`;
           }
         } catch {
         }
-        (0, import_fs5.writeFileSync)((0, import_path7.join)(memDir, "MEMORY.md"), parts.join("\n"));
+        (0, import_fs11.writeFileSync)((0, import_path13.join)(memDir, "MEMORY.md"), parts.join("\n"));
       }
     };
   }
 });
 
 // packages/orchestrator/src/memory-compactor.ts
-var import_fs6, import_path8, MAX_ARCHIVE_LINES, MemoryCompactor;
+var import_fs12, import_path14, MAX_ARCHIVE_LINES, MemoryCompactor;
 var init_memory_compactor = __esm({
   "packages/orchestrator/src/memory-compactor.ts"() {
     "use strict";
-    import_fs6 = require("fs");
-    import_path8 = require("path");
+    import_fs12 = require("fs");
+    import_path14 = require("path");
     MAX_ARCHIVE_LINES = 5e3;
     MemoryCompactor = class {
       constructor(projectRoot) {
@@ -6124,30 +6941,30 @@ var init_memory_compactor = __esm({
         return (importance || 0.5) * (1 / (1 + days / 30));
       }
       compactIfNeeded(agentId, maxEntries = 20) {
-        const memDir = (0, import_path8.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
-        const tasksPath = (0, import_path8.join)(memDir, "tasks.jsonl");
-        const lockPath = (0, import_path8.join)(memDir, "tasks.jsonl.lock");
-        if (!(0, import_fs6.existsSync)(tasksPath)) return { archived: 0 };
-        if ((0, import_fs6.existsSync)(lockPath)) {
+        const memDir = (0, import_path14.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
+        const tasksPath = (0, import_path14.join)(memDir, "tasks.jsonl");
+        const lockPath = (0, import_path14.join)(memDir, "tasks.jsonl.lock");
+        if (!(0, import_fs12.existsSync)(tasksPath)) return { archived: 0 };
+        if ((0, import_fs12.existsSync)(lockPath)) {
           try {
-            const lockAge = Date.now() - parseInt((0, import_fs6.readFileSync)(lockPath, "utf-8"), 10);
+            const lockAge = Date.now() - parseInt((0, import_fs12.readFileSync)(lockPath, "utf-8"), 10);
             if (lockAge < 6e4) return { archived: 0 };
-            (0, import_fs6.unlinkSync)(lockPath);
+            (0, import_fs12.unlinkSync)(lockPath);
           } catch {
             try {
-              (0, import_fs6.unlinkSync)(lockPath);
+              (0, import_fs12.unlinkSync)(lockPath);
             } catch {
               return { archived: 0 };
             }
           }
         }
         try {
-          (0, import_fs6.writeFileSync)(lockPath, `${Date.now()}`);
+          (0, import_fs12.writeFileSync)(lockPath, `${Date.now()}`);
         } catch {
           return { archived: 0 };
         }
         try {
-          const lines = (0, import_fs6.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+          const lines = (0, import_fs12.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
           if (lines.length <= maxEntries) return { archived: 0 };
           const entries = [];
           for (const line of lines) {
@@ -6161,7 +6978,7 @@ var init_memory_compactor = __esm({
           entries.sort((a, b) => a.warmth - b.warmth);
           const toArchive = entries.slice(0, entries.length - maxEntries);
           const toKeep = entries.slice(entries.length - maxEntries);
-          const archivePath = (0, import_path8.join)(memDir, "archive.jsonl");
+          const archivePath = (0, import_path14.join)(memDir, "archive.jsonl");
           for (const item of toArchive) {
             const archived = {
               archivedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -6169,22 +6986,22 @@ var init_memory_compactor = __esm({
               warmth: item.warmth,
               entry: item.entry
             };
-            (0, import_fs6.appendFileSync)(archivePath, JSON.stringify(archived) + "\n");
+            (0, import_fs12.appendFileSync)(archivePath, JSON.stringify(archived) + "\n");
           }
           try {
-            if ((0, import_fs6.existsSync)(archivePath)) {
-              const archiveLines = (0, import_fs6.readFileSync)(archivePath, "utf-8").trim().split("\n");
+            if ((0, import_fs12.existsSync)(archivePath)) {
+              const archiveLines = (0, import_fs12.readFileSync)(archivePath, "utf-8").trim().split("\n");
               if (archiveLines.length > MAX_ARCHIVE_LINES) {
-                (0, import_fs6.writeFileSync)(archivePath, archiveLines.slice(-MAX_ARCHIVE_LINES).join("\n") + "\n");
+                (0, import_fs12.writeFileSync)(archivePath, archiveLines.slice(-MAX_ARCHIVE_LINES).join("\n") + "\n");
               }
             }
           } catch {
           }
-          (0, import_fs6.writeFileSync)(tasksPath, toKeep.map((e) => e.line).join("\n") + "\n");
+          (0, import_fs12.writeFileSync)(tasksPath, toKeep.map((e) => e.line).join("\n") + "\n");
           return { archived: toArchive.length, message: `Compacted ${toArchive.length} memories for ${agentId}` };
         } finally {
           try {
-            (0, import_fs6.unlinkSync)(lockPath);
+            (0, import_fs12.unlinkSync)(lockPath);
           } catch {
           }
         }
@@ -6194,12 +7011,12 @@ var init_memory_compactor = __esm({
 });
 
 // packages/orchestrator/src/task-graph.ts
-var import_fs7, import_path9, MAX_SCAN_LINES, TaskGraph;
+var import_fs13, import_path15, MAX_SCAN_LINES, TaskGraph;
 var init_task_graph = __esm({
   "packages/orchestrator/src/task-graph.ts"() {
     "use strict";
-    import_fs7 = require("fs");
-    import_path9 = require("path");
+    import_fs13 = require("fs");
+    import_path15 = require("path");
     MAX_SCAN_LINES = 1e3;
     TaskGraph = class {
       graphPath;
@@ -6209,14 +7026,14 @@ var init_task_graph = __esm({
       // taskId → last event line number
       eventCount = 0;
       constructor(projectRoot) {
-        const gossipDir = (0, import_path9.join)(projectRoot, ".gossip");
-        (0, import_fs7.mkdirSync)(gossipDir, { recursive: true });
-        this.graphPath = (0, import_path9.join)(gossipDir, "task-graph.jsonl");
-        this.syncMetaPath = (0, import_path9.join)(gossipDir, "task-graph-sync.json");
-        this.indexPath = (0, import_path9.join)(gossipDir, "task-graph-index.json");
+        const gossipDir = (0, import_path15.join)(projectRoot, ".gossip");
+        (0, import_fs13.mkdirSync)(gossipDir, { recursive: true });
+        this.graphPath = (0, import_path15.join)(gossipDir, "task-graph.jsonl");
+        this.syncMetaPath = (0, import_path15.join)(gossipDir, "task-graph-sync.json");
+        this.indexPath = (0, import_path15.join)(gossipDir, "task-graph-index.json");
         this.loadIndex();
-        if ((0, import_fs7.existsSync)(this.graphPath)) {
-          const buf = (0, import_fs7.readFileSync)(this.graphPath);
+        if ((0, import_fs13.existsSync)(this.graphPath)) {
+          const buf = (0, import_fs13.readFileSync)(this.graphPath);
           let count = 0;
           for (let i = 0; i < buf.length; i++) {
             if (buf[i] === 10) count++;
@@ -6225,9 +7042,9 @@ var init_task_graph = __esm({
         }
       }
       loadIndex() {
-        if ((0, import_fs7.existsSync)(this.indexPath)) {
+        if ((0, import_fs13.existsSync)(this.indexPath)) {
           try {
-            const data = JSON.parse((0, import_fs7.readFileSync)(this.indexPath, "utf-8"));
+            const data = JSON.parse((0, import_fs13.readFileSync)(this.indexPath, "utf-8"));
             this.index = new Map(Object.entries(data).map(([k, v]) => [k, Number(v)]));
           } catch {
           }
@@ -6235,10 +7052,10 @@ var init_task_graph = __esm({
       }
       /** Save index to disk (call explicitly, not on every append) */
       flushIndex() {
-        (0, import_fs7.writeFileSync)(this.indexPath, JSON.stringify(Object.fromEntries(this.index)));
+        (0, import_fs13.writeFileSync)(this.indexPath, JSON.stringify(Object.fromEntries(this.index)));
       }
       appendEvent(event) {
-        (0, import_fs7.appendFileSync)(this.graphPath, JSON.stringify(event) + "\n");
+        (0, import_fs13.appendFileSync)(this.graphPath, JSON.stringify(event) + "\n");
         if ("taskId" in event) {
           this.index.set(event.taskId, this.eventCount);
         }
@@ -6320,8 +7137,8 @@ var init_task_graph = __esm({
       }
       // ── Read methods ─────────────────────────────────────────────────────
       readEvents() {
-        if (!(0, import_fs7.existsSync)(this.graphPath)) return [];
-        const content = (0, import_fs7.readFileSync)(this.graphPath, "utf-8");
+        if (!(0, import_fs13.existsSync)(this.graphPath)) return [];
+        const content = (0, import_fs13.readFileSync)(this.graphPath, "utf-8");
         const lines = content.trim().split("\n").filter(Boolean);
         const tail = lines.slice(-MAX_SCAN_LINES);
         return tail.map((line) => {
@@ -6403,14 +7220,14 @@ var init_task_graph = __esm({
         return this.eventCount;
       }
       getSyncMeta() {
-        if (!(0, import_fs7.existsSync)(this.syncMetaPath)) {
+        if (!(0, import_fs13.existsSync)(this.syncMetaPath)) {
           return { lastSync: "", lastSyncEventCount: 0 };
         }
-        return JSON.parse((0, import_fs7.readFileSync)(this.syncMetaPath, "utf-8"));
+        return JSON.parse((0, import_fs13.readFileSync)(this.syncMetaPath, "utf-8"));
       }
       updateSyncMeta(meta3) {
         const current = this.getSyncMeta();
-        (0, import_fs7.writeFileSync)(this.syncMetaPath, JSON.stringify({ ...current, ...meta3 }, null, 2));
+        (0, import_fs13.writeFileSync)(this.syncMetaPath, JSON.stringify({ ...current, ...meta3 }, null, 2));
       }
       getUnsynced(lastSyncTimestamp) {
         if (!lastSyncTimestamp) return this.readEvents();
@@ -6460,12 +7277,12 @@ var init_skill_parser = __esm({
 });
 
 // packages/orchestrator/src/skill-catalog.ts
-var import_fs8, import_path10, SkillCatalog;
+var import_fs14, import_path16, SkillCatalog;
 var init_skill_catalog = __esm({
   "packages/orchestrator/src/skill-catalog.ts"() {
     "use strict";
-    import_fs8 = require("fs");
-    import_path10 = require("path");
+    import_fs14 = require("fs");
+    import_path16 = require("path");
     init_skill_name();
     init_skill_parser();
     SkillCatalog = class {
@@ -6474,11 +7291,11 @@ var init_skill_catalog = __esm({
       projectSkillsDir;
       projectFileMtimes = /* @__PURE__ */ new Map();
       constructor(projectRoot, catalogPath) {
-        const defaultPath = catalogPath || (0, import_path10.resolve)(__dirname, "default-skills", "catalog.json");
-        this.defaultSkillsDir = (0, import_path10.resolve)(__dirname, "default-skills");
-        this.projectSkillsDir = projectRoot ? (0, import_path10.join)(projectRoot, ".gossip", "skills") : null;
+        const defaultPath = catalogPath || (0, import_path16.resolve)(__dirname, "default-skills", "catalog.json");
+        this.defaultSkillsDir = (0, import_path16.resolve)(__dirname, "default-skills");
+        this.projectSkillsDir = projectRoot ? (0, import_path16.join)(projectRoot, ".gossip", "skills") : null;
         try {
-          const raw = (0, import_fs8.readFileSync)(defaultPath, "utf-8");
+          const raw = (0, import_fs14.readFileSync)(defaultPath, "utf-8");
           const data = JSON.parse(raw);
           this.entries = data.skills.map((s) => ({
             ...s,
@@ -6516,7 +7333,7 @@ var init_skill_catalog = __esm({
       }
       validate() {
         const issues = [];
-        const mdFiles = (0, import_fs8.readdirSync)(this.defaultSkillsDir).filter((f) => f.endsWith(".md")).map((f) => normalizeSkillName(f.replace(".md", "")));
+        const mdFiles = (0, import_fs14.readdirSync)(this.defaultSkillsDir).filter((f) => f.endsWith(".md")).map((f) => normalizeSkillName(f.replace(".md", "")));
         for (const file2 of mdFiles) {
           if (!this.entries.find((e) => e.name === file2)) {
             issues.push(`Skill file '${file2}' has no catalog entry`);
@@ -6525,15 +7342,15 @@ var init_skill_catalog = __esm({
         return issues;
       }
       loadProjectSkills() {
-        if (!this.projectSkillsDir || !(0, import_fs8.existsSync)(this.projectSkillsDir)) return;
-        const files = (0, import_fs8.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
+        if (!this.projectSkillsDir || !(0, import_fs14.existsSync)(this.projectSkillsDir)) return;
+        const files = (0, import_fs14.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
         const newMtimes = /* @__PURE__ */ new Map();
         for (const file2 of files) {
-          const filePath = (0, import_path10.join)(this.projectSkillsDir, file2);
+          const filePath = (0, import_path16.join)(this.projectSkillsDir, file2);
           try {
-            const mtime = (0, import_fs8.statSync)(filePath).mtimeMs;
+            const mtime = (0, import_fs14.statSync)(filePath).mtimeMs;
             newMtimes.set(file2, mtime);
-            const content = (0, import_fs8.readFileSync)(filePath, "utf-8");
+            const content = (0, import_fs14.readFileSync)(filePath, "utf-8");
             const fm = parseSkillFrontmatter(content);
             if (!fm) continue;
             const entry = {
@@ -6555,14 +7372,14 @@ var init_skill_catalog = __esm({
         this.projectFileMtimes = newMtimes;
       }
       reloadIfChanged() {
-        if (!this.projectSkillsDir || !(0, import_fs8.existsSync)(this.projectSkillsDir)) return;
-        const files = (0, import_fs8.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
+        if (!this.projectSkillsDir || !(0, import_fs14.existsSync)(this.projectSkillsDir)) return;
+        const files = (0, import_fs14.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
         let changed = files.length !== this.projectFileMtimes.size;
         if (!changed) {
           for (const file2 of files) {
-            const filePath = (0, import_path10.join)(this.projectSkillsDir, file2);
+            const filePath = (0, import_path16.join)(this.projectSkillsDir, file2);
             try {
-              const mtime = (0, import_fs8.statSync)(filePath).mtimeMs;
+              const mtime = (0, import_fs14.statSync)(filePath).mtimeMs;
               if (mtime !== this.projectFileMtimes.get(file2)) {
                 changed = true;
                 break;
@@ -6583,12 +7400,12 @@ var init_skill_catalog = __esm({
 });
 
 // packages/orchestrator/src/skill-gap-tracker.ts
-var import_fs9, import_path11, MAX_LOG_LINES, TRUNCATE_TO, SkillGapTracker;
+var import_fs15, import_path17, MAX_LOG_LINES, TRUNCATE_TO, SkillGapTracker;
 var init_skill_gap_tracker = __esm({
   "packages/orchestrator/src/skill-gap-tracker.ts"() {
     "use strict";
-    import_fs9 = require("fs");
-    import_path11 = require("path");
+    import_fs15 = require("fs");
+    import_path17 = require("path");
     init_skill_name();
     MAX_LOG_LINES = 5e3;
     TRUNCATE_TO = 1e3;
@@ -6597,8 +7414,8 @@ var init_skill_gap_tracker = __esm({
       resolutionsPath;
       resolutionsCache = null;
       constructor(projectRoot) {
-        this.gapLogPath = (0, import_path11.join)(projectRoot, ".gossip", "skill-gaps.jsonl");
-        this.resolutionsPath = (0, import_path11.join)(projectRoot, ".gossip", "skill-resolutions.json");
+        this.gapLogPath = (0, import_path17.join)(projectRoot, ".gossip", "skill-gaps.jsonl");
+        this.resolutionsPath = (0, import_path17.join)(projectRoot, ".gossip", "skill-resolutions.json");
         this.migrateResolutions();
       }
       checkThresholds() {
@@ -6626,9 +7443,9 @@ var init_skill_gap_tracker = __esm({
         const normalized = normalizeSkillName(skillName);
         const resolutions = this.loadResolutions();
         resolutions[normalized] = (/* @__PURE__ */ new Date()).toISOString();
-        const dir = (0, import_path11.join)(this.resolutionsPath, "..");
-        if (!(0, import_fs9.existsSync)(dir)) (0, import_fs9.mkdirSync)(dir, { recursive: true });
-        (0, import_fs9.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
+        const dir = (0, import_path17.join)(this.resolutionsPath, "..");
+        if (!(0, import_fs15.existsSync)(dir)) (0, import_fs15.mkdirSync)(dir, { recursive: true });
+        (0, import_fs15.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
         this.resolutionsCache = resolutions;
       }
       getSuggestionsSince(agentId, sinceMs) {
@@ -6661,9 +7478,9 @@ var init_skill_gap_tracker = __esm({
         );
       }
       readSuggestions() {
-        if (!(0, import_fs9.existsSync)(this.gapLogPath)) return [];
+        if (!(0, import_fs15.existsSync)(this.gapLogPath)) return [];
         try {
-          const lines = (0, import_fs9.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
+          const lines = (0, import_fs15.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
           return lines.map((line) => {
             try {
               return JSON.parse(line);
@@ -6677,12 +7494,12 @@ var init_skill_gap_tracker = __esm({
       }
       loadResolutions() {
         if (this.resolutionsCache) return this.resolutionsCache;
-        if (!(0, import_fs9.existsSync)(this.resolutionsPath)) {
+        if (!(0, import_fs15.existsSync)(this.resolutionsPath)) {
           this.resolutionsCache = {};
           return this.resolutionsCache;
         }
         try {
-          this.resolutionsCache = JSON.parse((0, import_fs9.readFileSync)(this.resolutionsPath, "utf-8"));
+          this.resolutionsCache = JSON.parse((0, import_fs15.readFileSync)(this.resolutionsPath, "utf-8"));
           return this.resolutionsCache;
         } catch {
           this.resolutionsCache = {};
@@ -6690,10 +7507,10 @@ var init_skill_gap_tracker = __esm({
         }
       }
       migrateResolutions() {
-        if ((0, import_fs9.existsSync)(this.resolutionsPath)) return;
-        if (!(0, import_fs9.existsSync)(this.gapLogPath)) return;
+        if ((0, import_fs15.existsSync)(this.resolutionsPath)) return;
+        if (!(0, import_fs15.existsSync)(this.gapLogPath)) return;
         try {
-          const lines = (0, import_fs9.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
+          const lines = (0, import_fs15.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
           const resolutions = {};
           for (const line of lines) {
             try {
@@ -6705,21 +7522,21 @@ var init_skill_gap_tracker = __esm({
             }
           }
           if (Object.keys(resolutions).length > 0) {
-            const dir = (0, import_path11.join)(this.resolutionsPath, "..");
-            if (!(0, import_fs9.existsSync)(dir)) (0, import_fs9.mkdirSync)(dir, { recursive: true });
-            (0, import_fs9.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
+            const dir = (0, import_path17.join)(this.resolutionsPath, "..");
+            if (!(0, import_fs15.existsSync)(dir)) (0, import_fs15.mkdirSync)(dir, { recursive: true });
+            (0, import_fs15.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
             this.resolutionsCache = resolutions;
           }
         } catch {
         }
       }
       truncateIfNeeded() {
-        if (!(0, import_fs9.existsSync)(this.gapLogPath)) return;
+        if (!(0, import_fs15.existsSync)(this.gapLogPath)) return;
         try {
-          const content = (0, import_fs9.readFileSync)(this.gapLogPath, "utf-8");
+          const content = (0, import_fs15.readFileSync)(this.gapLogPath, "utf-8");
           const lines = content.trim().split("\n").filter(Boolean);
           if (lines.length > MAX_LOG_LINES) {
-            (0, import_fs9.writeFileSync)(this.gapLogPath, lines.slice(-TRUNCATE_TO).join("\n") + "\n");
+            (0, import_fs15.writeFileSync)(this.gapLogPath, lines.slice(-TRUNCATE_TO).join("\n") + "\n");
           }
         } catch {
         }
@@ -6729,11 +7546,11 @@ var init_skill_gap_tracker = __esm({
 });
 
 // packages/orchestrator/src/scope-tracker.ts
-var import_path12, ScopeTracker;
+var import_path18, ScopeTracker;
 var init_scope_tracker = __esm({
   "packages/orchestrator/src/scope-tracker.ts"() {
     "use strict";
-    import_path12 = require("path");
+    import_path18 = require("path");
     ScopeTracker = class {
       // taskId → scope (for release)
       constructor(projectRoot) {
@@ -6744,8 +7561,8 @@ var init_scope_tracker = __esm({
       taskToScope = /* @__PURE__ */ new Map();
       normalize(scope) {
         if (!scope || !scope.trim()) throw new Error("Scope must not be empty");
-        const abs = (0, import_path12.resolve)(this.projectRoot, scope);
-        const rel = (0, import_path12.relative)(this.projectRoot, abs);
+        const abs = (0, import_path18.resolve)(this.projectRoot, scope);
+        const rel = (0, import_path18.relative)(this.projectRoot, abs);
         if (rel.startsWith("..")) throw new Error(`Scope "${scope}" resolves outside project root`);
         if (rel === "") throw new Error(`Scope "${scope}" resolves to project root \u2014 too broad`);
         return rel.endsWith("/") ? rel : rel + "/";
@@ -6783,14 +7600,14 @@ var init_scope_tracker = __esm({
 });
 
 // packages/orchestrator/src/worktree-manager.ts
-var import_child_process3, import_util5, import_promises2, import_path13, import_os, execFileAsync3, WorktreeManager;
+var import_child_process3, import_util5, import_promises2, import_path19, import_os, execFileAsync3, WorktreeManager;
 var init_worktree_manager = __esm({
   "packages/orchestrator/src/worktree-manager.ts"() {
     "use strict";
     import_child_process3 = require("child_process");
     import_util5 = require("util");
     import_promises2 = require("fs/promises");
-    import_path13 = require("path");
+    import_path19 = require("path");
     import_os = require("os");
     execFileAsync3 = (0, import_util5.promisify)(import_child_process3.execFile);
     WorktreeManager = class {
@@ -6799,7 +7616,7 @@ var init_worktree_manager = __esm({
       }
       async create(taskId) {
         const branch = `gossip-${taskId}`;
-        const wtPath = await (0, import_promises2.mkdtemp)((0, import_path13.join)((0, import_os.tmpdir)(), "gossip-wt-"));
+        const wtPath = await (0, import_promises2.mkdtemp)((0, import_path19.join)((0, import_os.tmpdir)(), "gossip-wt-"));
         await execFileAsync3("git", ["branch", branch, "HEAD"], { cwd: this.projectRoot });
         try {
           await execFileAsync3("git", ["worktree", "add", wtPath, branch], { cwd: this.projectRoot });
@@ -6864,12 +7681,12 @@ var init_worktree_manager = __esm({
 });
 
 // packages/orchestrator/src/consensus-engine.ts
-var import_promises3, import_path14, SUMMARY_HEADER, FALLBACK_MAX_LENGTH, MAX_SUMMARY_LENGTH, MAX_CROSS_REVIEW_ENTRIES, VALID_ACTIONS, ConsensusEngine;
+var import_promises3, import_path20, SUMMARY_HEADER, FALLBACK_MAX_LENGTH, MAX_SUMMARY_LENGTH, MAX_CROSS_REVIEW_ENTRIES, VALID_ACTIONS, ConsensusEngine;
 var init_consensus_engine = __esm({
   "packages/orchestrator/src/consensus-engine.ts"() {
     "use strict";
     import_promises3 = require("fs/promises");
-    import_path14 = require("path");
+    import_path20 = require("path");
     SUMMARY_HEADER = "## Consensus Summary";
     FALLBACK_MAX_LENGTH = 2e3;
     MAX_SUMMARY_LENGTH = 3e3;
@@ -7292,20 +8109,20 @@ ${snippet}`);
         const root = this.config.projectRoot;
         const fileName = fileRef.split("/").pop();
         try {
-          await (0, import_promises3.stat)((0, import_path14.join)(root, fileRef));
-          return (0, import_path14.join)(root, fileRef);
+          await (0, import_promises3.stat)((0, import_path20.join)(root, fileRef));
+          return (0, import_path20.join)(root, fileRef);
         } catch {
         }
         if (fileName !== fileRef) {
           try {
-            await (0, import_promises3.stat)((0, import_path14.join)(root, fileName));
-            return (0, import_path14.join)(root, fileName);
+            await (0, import_promises3.stat)((0, import_path20.join)(root, fileName));
+            return (0, import_path20.join)(root, fileName);
           } catch {
           }
         }
         const searchDirs = ["packages", "src", "apps", "tests", "test", "tools", "scripts", "lib"];
         for (const dir of searchDirs) {
-          const found = await this.findFile((0, import_path14.join)(root, dir), fileName);
+          const found = await this.findFile((0, import_path20.join)(root, dir), fileName);
           if (found) return found;
         }
         return null;
@@ -7314,7 +8131,7 @@ ${snippet}`);
         try {
           const entries = await (0, import_promises3.readdir)(dir, { withFileTypes: true });
           for (const entry of entries) {
-            const fullPath = (0, import_path14.join)(dir, entry.name);
+            const fullPath = (0, import_path20.join)(dir, entry.name);
             if (entry.isFile() && entry.name === fileName) return fullPath;
             if (entry.isDirectory() && entry.name !== "node_modules" && entry.name !== ".git") {
               const found = await this.findFile(fullPath, fileName);
@@ -7556,26 +8373,26 @@ ${snippet}`);
 });
 
 // packages/orchestrator/src/performance-writer.ts
-var import_fs10, import_path15, PerformanceWriter;
+var import_fs16, import_path21, PerformanceWriter;
 var init_performance_writer = __esm({
   "packages/orchestrator/src/performance-writer.ts"() {
     "use strict";
-    import_fs10 = require("fs");
-    import_path15 = require("path");
+    import_fs16 = require("fs");
+    import_path21 = require("path");
     PerformanceWriter = class {
       filePath;
       constructor(projectRoot) {
-        const dir = (0, import_path15.join)(projectRoot, ".gossip");
-        if (!(0, import_fs10.existsSync)(dir)) (0, import_fs10.mkdirSync)(dir, { recursive: true });
-        this.filePath = (0, import_path15.join)(dir, "agent-performance.jsonl");
+        const dir = (0, import_path21.join)(projectRoot, ".gossip");
+        if (!(0, import_fs16.existsSync)(dir)) (0, import_fs16.mkdirSync)(dir, { recursive: true });
+        this.filePath = (0, import_path21.join)(dir, "agent-performance.jsonl");
       }
       appendSignal(signal) {
-        (0, import_fs10.appendFileSync)(this.filePath, JSON.stringify(signal) + "\n");
+        (0, import_fs16.appendFileSync)(this.filePath, JSON.stringify(signal) + "\n");
       }
       appendSignals(signals) {
         if (signals.length === 0) return;
         const data = signals.map((s) => JSON.stringify(s)).join("\n") + "\n";
-        (0, import_fs10.appendFileSync)(this.filePath, data);
+        (0, import_fs16.appendFileSync)(this.filePath, data);
       }
     };
   }
@@ -7621,13 +8438,13 @@ function shouldSkipConsensus(task, agents, costMode, agreementHistory) {
   const firstWord = task.trim().split(/\s+/)[0] || "";
   return OBSERVATION_VERBS.test(firstWord);
 }
-var import_crypto8, import_fs11, import_path16, log2, DispatchPipeline, SECURITY_KEYWORDS, OBSERVATION_VERBS;
+var import_crypto9, import_fs17, import_path22, log2, DispatchPipeline, SECURITY_KEYWORDS, OBSERVATION_VERBS;
 var init_dispatch_pipeline = __esm({
   "packages/orchestrator/src/dispatch-pipeline.ts"() {
     "use strict";
-    import_crypto8 = require("crypto");
-    import_fs11 = require("fs");
-    import_path16 = require("path");
+    import_crypto9 = require("crypto");
+    import_fs17 = require("fs");
+    import_path22 = require("path");
     init_skill_loader();
     init_prompt_assembler();
     init_agent_memory();
@@ -7703,12 +8520,12 @@ var init_dispatch_pipeline = __esm({
         }
         this.worktreeManager.pruneOrphans().catch((err) => log2(`Orphan cleanup failed: ${err.message}`));
         try {
-          const projectMemDir = (0, import_path16.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory");
-          (0, import_fs11.mkdirSync)(projectMemDir, { recursive: true });
+          const projectMemDir = (0, import_path22.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory");
+          (0, import_fs17.mkdirSync)(projectMemDir, { recursive: true });
         } catch {
         }
         try {
-          const gossipPath = (0, import_path16.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
+          const gossipPath = (0, import_path22.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
           const { existsSync: ex, readFileSync: rf } = require("fs");
           if (ex(gossipPath)) {
             const lines = rf(gossipPath, "utf-8").trim().split("\n").filter(Boolean);
@@ -7745,7 +8562,7 @@ var init_dispatch_pipeline = __esm({
           throw new Error(`Agent "${agentId}" not found`);
         }
         log2(`dispatch \u2192 ${agentId}: "${task.slice(0, 80)}..." writeMode=${options?.writeMode || "default"}`);
-        const taskId = (0, import_crypto8.randomUUID)().slice(0, 8);
+        const taskId = (0, import_crypto9.randomUUID)().slice(0, 8);
         const agentSkills = this.registryGet(agentId)?.skills || [];
         const skills = loadSkills(agentId, agentSkills, this.projectRoot, this.skillIndex ?? void 0);
         const memory = this.memReader.loadMemory(agentId, task);
@@ -7773,9 +8590,9 @@ var init_dispatch_pipeline = __esm({
         const specRefs = extractSpecReferences(task);
         if (specRefs.length > 0) {
           try {
-            const specPath = (0, import_path16.resolve)(this.projectRoot, specRefs[0]);
+            const specPath = (0, import_path22.resolve)(this.projectRoot, specRefs[0]);
             if (specPath.startsWith(this.projectRoot + "/") || specPath === this.projectRoot) {
-              const specContent = (0, import_fs11.readFileSync)(specPath, "utf-8");
+              const specContent = (0, import_fs17.readFileSync)(specPath, "utf-8");
               const implFiles = extractSpecReferences(task, specContent);
               const enrichment = buildSpecReviewEnrichment(implFiles);
               if (enrichment) specReviewContext = enrichment;
@@ -7783,7 +8600,7 @@ var init_dispatch_pipeline = __esm({
           } catch {
           }
         }
-        const memoryDir = (0, import_path16.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "knowledge");
+        const memoryDir = (0, import_path22.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "knowledge");
         const promptContent = assemblePrompt({
           memory: memory || void 0,
           memoryDir,
@@ -8211,7 +9028,7 @@ Worktree merge: CONFLICT
         log2(`dispatchParallel: ${taskDefs.length} tasks \u2014 agents: [${taskDefs.map((d) => d.agentId).join(", ")}]`);
         const taskIds = [];
         const errors = [];
-        const batchId = (0, import_crypto8.randomUUID)().slice(0, 8);
+        const batchId = (0, import_crypto9.randomUUID)().slice(0, 8);
         const batchTaskIds = /* @__PURE__ */ new Set();
         for (const def of taskDefs) {
           if (!this.workers.has(def.agentId)) {
@@ -8630,9 +9447,9 @@ ${topFindings}`;
               this.sessionGossip.shift();
             }
             try {
-              const gossipPath = (0, import_path16.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
-              (0, import_fs11.mkdirSync)((0, import_path16.dirname)(gossipPath), { recursive: true });
-              (0, import_fs11.appendFileSync)(gossipPath, JSON.stringify({ agentId, taskSummary: summary, timestamp: Date.now() }) + "\n");
+              const gossipPath = (0, import_path22.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
+              (0, import_fs17.mkdirSync)((0, import_path22.dirname)(gossipPath), { recursive: true });
+              (0, import_fs17.appendFileSync)(gossipPath, JSON.stringify({ agentId, taskSummary: summary, timestamp: Date.now() }) + "\n");
             } catch {
             }
           }
@@ -8895,16 +9712,16 @@ function parseYamlLikeToolCall(content) {
   const args = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   return { tool, args };
 }
-var import_fs12, import_path17, log3, AGENT_ID_RE, TAG_PATTERN, BLOCK_RE, BLOCK_IN_FENCE_RE, ToolRouter, ToolExecutor;
+var import_fs18, import_path23, log3, AGENT_ID_RE3, TAG_PATTERN, BLOCK_RE, BLOCK_IN_FENCE_RE, ToolRouter, ToolExecutor;
 var init_tool_router = __esm({
   "packages/orchestrator/src/tool-router.ts"() {
     "use strict";
     init_tool_definitions();
-    import_fs12 = require("fs");
-    import_path17 = require("path");
+    import_fs18 = require("fs");
+    import_path23 = require("path");
     log3 = (msg) => process.stderr.write(`[tool-router] ${msg}
 `);
-    AGENT_ID_RE = /^[a-zA-Z0-9_-]+$/;
+    AGENT_ID_RE3 = /^[a-zA-Z0-9_-]+$/;
     TAG_PATTERN = "TOOL_CALL|TOOL_CODE";
     BLOCK_RE = new RegExp(`\\[(?:${TAG_PATTERN})\\]([\\s\\S]*?)\\[\\/(?:${TAG_PATTERN})\\]`, "g");
     BLOCK_IN_FENCE_RE = new RegExp(`\`\`\`[^\\n]*\\n\\[(?:${TAG_PATTERN})\\]([\\s\\S]*?)(?:\\[\\/(?:${TAG_PATTERN})\\])?\\s*\`\`\``, "g");
@@ -9012,13 +9829,13 @@ var init_tool_router = __esm({
               return null;
             }
           }
-          if (args.agent_id !== void 0 && !AGENT_ID_RE.test(String(args.agent_id))) {
+          if (args.agent_id !== void 0 && !AGENT_ID_RE3.test(String(args.agent_id))) {
             log3(`invalid agent_id: ${args.agent_id}`);
             return null;
           }
           if (Array.isArray(args.agent_ids)) {
             for (const id of args.agent_ids) {
-              if (!AGENT_ID_RE.test(String(id))) {
+              if (!AGENT_ID_RE3.test(String(id))) {
                 log3(`invalid agent_id in agent_ids: ${id}`);
                 return null;
               }
@@ -9307,12 +10124,12 @@ ${agentOutputs}` }
           const fsp = await import("fs/promises");
           const updatedIds = [];
           for (const id of pending.agentIds) {
-            const agentDir = (0, import_path17.join)(this.projectRoot, ".gossip", "agents", id);
-            const filePath = (0, import_path17.join)(agentDir, "instructions.md");
-            if (!(0, import_fs12.existsSync)(agentDir)) {
+            const agentDir = (0, import_path23.join)(this.projectRoot, ".gossip", "agents", id);
+            const filePath = (0, import_path23.join)(agentDir, "instructions.md");
+            if (!(0, import_fs18.existsSync)(agentDir)) {
               await fsp.mkdir(agentDir, { recursive: true });
             }
-            if ((0, import_fs12.existsSync)(filePath)) {
+            if ((0, import_fs18.existsSync)(filePath)) {
               await fsp.appendFile(filePath, `
 
 ${pending.instruction}`, "utf-8");
@@ -9426,9 +10243,9 @@ ${collectResult.consensus.summary}`;
       async handlePlan(args) {
         let task = String(args.task);
         try {
-          const specPath = (0, import_path17.join)(this.projectRoot, ".gossip", "spec.md");
-          if ((0, import_fs12.existsSync)(specPath)) {
-            const spec = (0, import_fs12.readFileSync)(specPath, "utf-8");
+          const specPath = (0, import_path23.join)(this.projectRoot, ".gossip", "spec.md");
+          if ((0, import_fs18.existsSync)(specPath)) {
+            const spec = (0, import_fs18.readFileSync)(specPath, "utf-8");
             task = `${task}
 
 [Project Spec]
@@ -9486,11 +10303,11 @@ ${taskLines.join("\n")}`,
         if (!this.llm) {
           return { text: "Tool error: LLM not available for spec generation" };
         }
-        const specPath = (0, import_path17.join)(this.projectRoot, ".gossip", "spec.md");
+        const specPath = (0, import_path23.join)(this.projectRoot, ".gossip", "spec.md");
         let existingSpec = "";
         try {
-          if ((0, import_fs12.existsSync)(specPath)) {
-            existingSpec = (0, import_fs12.readFileSync)(specPath, "utf-8");
+          if ((0, import_fs18.existsSync)(specPath)) {
+            existingSpec = (0, import_fs18.readFileSync)(specPath, "utf-8");
           }
         } catch {
         }
@@ -9525,8 +10342,8 @@ Keep it SHORT \u2014 under 30 lines. This is a working document, not a design do
         ]);
         const specContent = response.text || "";
         try {
-          const { mkdirSync: mkdirSync13, writeFileSync: writeFS } = require("fs");
-          mkdirSync13((0, import_path17.join)(this.projectRoot, ".gossip"), { recursive: true });
+          const { mkdirSync: mkdirSync14, writeFileSync: writeFS } = require("fs");
+          mkdirSync14((0, import_path23.join)(this.projectRoot, ".gossip"), { recursive: true });
           writeFS(specPath, specContent, "utf-8");
         } catch (err) {
           return { text: `Spec generated but failed to save: ${err.message}
@@ -9564,11 +10381,11 @@ ${lines.join("\n")}` };
         if (!this.registry.get(agentId)) {
           return { text: `Tool error: agent "${agentId}" not found in registry` };
         }
-        const tasksPath = (0, import_path17.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
-        if (!(0, import_fs12.existsSync)(tasksPath)) {
+        const tasksPath = (0, import_path23.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
+        if (!(0, import_fs18.existsSync)(tasksPath)) {
           return { text: `Agent "${agentId}" \u2014 no task history found.` };
         }
-        const rawLines = (0, import_fs12.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+        const rawLines = (0, import_fs18.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
         const last5 = rawLines.slice(-5).map((line) => {
           try {
             return JSON.parse(line);
@@ -9585,11 +10402,11 @@ Last ${last5.length} tasks:
 ${formatted.join("\n")}` };
       }
       handleAgentPerformance() {
-        const perfPath = (0, import_path17.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
-        if (!(0, import_fs12.existsSync)(perfPath)) {
+        const perfPath = (0, import_path23.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
+        if (!(0, import_fs18.existsSync)(perfPath)) {
           return { text: "No performance data found." };
         }
-        const rawLines = (0, import_fs12.readFileSync)(perfPath, "utf-8").trim().split("\n").filter(Boolean);
+        const rawLines = (0, import_fs18.readFileSync)(perfPath, "utf-8").trim().split("\n").filter(Boolean);
         const last20 = rawLines.slice(-20).map((line) => {
           try {
             return JSON.parse(line);
@@ -9640,11 +10457,11 @@ Instruction: "${instruction}"`,
         if (!this.registry.get(agentId)) {
           return { text: `Tool error: agent "${agentId}" not found in registry` };
         }
-        const tasksPath = (0, import_path17.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
-        if (!(0, import_fs12.existsSync)(tasksPath)) {
+        const tasksPath = (0, import_path23.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
+        if (!(0, import_fs18.existsSync)(tasksPath)) {
           return { text: `No task history for agent "${agentId}".` };
         }
-        const rawLines = (0, import_fs12.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+        const rawLines = (0, import_fs18.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
         const entries = rawLines.slice(-limit).map((line) => {
           try {
             return JSON.parse(line);
@@ -9704,17 +10521,17 @@ ${formatted.join("\n")}` };
 });
 
 // packages/orchestrator/src/archetype-catalog.ts
-var import_fs13, import_path18, DEFAULT_PATH, ArchetypeCatalog;
+var import_fs19, import_path24, DEFAULT_PATH, ArchetypeCatalog;
 var init_archetype_catalog = __esm({
   "packages/orchestrator/src/archetype-catalog.ts"() {
     "use strict";
-    import_fs13 = require("fs");
-    import_path18 = require("path");
-    DEFAULT_PATH = (0, import_path18.resolve)(__dirname, "..", "..", "..", "data", "archetypes.json");
+    import_fs19 = require("fs");
+    import_path24 = require("path");
+    DEFAULT_PATH = (0, import_path24.resolve)(__dirname, "..", "..", "..", "data", "archetypes.json");
     ArchetypeCatalog = class {
       archetypes;
       constructor(catalogPath) {
-        const raw = (0, import_fs13.readFileSync)(catalogPath ?? DEFAULT_PATH, "utf-8");
+        const raw = (0, import_fs19.readFileSync)(catalogPath ?? DEFAULT_PATH, "utf-8");
         this.archetypes = JSON.parse(raw);
       }
       /** Return all archetype IDs */
@@ -9764,13 +10581,13 @@ var init_archetype_catalog = __esm({
 });
 
 // packages/orchestrator/src/project-initializer.ts
-var import_fs14, import_path19, SIGNAL_DIRS, SIGNAL_FILES, LANG_FILES, ProjectInitializer;
+var import_fs20, import_path25, SIGNAL_DIRS, SIGNAL_FILES, LANG_FILES, ProjectInitializer;
 var init_project_initializer = __esm({
   "packages/orchestrator/src/project-initializer.ts"() {
     "use strict";
     init_archetype_catalog();
-    import_fs14 = require("fs");
-    import_path19 = require("path");
+    import_fs20 = require("fs");
+    import_path25 = require("path");
     SIGNAL_DIRS = [
       "src",
       "pages",
@@ -9802,16 +10619,16 @@ var init_project_initializer = __esm({
         this.config = config2;
       }
       scanDirectory(root) {
-        const absRoot = (0, import_path19.resolve)(root);
+        const absRoot = (0, import_path25.resolve)(root);
         const signals = { dependencies: [], directories: [], files: [] };
         for (const [file2, lang] of Object.entries(LANG_FILES)) {
-          if (this.safeExists(absRoot, (0, import_path19.join)(absRoot, file2))) signals.language = lang;
+          if (this.safeExists(absRoot, (0, import_path25.join)(absRoot, file2))) signals.language = lang;
         }
-        const pkgPath = (0, import_path19.join)(absRoot, "package.json");
+        const pkgPath = (0, import_path25.join)(absRoot, "package.json");
         if (this.safeExists(absRoot, pkgPath)) {
           signals.files.push("package.json");
           try {
-            const pkg = JSON.parse((0, import_fs14.readFileSync)(pkgPath, "utf-8"));
+            const pkg = JSON.parse((0, import_fs20.readFileSync)(pkgPath, "utf-8"));
             signals.dependencies = [
               ...Object.keys(pkg.dependencies || {}),
               ...Object.keys(pkg.devDependencies || {})
@@ -9821,18 +10638,18 @@ var init_project_initializer = __esm({
           if (!signals.language) signals.language = "JavaScript";
         }
         for (const dir of SIGNAL_DIRS) {
-          const p = (0, import_path19.join)(absRoot, dir);
+          const p = (0, import_path25.join)(absRoot, dir);
           if (this.safeExists(absRoot, p) && this.isDir(p)) signals.directories.push(`${dir}/`);
         }
-        const wfPath = (0, import_path19.join)(absRoot, ".github", "workflows");
+        const wfPath = (0, import_path25.join)(absRoot, ".github", "workflows");
         if (this.safeExists(absRoot, wfPath) && this.isDir(wfPath)) {
           signals.directories.push(".github/workflows/");
         }
         for (const file2 of SIGNAL_FILES) {
-          if (this.safeExists(absRoot, (0, import_path19.join)(absRoot, file2))) signals.files.push(file2);
+          if (this.safeExists(absRoot, (0, import_path25.join)(absRoot, file2))) signals.files.push(file2);
         }
         for (const file2 of Object.keys(LANG_FILES)) {
-          if (this.safeExists(absRoot, (0, import_path19.join)(absRoot, file2))) signals.files.push(file2);
+          if (this.safeExists(absRoot, (0, import_path25.join)(absRoot, file2))) signals.files.push(file2);
         }
         return signals;
       }
@@ -9964,13 +10781,13 @@ ${agentList}`,
       }
       async writeConfig(projectRoot) {
         if (!this.pendingProposal) throw new Error("No pending proposal to write");
-        const gossipDir = (0, import_path19.join)(projectRoot, ".gossip");
-        if (!(0, import_fs14.existsSync)(gossipDir)) (0, import_fs14.mkdirSync)(gossipDir, { recursive: true });
+        const gossipDir = (0, import_path25.join)(projectRoot, ".gossip");
+        if (!(0, import_fs20.existsSync)(gossipDir)) (0, import_fs20.mkdirSync)(gossipDir, { recursive: true });
         const agents = {};
         for (const a of this.pendingProposal.agents || []) {
           agents[a.id] = { provider: a.provider, model: a.model, preset: a.preset, skills: a.skills || [] };
-          const agentDir = (0, import_path19.join)(gossipDir, "agents", a.id);
-          if (!(0, import_fs14.existsSync)(agentDir)) (0, import_fs14.mkdirSync)(agentDir, { recursive: true });
+          const agentDir = (0, import_path25.join)(gossipDir, "agents", a.id);
+          if (!(0, import_fs20.existsSync)(agentDir)) (0, import_fs20.mkdirSync)(agentDir, { recursive: true });
         }
         const config2 = {
           main_agent: this.pendingProposal.main_agent,
@@ -9981,20 +10798,20 @@ ${agentList}`,
           },
           agents
         };
-        (0, import_fs14.writeFileSync)((0, import_path19.join)(gossipDir, "config.json"), JSON.stringify(config2, null, 2));
+        (0, import_fs20.writeFileSync)((0, import_path25.join)(gossipDir, "config.json"), JSON.stringify(config2, null, 2));
       }
       safeExists(root, target) {
-        const resolved = (0, import_path19.resolve)(target);
+        const resolved = (0, import_path25.resolve)(target);
         if (!resolved.startsWith(root)) return false;
         try {
-          return !(0, import_fs14.lstatSync)(resolved).isSymbolicLink();
+          return !(0, import_fs20.lstatSync)(resolved).isSymbolicLink();
         } catch {
           return false;
         }
       }
       isDir(target) {
         try {
-          return (0, import_fs14.lstatSync)(target).isDirectory();
+          return (0, import_fs20.lstatSync)(target).isDirectory();
         } catch {
           return false;
         }
@@ -10004,12 +10821,12 @@ ${agentList}`,
 });
 
 // packages/orchestrator/src/team-manager.ts
-var import_fs15, import_path20, TeamManager;
+var import_fs21, import_path26, TeamManager;
 var init_team_manager = __esm({
   "packages/orchestrator/src/team-manager.ts"() {
     "use strict";
-    import_fs15 = require("fs");
-    import_path20 = require("path");
+    import_fs21 = require("fs");
+    import_path26 = require("path");
     TeamManager = class {
       registry;
       pipeline;
@@ -10065,8 +10882,8 @@ var init_team_manager = __esm({
       applyAdd(config2) {
         this.registry.register(config2);
         this.writeConfig();
-        const dir = (0, import_path20.join)(this.projectRoot, ".gossip", "agents", config2.id);
-        if (!(0, import_fs15.existsSync)(dir)) (0, import_fs15.mkdirSync)(dir, { recursive: true });
+        const dir = (0, import_path26.join)(this.projectRoot, ".gossip", "agents", config2.id);
+        if (!(0, import_fs21.existsSync)(dir)) (0, import_fs21.mkdirSync)(dir, { recursive: true });
         this.pendingAction = null;
       }
       applyRemove(agentId) {
@@ -10100,11 +10917,11 @@ var init_team_manager = __esm({
         };
       }
       writeConfig() {
-        const configPath = (0, import_path20.join)(this.projectRoot, ".gossip", "config.json");
+        const configPath = (0, import_path26.join)(this.projectRoot, ".gossip", "config.json");
         let existing = {};
-        if ((0, import_fs15.existsSync)(configPath)) {
+        if ((0, import_fs21.existsSync)(configPath)) {
           try {
-            existing = JSON.parse((0, import_fs15.readFileSync)(configPath, "utf-8"));
+            existing = JSON.parse((0, import_fs21.readFileSync)(configPath, "utf-8"));
           } catch {
           }
         }
@@ -10116,152 +10933,9 @@ var init_team_manager = __esm({
           ...a.preset ? { preset: a.preset } : {},
           skills: a.skills
         }));
-        const dir = (0, import_path20.join)(this.projectRoot, ".gossip");
-        if (!(0, import_fs15.existsSync)(dir)) (0, import_fs15.mkdirSync)(dir, { recursive: true });
-        (0, import_fs15.writeFileSync)(configPath, JSON.stringify(existing, null, 2) + "\n");
-      }
-    };
-  }
-});
-
-// packages/orchestrator/src/performance-reader.ts
-var performance_reader_exports = {};
-__export(performance_reader_exports, {
-  PerformanceReader: () => PerformanceReader
-});
-function clamp(v, min, max) {
-  return Math.max(min, Math.min(max, v));
-}
-var import_fs16, import_path21, SIGNAL_WEIGHTS, PerformanceReader;
-var init_performance_reader = __esm({
-  "packages/orchestrator/src/performance-reader.ts"() {
-    "use strict";
-    import_fs16 = require("fs");
-    import_path21 = require("path");
-    SIGNAL_WEIGHTS = {
-      agreement: { accuracy: 0.1 },
-      disagreement: { accuracy: -0.15 },
-      // losing side; winning side gets bonus via counterpart
-      unverified: { accuracy: -0.03 },
-      // tiny penalty — couldn't verify, less useful than agree/disagree
-      unique_confirmed: { uniqueness: 0.2 },
-      unique_unconfirmed: { uniqueness: 0.05 },
-      new_finding: { uniqueness: 0.15 },
-      hallucination_caught: { accuracy: -0.3 },
-      category_confirmed: { accuracy: 0.1 },
-      consensus_verified: { accuracy: 0.15 }
-      // Judge confirmed a finding
-    };
-    PerformanceReader = class {
-      filePath;
-      // Cache: avoid re-reading file on every dispatch call
-      cachedScores = null;
-      cachedMtimeMs = 0;
-      constructor(projectRoot) {
-        this.filePath = (0, import_path21.join)(projectRoot, ".gossip", "agent-performance.jsonl");
-      }
-      /** Read all signals and compute per-agent scores (cached by file mtime) */
-      getScores() {
-        let mtimeMs = 0;
-        try {
-          mtimeMs = (0, import_fs16.statSync)(this.filePath).mtimeMs;
-        } catch {
-        }
-        if (this.cachedScores && mtimeMs === this.cachedMtimeMs) {
-          return this.cachedScores;
-        }
-        const signals = this.readSignals();
-        this.cachedScores = this.computeScores(signals);
-        this.cachedMtimeMs = mtimeMs;
-        return this.cachedScores;
-      }
-      /** Get score for a specific agent (returns null if no data) */
-      getAgentScore(agentId) {
-        return this.getScores().get(agentId) ?? null;
-      }
-      /** Get a reliability multiplier for dispatch weighting (0.5 to 1.5) */
-      getDispatchWeight(agentId) {
-        const score = this.getAgentScore(agentId);
-        if (!score || score.totalSignals < 3) return 1;
-        return 0.5 + score.reliability;
-      }
-      readSignals() {
-        if (!(0, import_fs16.existsSync)(this.filePath)) return [];
-        try {
-          const lines = (0, import_fs16.readFileSync)(this.filePath, "utf-8").trim().split("\n").filter(Boolean);
-          return lines.map((line) => {
-            try {
-              return JSON.parse(line);
-            } catch {
-              return null;
-            }
-          }).filter(
-            (s) => s !== null && typeof s.agentId === "string" && s.agentId.length > 0
-          );
-        } catch {
-          return [];
-        }
-      }
-      computeScores(signals) {
-        const scores = /* @__PURE__ */ new Map();
-        const ensure = (id) => {
-          if (!scores.has(id)) {
-            scores.set(id, {
-              agentId: id,
-              accuracy: 0.5,
-              uniqueness: 0.5,
-              reliability: 0.5,
-              totalSignals: 0,
-              agreements: 0,
-              disagreements: 0,
-              uniqueFindings: 0,
-              hallucinations: 0
-            });
-          }
-          return scores.get(id);
-        };
-        for (const signal of signals) {
-          const agent = ensure(signal.agentId);
-          const weights = SIGNAL_WEIGHTS[signal.signal];
-          if (!weights) continue;
-          agent.totalSignals++;
-          if ("accuracy" in weights && weights.accuracy) {
-            agent.accuracy = clamp(agent.accuracy + weights.accuracy, 0, 1);
-          }
-          if ("uniqueness" in weights && weights.uniqueness) {
-            agent.uniqueness = clamp(agent.uniqueness + weights.uniqueness, 0, 1);
-          }
-          switch (signal.signal) {
-            case "agreement":
-              agent.agreements++;
-              break;
-            case "disagreement":
-              agent.disagreements++;
-              break;
-            case "unique_confirmed":
-            case "unique_unconfirmed":
-            case "new_finding":
-              agent.uniqueFindings++;
-              break;
-            case "hallucination_caught":
-              agent.hallucinations++;
-              break;
-            case "consensus_verified":
-              break;
-            // just a score change
-            case "category_confirmed":
-              break;
-          }
-          if (signal.counterpartId && typeof signal.counterpartId === "string" && signal.counterpartId.length > 0 && signal.signal === "disagreement") {
-            const winner = ensure(signal.counterpartId);
-            winner.accuracy = clamp(winner.accuracy + 0.1, 0, 1);
-            winner.totalSignals++;
-          }
-        }
-        for (const score of scores.values()) {
-          score.reliability = clamp(score.accuracy * 0.7 + score.uniqueness * 0.3, 0, 1);
-        }
-        return scores;
+        const dir = (0, import_path26.join)(this.projectRoot, ".gossip");
+        if (!(0, import_fs21.existsSync)(dir)) (0, import_fs21.mkdirSync)(dir, { recursive: true });
+        (0, import_fs21.writeFileSync)(configPath, JSON.stringify(existing, null, 2) + "\n");
       }
     };
   }
@@ -10275,12 +10949,12 @@ __export(competency_profiler_exports, {
 function clamp2(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
-var import_fs17, import_path22, DECAY_HALF_LIFE, MIN_TASKS_THRESHOLD, MAX_ACCURACY_CHANGE_PER_ROUND, AGREEMENT_WEIGHT, DISAGREEMENT_WEIGHT, CompetencyProfiler;
+var import_fs22, import_path27, DECAY_HALF_LIFE, MIN_TASKS_THRESHOLD, MAX_ACCURACY_CHANGE_PER_ROUND, AGREEMENT_WEIGHT, DISAGREEMENT_WEIGHT, CompetencyProfiler;
 var init_competency_profiler = __esm({
   "packages/orchestrator/src/competency-profiler.ts"() {
     "use strict";
-    import_fs17 = require("fs");
-    import_path22 = require("path");
+    import_fs22 = require("fs");
+    import_path27 = require("path");
     DECAY_HALF_LIFE = 50;
     MIN_TASKS_THRESHOLD = 10;
     MAX_ACCURACY_CHANGE_PER_ROUND = 0.3;
@@ -10291,7 +10965,7 @@ var init_competency_profiler = __esm({
       cachedProfiles = null;
       cachedMtimeMs = 0;
       constructor(projectRoot) {
-        this.filePath = (0, import_path22.join)(projectRoot, ".gossip", "agent-performance.jsonl");
+        this.filePath = (0, import_path27.join)(projectRoot, ".gossip", "agent-performance.jsonl");
       }
       getProfile(agentId) {
         const profiles = this.getProfiles();
@@ -10300,7 +10974,7 @@ var init_competency_profiler = __esm({
       getProfiles() {
         let mtimeMs = 0;
         try {
-          mtimeMs = (0, import_fs17.statSync)(this.filePath).mtimeMs;
+          mtimeMs = (0, import_fs22.statSync)(this.filePath).mtimeMs;
         } catch {
         }
         if (this.cachedProfiles && mtimeMs === this.cachedMtimeMs) {
@@ -10478,9 +11152,9 @@ var init_competency_profiler = __esm({
         return result;
       }
       readSignals() {
-        if (!(0, import_fs17.existsSync)(this.filePath)) return [];
+        if (!(0, import_fs22.existsSync)(this.filePath)) return [];
         try {
-          return (0, import_fs17.readFileSync)(this.filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
+          return (0, import_fs22.readFileSync)(this.filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
             try {
               return JSON.parse(line);
             } catch {
@@ -10711,8 +11385,8 @@ message: Your question?
       }
       /** Start all worker agents (connect to relay) */
       async start() {
-        const { existsSync: existsSync21, readFileSync: readFileSync23 } = await import("fs");
-        const { join: join25 } = await import("path");
+        const { existsSync: existsSync25, readFileSync: readFileSync27 } = await import("fs");
+        const { join: join29 } = await import("path");
         for (const config2 of this.registry.getAll()) {
           if (config2.native) continue;
           if (this.workers.has(config2.id)) continue;
@@ -10721,8 +11395,8 @@ message: Your question?
             apiKey = await this.keyProviderFn(config2.provider) ?? void 0;
           }
           const llm = createProvider(config2.provider, config2.model, apiKey);
-          const instructionsPath = join25(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
-          const instructions = existsSync21(instructionsPath) ? readFileSync23(instructionsPath, "utf-8") : void 0;
+          const instructionsPath = join29(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
+          const instructions = existsSync25(instructionsPath) ? readFileSync27(instructionsPath, "utf-8") : void 0;
           const enableWebSearch = config2.preset === "researcher" || config2.skills.includes("research");
           const worker = new WorkerAgent(config2.id, llm, this.relayUrl, ALL_TOOLS, instructions, enableWebSearch);
           await worker.start();
@@ -10875,16 +11549,16 @@ message: Your question?
         this.registry.register(config2);
       }
       async syncWorkers(keyProvider) {
-        const { existsSync: existsSync21, readFileSync: readFileSync23 } = await import("fs");
-        const { join: join25 } = await import("path");
+        const { existsSync: existsSync25, readFileSync: readFileSync27 } = await import("fs");
+        const { join: join29 } = await import("path");
         let added = 0;
         for (const ac of this.registry.getAll()) {
           if (ac.native) continue;
           if (this.workers.has(ac.id)) continue;
           const key = await keyProvider(ac.provider);
           const llm = createProvider(ac.provider, ac.model, key ?? void 0);
-          const instructionsPath = join25(this.projectRoot, ".gossip", "agents", ac.id, "instructions.md");
-          const instructions = existsSync21(instructionsPath) ? readFileSync23(instructionsPath, "utf-8") : void 0;
+          const instructionsPath = join29(this.projectRoot, ".gossip", "agents", ac.id, "instructions.md");
+          const instructions = existsSync25(instructionsPath) ? readFileSync27(instructionsPath, "utf-8") : void 0;
           const enableWebSearch = ac.preset === "researcher" || ac.skills.includes("research");
           const worker = new WorkerAgent(ac.id, llm, this.relayUrl, ALL_TOOLS, instructions, enableWebSearch);
           await worker.start();
@@ -11418,168 +12092,6 @@ var init_consensus_types = __esm({
   }
 });
 
-// packages/orchestrator/src/skill-index.ts
-var import_fs18, import_path23, DANGEROUS_KEYS, SkillIndex;
-var init_skill_index = __esm({
-  "packages/orchestrator/src/skill-index.ts"() {
-    "use strict";
-    import_fs18 = require("fs");
-    import_path23 = require("path");
-    init_skill_name();
-    DANGEROUS_KEYS = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype", "_project"]);
-    SkillIndex = class {
-      data = {};
-      filePath;
-      dirty = false;
-      _exists = false;
-      constructor(projectRoot) {
-        this.filePath = (0, import_path23.join)(projectRoot, ".gossip", "skill-index.json");
-        this.load();
-      }
-      /** Bind a skill to an agent (creates or updates the slot) */
-      bind(agentId, skill, options) {
-        this.validateAgentId(agentId);
-        const name = this.validateSkillName(skill);
-        if (!this.data[agentId]) this.data[agentId] = /* @__PURE__ */ Object.create(null);
-        const existing = this.data[agentId][name];
-        const slot = {
-          skill: name,
-          enabled: options?.enabled ?? true,
-          source: options?.source ?? existing?.source ?? "manual",
-          version: existing ? existing.version + 1 : 1,
-          boundAt: (/* @__PURE__ */ new Date()).toISOString()
-        };
-        this.data[agentId][name] = slot;
-        this.dirty = true;
-        this.save();
-        return slot;
-      }
-      /** Unbind a skill from an agent (removes the slot entirely) */
-      unbind(agentId, skill) {
-        this.validateAgentId(agentId);
-        const name = normalizeSkillName(skill);
-        if (!this.data[agentId]?.[name]) return false;
-        delete this.data[agentId][name];
-        if (Object.keys(this.data[agentId]).length === 0) delete this.data[agentId];
-        this.dirty = true;
-        this.save();
-        return true;
-      }
-      /** Enable a previously disabled skill slot */
-      enable(agentId, skill) {
-        this.validateAgentId(agentId);
-        const name = normalizeSkillName(skill);
-        const slot = this.data[agentId]?.[name];
-        if (!slot) return false;
-        slot.enabled = true;
-        slot.version++;
-        this.dirty = true;
-        this.save();
-        return true;
-      }
-      /** Disable a skill slot without removing it */
-      disable(agentId, skill) {
-        this.validateAgentId(agentId);
-        const name = normalizeSkillName(skill);
-        const slot = this.data[agentId]?.[name];
-        if (!slot) return false;
-        slot.enabled = false;
-        slot.version++;
-        this.dirty = true;
-        this.save();
-        return true;
-      }
-      /** Get all enabled skill names for an agent */
-      getEnabledSkills(agentId) {
-        const agentSlots = this.data[agentId];
-        if (!agentSlots) return [];
-        return Object.values(agentSlots).filter((s) => s.enabled).map((s) => s.skill);
-      }
-      /** Get all slots for an agent (enabled and disabled) — returns copies */
-      getAgentSlots(agentId) {
-        const agentSlots = this.data[agentId];
-        if (!agentSlots) return [];
-        return Object.values(agentSlots).map((s) => ({ ...s }));
-      }
-      /** Get a specific slot — returns a copy */
-      getSlot(agentId, skill) {
-        const slot = this.data[agentId]?.[normalizeSkillName(skill)];
-        return slot ? { ...slot } : void 0;
-      }
-      /** Get the full index data — returns a deep copy */
-      getIndex() {
-        return JSON.parse(JSON.stringify(this.data));
-      }
-      /** Get all agent IDs in the index */
-      getAgentIds() {
-        return Object.keys(this.data);
-      }
-      /** Check if an index file exists (for backward compat detection) */
-      exists() {
-        return this._exists;
-      }
-      /**
-       * Seed index from agent configs — call once on first load when no index file exists.
-       * Imports existing config.skills[] as 'config' source slots.
-       */
-      seedFromConfigs(agents) {
-        for (const agent of agents) {
-          if (DANGEROUS_KEYS.has(agent.id) || !agent.id) continue;
-          if (!this.data[agent.id]) this.data[agent.id] = /* @__PURE__ */ Object.create(null);
-          for (const skill of agent.skills) {
-            if (typeof skill !== "string" || !skill) continue;
-            const name = normalizeSkillName(skill);
-            if (!name) continue;
-            if (!this.data[agent.id][name]) {
-              this.data[agent.id][name] = {
-                skill: name,
-                enabled: true,
-                source: "config",
-                version: 1,
-                boundAt: (/* @__PURE__ */ new Date()).toISOString()
-              };
-            }
-          }
-        }
-        this.dirty = true;
-        this.save();
-      }
-      validateAgentId(agentId) {
-        if (!agentId || typeof agentId !== "string" || DANGEROUS_KEYS.has(agentId)) {
-          throw new Error(`Invalid agentId: "${agentId}"`);
-        }
-      }
-      validateSkillName(skill) {
-        const name = normalizeSkillName(skill);
-        if (!name) throw new Error(`Invalid skill name: "${skill}"`);
-        return name;
-      }
-      load() {
-        try {
-          const raw = (0, import_fs18.readFileSync)(this.filePath, "utf-8");
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            for (const key of Object.keys(parsed)) {
-              if (DANGEROUS_KEYS.has(key)) delete parsed[key];
-            }
-            this.data = parsed;
-            this._exists = true;
-          }
-        } catch {
-        }
-      }
-      save() {
-        if (!this.dirty) return;
-        const dir = (0, import_path23.dirname)(this.filePath);
-        (0, import_fs18.mkdirSync)(dir, { recursive: true });
-        (0, import_fs18.writeFileSync)(this.filePath, JSON.stringify(this.data, null, 2) + "\n");
-        this._exists = true;
-        this.dirty = false;
-      }
-    };
-  }
-});
-
 // packages/orchestrator/src/task-graph-sync.ts
 function safeId(value) {
   if (!value || /[&=?|()\s!]/.test(value)) {
@@ -11587,12 +12099,12 @@ function safeId(value) {
   }
   return encodeURIComponent(value);
 }
-var import_fs19, import_path24, TaskGraphSync;
+var import_fs23, import_path28, TaskGraphSync;
 var init_task_graph_sync = __esm({
   "packages/orchestrator/src/task-graph-sync.ts"() {
     "use strict";
-    import_fs19 = require("fs");
-    import_path24 = require("path");
+    import_fs23 = require("fs");
+    import_path28 = require("path");
     TaskGraphSync = class {
       constructor(graph, supabaseUrl, supabaseKey, userId, projectId, projectRoot, displayName, migration) {
         this.graph = graph;
@@ -11602,7 +12114,7 @@ var init_task_graph_sync = __esm({
         this.projectId = projectId;
         this.displayName = displayName;
         this.migration = migration;
-        this.gossipDir = (0, import_path24.join)(projectRoot, ".gossip");
+        this.gossipDir = (0, import_path28.join)(projectRoot, ".gossip");
       }
       gossipDir;
       migrationDone = false;
@@ -11725,9 +12237,9 @@ var init_task_graph_sync = __esm({
         });
       }
       async syncAgentScores() {
-        const perfPath = (0, import_path24.join)(this.gossipDir, "agent-performance.jsonl");
-        if (!(0, import_fs19.existsSync)(perfPath)) return 0;
-        const content = (0, import_fs19.readFileSync)(perfPath, "utf-8");
+        const perfPath = (0, import_path28.join)(this.gossipDir, "agent-performance.jsonl");
+        if (!(0, import_fs23.existsSync)(perfPath)) return 0;
+        const content = (0, import_fs23.readFileSync)(perfPath, "utf-8");
         const lines = content.trim().split("\n").filter(Boolean);
         const meta3 = this.graph.getSyncMeta();
         let synced = 0;
@@ -11873,12 +12385,12 @@ Return JSON: { "<agentId>": "<summary>", ... }`
 });
 
 // packages/orchestrator/src/bootstrap.ts
-var import_fs20, import_path25, log4, BootstrapGenerator;
+var import_fs24, import_path29, log4, BootstrapGenerator;
 var init_bootstrap = __esm({
   "packages/orchestrator/src/bootstrap.ts"() {
     "use strict";
-    import_fs20 = require("fs");
-    import_path25 = require("path");
+    import_fs24 = require("fs");
+    import_path29 = require("path");
     log4 = (msg) => process.stderr.write(`[gossipcat] ${msg}
 `);
     BootstrapGenerator = class {
@@ -11900,23 +12412,23 @@ var init_bootstrap = __esm({
         };
       }
       migrateConfig() {
-        const oldPath = (0, import_path25.resolve)(this.projectRoot, "gossip.agents.json");
-        const newPath = (0, import_path25.resolve)(this.projectRoot, ".gossip", "config.json");
-        if (!(0, import_fs20.existsSync)(newPath) && (0, import_fs20.existsSync)(oldPath)) {
-          (0, import_fs20.mkdirSync)((0, import_path25.resolve)(this.projectRoot, ".gossip"), { recursive: true });
-          (0, import_fs20.copyFileSync)(oldPath, newPath);
+        const oldPath = (0, import_path29.resolve)(this.projectRoot, "gossip.agents.json");
+        const newPath = (0, import_path29.resolve)(this.projectRoot, ".gossip", "config.json");
+        if (!(0, import_fs24.existsSync)(newPath) && (0, import_fs24.existsSync)(oldPath)) {
+          (0, import_fs24.mkdirSync)((0, import_path29.resolve)(this.projectRoot, ".gossip"), { recursive: true });
+          (0, import_fs24.copyFileSync)(oldPath, newPath);
           log4("Migrated config to .gossip/config.json \u2014 gossip.agents.json is now ignored.");
         }
       }
       loadConfig() {
         const paths = [
-          (0, import_path25.resolve)(this.projectRoot, ".gossip", "config.json"),
-          (0, import_path25.resolve)(this.projectRoot, "gossip.agents.json")
+          (0, import_path29.resolve)(this.projectRoot, ".gossip", "config.json"),
+          (0, import_path29.resolve)(this.projectRoot, "gossip.agents.json")
         ];
         for (const p of paths) {
-          if ((0, import_fs20.existsSync)(p)) {
+          if ((0, import_fs24.existsSync)(p)) {
             try {
-              return JSON.parse((0, import_fs20.readFileSync)(p, "utf-8"));
+              return JSON.parse((0, import_fs24.readFileSync)(p, "utf-8"));
             } catch {
               log4("Config parse error, falling back to setup mode");
               return null;
@@ -11937,9 +12449,9 @@ var init_bootstrap = __esm({
             skills: ac.skills || [],
             taskCount: 0
           };
-          const tasksPath = (0, import_path25.join)(this.projectRoot, ".gossip", "agents", id, "memory", "tasks.jsonl");
-          if ((0, import_fs20.existsSync)(tasksPath)) {
-            const lines = (0, import_fs20.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+          const tasksPath = (0, import_path29.join)(this.projectRoot, ".gossip", "agents", id, "memory", "tasks.jsonl");
+          if ((0, import_fs24.existsSync)(tasksPath)) {
+            const lines = (0, import_fs24.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
             let count = 0;
             let lastTs = "";
             for (const line of lines) {
@@ -11953,9 +12465,9 @@ var init_bootstrap = __esm({
             summary.taskCount = count;
             if (lastTs) summary.lastActive = lastTs.split("T")[0];
           }
-          const memPath = (0, import_path25.join)(this.projectRoot, ".gossip", "agents", id, "memory", "MEMORY.md");
-          if ((0, import_fs20.existsSync)(memPath)) {
-            const content = (0, import_fs20.readFileSync)(memPath, "utf-8").slice(0, 500);
+          const memPath = (0, import_path29.join)(this.projectRoot, ".gossip", "agents", id, "memory", "MEMORY.md");
+          if ((0, import_fs24.existsSync)(memPath)) {
+            const content = (0, import_fs24.readFileSync)(memPath, "utf-8").slice(0, 500);
             const knowledgeLines = content.match(/- \[([^\]]+)\]/g);
             if (knowledgeLines?.length) {
               summary.topics = knowledgeLines.map((l) => l.replace(/- \[([^\]]+)\].*/, "$1")).join(", ");
@@ -12065,6 +12577,9 @@ ${sessionSection}
 | \`gossip_collect(task_ids?, timeout_ms?)\` | Collect results. Waits for completion. |
 | \`gossip_dispatch_consensus(tasks)\` | Dispatch with consensus summary instruction. Returns task IDs. |
 | \`gossip_collect_consensus(task_ids, timeout_ms?)\` | Collect + cross-review. Returns tagged consensus report. |
+| \`gossip_run(agent_id, task)\` | Single-agent dispatch. Relay: returns result. Native: returns Agent() instructions + callback. |
+| \`gossip_run_complete(task_id, result)\` | Complete a native agent gossip_run \u2014 relays result, writes memory, emits signals. |
+| \`gossip_relay_result(task_id, result)\` | Feed native Agent() result back into relay for consensus. |
 | \`gossip_bootstrap()\` | Refresh this prompt with latest team state. |
 | \`gossip_setup(main_provider, main_model, agents)\` | Create team with native + custom agents. |
 | \`gossip_orchestrate(task)\` | Auto-decompose task via MainAgent. |
@@ -12073,6 +12588,8 @@ ${sessionSection}
 | \`gossip_update_instructions(agent_ids, instruction_update, mode)\` | Update agent instructions at runtime. |
 | \`gossip_tools()\` | List all available tools. |
 | \`gossip_plan(task)\` | Plan task with write-mode suggestions. Returns dispatch-ready JSON. |
+| \`gossip_session_save()\` | Save session summary for next session context. Call before ending session. |
+| \`gossip_scores()\` | View agent performance scores and dispatch weights. |
 
 ## Dispatch Rules
 
@@ -12151,13 +12668,13 @@ Skills are auto-injected from agent config. Project-wide skills in .gossip/skill
        * Returns the body content of the top knowledge files, capped at 2500 chars.
        */
       readProjectMemory() {
-        const knowledgeDir = (0, import_path25.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "knowledge");
-        if (!(0, import_fs20.existsSync)(knowledgeDir)) return null;
-        const files = (0, import_fs20.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
+        const knowledgeDir = (0, import_path29.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "knowledge");
+        if (!(0, import_fs24.existsSync)(knowledgeDir)) return null;
+        const files = (0, import_fs24.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
         if (files.length === 0) return null;
         const scored = files.map((f) => {
           try {
-            const content = (0, import_fs20.readFileSync)((0, import_path25.join)(knowledgeDir, f), "utf-8");
+            const content = (0, import_fs24.readFileSync)((0, import_path29.join)(knowledgeDir, f), "utf-8");
             const importance = parseFloat(content.match(/importance:\s*([\d.]+)/)?.[1] ?? "0.5");
             const isPinned = /pinned:\s*true/i.test(content);
             const tsPart = f.slice(0, 19);
@@ -12177,13 +12694,37 @@ Skills are auto-injected from agent config. Project-wide skills in .gossip/skill
         const combined = top.map((s) => s.body).join("\n\n---\n\n");
         return combined.slice(0, 2500) || null;
       }
+      /**
+       * Verify tool-related claims in session notes against MCP server source.
+       * Annotates TODO/remaining lines where the referenced tool actually exists.
+       */
+      verifyToolClaims(content) {
+        const mcpPath = (0, import_path29.join)(this.projectRoot, "apps", "cli", "src", "mcp-server-sdk.ts");
+        if (!(0, import_fs24.existsSync)(mcpPath)) return content;
+        const rawSource = (0, import_fs24.readFileSync)(mcpPath, "utf-8");
+        const source = rawSource.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, "");
+        const keywordRe = /TODO|remaining|deferred|needed|pending/i;
+        const toolRe = /gossip_\w+/;
+        return content.split("\n").map((line) => {
+          if (!keywordRe.test(line)) return line;
+          const toolMatch = line.match(toolRe);
+          if (!toolMatch) return line;
+          const toolName = toolMatch[0];
+          const pattern = new RegExp(`server\\.tool\\(\\s*['"]${toolName}['"]`);
+          if (pattern.test(source)) {
+            return `~~${line.trim()}~~ *(verified: ${toolName} exists in MCP server)*`;
+          }
+          return line;
+        }).join("\n");
+      }
       /** Read .gossip/next-session.md if it exists — user/orchestrator notes for the next session */
       readNextSessionNotes() {
-        const notesPath = (0, import_path25.join)(this.projectRoot, ".gossip", "next-session.md");
-        if (!(0, import_fs20.existsSync)(notesPath)) return null;
+        const notesPath = (0, import_path29.join)(this.projectRoot, ".gossip", "next-session.md");
+        if (!(0, import_fs24.existsSync)(notesPath)) return null;
         try {
-          const content = (0, import_fs20.readFileSync)(notesPath, "utf-8").trim();
-          return content.length > 0 ? content.slice(0, 2e3) : null;
+          const content = (0, import_fs24.readFileSync)(notesPath, "utf-8").trim();
+          if (content.length === 0) return null;
+          return this.verifyToolClaims(content.slice(0, 2e3));
         } catch {
           return null;
         }
@@ -12298,12 +12839,12 @@ Return ONLY the JSON array, no other text.`
 });
 
 // packages/orchestrator/src/skill-generator.ts
-var import_fs21, import_path26, SAFE_NAME, KNOWN_CATEGORIES, REQUIRED_SECTIONS, BUNDLED_TEMPLATE, SkillGenerator;
+var import_fs25, import_path30, SAFE_NAME, KNOWN_CATEGORIES, REQUIRED_SECTIONS, BUNDLED_TEMPLATE, SkillGenerator;
 var init_skill_generator = __esm({
   "packages/orchestrator/src/skill-generator.ts"() {
     "use strict";
-    import_fs21 = require("fs");
-    import_path26 = require("path");
+    import_fs25 = require("fs");
+    import_path30 = require("path");
     init_skill_name();
     SAFE_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
     KNOWN_CATEGORIES = /* @__PURE__ */ new Set([
@@ -12380,9 +12921,9 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST.
           }
         }
         let projectContext = "";
-        const bootstrapPath = (0, import_path26.join)(this.projectRoot, ".gossip", "bootstrap.md");
-        if ((0, import_fs21.existsSync)(bootstrapPath)) {
-          projectContext = (0, import_fs21.readFileSync)(bootstrapPath, "utf-8").slice(0, 2e3);
+        const bootstrapPath = (0, import_path30.join)(this.projectRoot, ".gossip", "bootstrap.md");
+        if ((0, import_fs25.existsSync)(bootstrapPath)) {
+          projectContext = (0, import_fs25.readFileSync)(bootstrapPath, "utf-8").slice(0, 2e3);
         }
         const totalDispatches = agentProfile?.totalTasks ?? 0;
         const categoryConfirmations = findings.filter((f) => f.agentId === agentId).length;
@@ -12441,10 +12982,10 @@ Requirements:
         }
         this.validateSkillContent(cleaned);
         const skillName = normalizeSkillName(category);
-        const skillDir = (0, import_path26.join)(this.projectRoot, ".gossip", "agents", agentId, "skills");
-        (0, import_fs21.mkdirSync)(skillDir, { recursive: true });
-        const skillPath = (0, import_path26.join)(skillDir, `${skillName}.md`);
-        (0, import_fs21.writeFileSync)(skillPath, cleaned);
+        const skillDir = (0, import_path30.join)(this.projectRoot, ".gossip", "agents", agentId, "skills");
+        (0, import_fs25.mkdirSync)(skillDir, { recursive: true });
+        const skillPath = (0, import_path30.join)(skillDir, `${skillName}.md`);
+        (0, import_fs25.writeFileSync)(skillPath, cleaned);
         return { path: skillPath, content: cleaned };
       }
       validateSkillContent(content) {
@@ -12462,24 +13003,24 @@ Requirements:
         }
       }
       loadTemplate() {
-        const userDir = (0, import_path26.join)(this.projectRoot, ".gossip", "skill-templates");
-        if ((0, import_fs21.existsSync)(userDir)) {
-          const files = (0, import_fs21.readdirSync)(userDir).filter((f) => f.endsWith(".md"));
+        const userDir = (0, import_path30.join)(this.projectRoot, ".gossip", "skill-templates");
+        if ((0, import_fs25.existsSync)(userDir)) {
+          const files = (0, import_fs25.readdirSync)(userDir).filter((f) => f.endsWith(".md"));
           if (files.length > 0) {
-            return (0, import_fs21.readFileSync)((0, import_path26.join)(userDir, files[0]), "utf-8");
+            return (0, import_fs25.readFileSync)((0, import_path30.join)(userDir, files[0]), "utf-8");
           }
         }
         const home = process.env.HOME || process.env.USERPROFILE || "";
-        const cacheBase = (0, import_path26.join)(home, ".claude", "plugins", "cache", "claude-plugins-official", "superpowers");
-        if ((0, import_fs21.existsSync)(cacheBase)) {
+        const cacheBase = (0, import_path30.join)(home, ".claude", "plugins", "cache", "claude-plugins-official", "superpowers");
+        if ((0, import_fs25.existsSync)(cacheBase)) {
           try {
-            const versions = (0, import_fs21.readdirSync)(cacheBase).sort().reverse();
+            const versions = (0, import_fs25.readdirSync)(cacheBase).sort().reverse();
             for (const ver of versions) {
-              const skillPath = (0, import_path26.join)(cacheBase, ver, "skills", "systematic-debugging", "SKILL.md");
-              if ((0, import_fs21.existsSync)(skillPath)) {
-                const realPath = (0, import_fs21.realpathSync)(skillPath);
-                if (realPath.startsWith((0, import_path26.resolve)(cacheBase))) {
-                  return (0, import_fs21.readFileSync)(realPath, "utf-8");
+              const skillPath = (0, import_path30.join)(cacheBase, ver, "skills", "systematic-debugging", "SKILL.md");
+              if ((0, import_fs25.existsSync)(skillPath)) {
+                const realPath = (0, import_fs25.realpathSync)(skillPath);
+                if (realPath.startsWith((0, import_path30.resolve)(cacheBase))) {
+                  return (0, import_fs25.readFileSync)(realPath, "utf-8");
                 }
               }
             }
@@ -12489,10 +13030,10 @@ Requirements:
         return BUNDLED_TEMPLATE;
       }
       loadCategoryFindings(category) {
-        const filePath = (0, import_path26.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
-        if (!(0, import_fs21.existsSync)(filePath)) return [];
+        const filePath = (0, import_path30.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
+        if (!(0, import_fs25.existsSync)(filePath)) return [];
         try {
-          return (0, import_fs21.readFileSync)(filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
+          return (0, import_fs25.readFileSync)(filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
             try {
               return JSON.parse(line);
             } catch {
@@ -12510,12 +13051,12 @@ Requirements:
 });
 
 // packages/orchestrator/src/consensus-judge.ts
-var import_fs22, import_path27, log5, ConsensusJudge;
+var import_fs26, import_path31, log5, ConsensusJudge;
 var init_consensus_judge = __esm({
   "packages/orchestrator/src/consensus-judge.ts"() {
     "use strict";
-    import_fs22 = require("fs");
-    import_path27 = require("path");
+    import_fs26 = require("fs");
+    import_path31 = require("path");
     log5 = (msg) => process.stderr.write(`[consensus-judge] ${msg}
 `);
     ConsensusJudge = class {
@@ -12585,12 +13126,12 @@ For each, return: [{"index": 1, "verdict": "VERIFIED|REFUTED|UNVERIFIABLE", "evi
       readCodeSnippet(fileRef, line) {
         const fileName = fileRef.split("/").pop();
         let filePath = null;
-        const direct = (0, import_path27.join)(this.projectRoot, fileRef);
-        if ((0, import_fs22.existsSync)(direct)) {
+        const direct = (0, import_path31.join)(this.projectRoot, fileRef);
+        if ((0, import_fs26.existsSync)(direct)) {
           filePath = direct;
         } else {
           for (const dir of ["packages", "src", "apps"]) {
-            const found = this.findFileSync((0, import_path27.join)(this.projectRoot, dir), fileName);
+            const found = this.findFileSync((0, import_path31.join)(this.projectRoot, dir), fileName);
             if (found) {
               filePath = found;
               break;
@@ -12599,7 +13140,7 @@ For each, return: [{"index": 1, "verdict": "VERIFIED|REFUTED|UNVERIFIABLE", "evi
         }
         if (!filePath) return null;
         try {
-          const content = (0, import_fs22.readFileSync)(filePath, "utf-8");
+          const content = (0, import_fs26.readFileSync)(filePath, "utf-8");
           const lines = content.split("\n");
           if (line > lines.length) return null;
           const start = Math.max(0, line - 4);
@@ -12611,9 +13152,9 @@ For each, return: [{"index": 1, "verdict": "VERIFIED|REFUTED|UNVERIFIABLE", "evi
       }
       findFileSync(dir, fileName) {
         try {
-          const entries = (0, import_fs22.readdirSync)(dir, { withFileTypes: true });
+          const entries = (0, import_fs26.readdirSync)(dir, { withFileTypes: true });
           for (const entry of entries) {
-            const fullPath = (0, import_path27.join)(dir, entry.name);
+            const fullPath = (0, import_path31.join)(dir, entry.name);
             if (entry.isFile() && entry.name === fileName) return fullPath;
             if (entry.isDirectory() && entry.name !== "node_modules" && entry.name !== ".git") {
               const found = this.findFileSync(fullPath, fileName);
@@ -12739,18 +13280,18 @@ __export(config_exports, {
 function findConfigPath(projectRoot) {
   const root = projectRoot || process.cwd();
   const candidates = [
-    (0, import_path28.resolve)(root, ".gossip", "config.json"),
-    (0, import_path28.resolve)(root, "gossip.agents.json"),
-    (0, import_path28.resolve)(root, "gossip.agents.yaml"),
-    (0, import_path28.resolve)(root, "gossip.agents.yml")
+    (0, import_path32.resolve)(root, ".gossip", "config.json"),
+    (0, import_path32.resolve)(root, "gossip.agents.json"),
+    (0, import_path32.resolve)(root, "gossip.agents.yaml"),
+    (0, import_path32.resolve)(root, "gossip.agents.yml")
   ];
   for (const p of candidates) {
-    if ((0, import_fs23.existsSync)(p)) return p;
+    if ((0, import_fs27.existsSync)(p)) return p;
   }
   return null;
 }
 function loadConfig(configPath) {
-  const raw = (0, import_fs23.readFileSync)(configPath, "utf-8");
+  const raw = (0, import_fs27.readFileSync)(configPath, "utf-8");
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -12802,19 +13343,19 @@ function configToAgentConfigs(config2) {
 }
 function loadClaudeSubagents(projectRoot, existingIds) {
   const root = projectRoot || process.cwd();
-  const agentsDir = (0, import_path28.join)(root, ".claude", "agents");
-  if (!(0, import_fs23.existsSync)(agentsDir)) return [];
+  const agentsDir = (0, import_path32.join)(root, ".claude", "agents");
+  if (!(0, import_fs27.existsSync)(agentsDir)) return [];
   let files;
   try {
-    files = (0, import_fs23.readdirSync)(agentsDir).filter((f) => f.endsWith(".md"));
+    files = (0, import_fs27.readdirSync)(agentsDir).filter((f) => f.endsWith(".md"));
   } catch {
     return [];
   }
   const agents = [];
   for (const file2 of files) {
-    const filePath = (0, import_path28.join)(agentsDir, file2);
+    const filePath = (0, import_path32.join)(agentsDir, file2);
     try {
-      const content = (0, import_fs23.readFileSync)(filePath, "utf-8");
+      const content = (0, import_fs27.readFileSync)(filePath, "utf-8");
       const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
       if (!frontmatter) continue;
       const fm = frontmatter[1];
@@ -12876,12 +13417,12 @@ function inferSkills(description, name) {
   if (skills.length === 0) skills.push("general");
   return skills;
 }
-var import_fs23, import_path28, VALID_PROVIDERS, CLAUDE_MODEL_MAP;
+var import_fs27, import_path32, VALID_PROVIDERS, CLAUDE_MODEL_MAP;
 var init_config = __esm({
   "apps/cli/src/config.ts"() {
     "use strict";
-    import_fs23 = require("fs");
-    import_path28 = require("path");
+    import_fs27 = require("fs");
+    import_path32 = require("path");
     VALID_PROVIDERS = ["anthropic", "openai", "google", "local"];
     CLAUDE_MODEL_MAP = {
       opus: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -13031,17 +13572,17 @@ __export(identity_exports, {
   normalizeGitUrl: () => normalizeGitUrl
 });
 function getOrCreateSalt(projectRoot) {
-  const saltPath = (0, import_path29.join)(projectRoot, ".gossip", "local-salt");
+  const saltPath = (0, import_path33.join)(projectRoot, ".gossip", "local-salt");
   try {
-    return (0, import_fs24.readFileSync)(saltPath, "utf-8").trim();
+    return (0, import_fs28.readFileSync)(saltPath, "utf-8").trim();
   } catch {
-    const salt = (0, import_crypto9.randomBytes)(16).toString("hex");
-    (0, import_fs24.mkdirSync)((0, import_path29.join)(projectRoot, ".gossip"), { recursive: true });
+    const salt = (0, import_crypto10.randomBytes)(16).toString("hex");
+    (0, import_fs28.mkdirSync)((0, import_path33.join)(projectRoot, ".gossip"), { recursive: true });
     try {
-      (0, import_fs24.writeFileSync)(saltPath, salt, { flag: "wx" });
+      (0, import_fs28.writeFileSync)(saltPath, salt, { flag: "wx" });
       return salt;
     } catch {
-      return (0, import_fs24.readFileSync)(saltPath, "utf-8").trim();
+      return (0, import_fs28.readFileSync)(saltPath, "utf-8").trim();
     }
   }
 }
@@ -13049,7 +13590,7 @@ function getUserId(projectRoot) {
   try {
     const email3 = (0, import_child_process5.execFileSync)("git", ["config", "user.email"], { stdio: "pipe" }).toString().trim();
     const salt = getOrCreateSalt(projectRoot);
-    return (0, import_crypto9.createHash)("sha256").update(email3 + projectRoot + salt).digest("hex").slice(0, 16);
+    return (0, import_crypto10.createHash)("sha256").update(email3 + projectRoot + salt).digest("hex").slice(0, 16);
   } catch {
     return "anonymous";
   }
@@ -13066,7 +13607,7 @@ function normalizeGitUrl(url2) {
   }
 }
 function getTeamUserId(email3, teamSalt) {
-  return (0, import_crypto9.createHash)("sha256").update(email3 + teamSalt).digest("hex").slice(0, 16);
+  return (0, import_crypto10.createHash)("sha256").update(email3 + teamSalt).digest("hex").slice(0, 16);
 }
 function getGitEmail() {
   try {
@@ -13085,19 +13626,19 @@ function getProjectId(projectRoot) {
     ).toString().trim();
     const normalized = normalizeGitUrl(remoteUrl);
     if (normalized) {
-      return (0, import_crypto9.createHash)("sha256").update(normalized).digest("hex").slice(0, 16);
+      return (0, import_crypto10.createHash)("sha256").update(normalized).digest("hex").slice(0, 16);
     }
   } catch {
   }
-  return (0, import_crypto9.createHash)("sha256").update(projectRoot).digest("hex").slice(0, 16);
+  return (0, import_crypto10.createHash)("sha256").update(projectRoot).digest("hex").slice(0, 16);
 }
-var import_fs24, import_path29, import_crypto9, import_child_process5;
+var import_fs28, import_path33, import_crypto10, import_child_process5;
 var init_identity = __esm({
   "apps/cli/src/identity.ts"() {
     "use strict";
-    import_fs24 = require("fs");
-    import_path29 = require("path");
-    import_crypto9 = require("crypto");
+    import_fs28 = require("fs");
+    import_path33 = require("path");
+    import_crypto10 = require("crypto");
     import_child_process5 = require("child_process");
   }
 });
@@ -26875,7 +27416,7 @@ function date4(params) {
 config(en_default());
 
 // apps/cli/src/mcp-server-sdk.ts
-var import_crypto10 = require("crypto");
+var import_crypto11 = require("crypto");
 function detectEnvironment() {
   if (process.env.CLAUDECODE === "1" || process.env.CLAUDE_CODE_ENTRYPOINT) {
     return { host: "claude-code", supportsNativeAgents: true, nativeAgentDir: ".claude/agents", rulesDir: ".claude/rules", rulesFile: ".claude/rules/gossipcat.md" };
@@ -26945,8 +27486,18 @@ async function doBoot() {
   const config2 = m.loadConfig(configPath);
   const agentConfigs = m.configToAgentConfigs(config2);
   keychain = new m.Keychain();
-  relay = new m.RelayServer({ port: 0 });
+  relay = new m.RelayServer({
+    port: 0,
+    dashboard: {
+      projectRoot: process.cwd(),
+      agentConfigs
+    }
+  });
   await relay.start();
+  if (relay.dashboardUrl) {
+    process.stderr.write(`[gossipcat] Dashboard: ${relay.dashboardUrl} (key: ${relay.dashboardKeyPrefix}...)
+`);
+  }
   const perfWriter = new m.PerformanceWriter(process.cwd());
   toolServer = new m.ToolServer({ relayUrl: relay.url, projectRoot: process.cwd(), perfWriter });
   await toolServer.start();
@@ -26970,10 +27521,10 @@ async function doBoot() {
     }
     const key = await keychain.getKey(ac.provider);
     const llm = m.createProvider(ac.provider, ac.model, key ?? void 0);
-    const { existsSync: existsSync21, readFileSync: readFileSync23 } = require("fs");
-    const { join: join25 } = require("path");
-    const instructionsPath = join25(process.cwd(), ".gossip", "agents", ac.id, "instructions.md");
-    const instructions = existsSync21(instructionsPath) ? readFileSync23(instructionsPath, "utf-8") : void 0;
+    const { existsSync: existsSync25, readFileSync: readFileSync27 } = require("fs");
+    const { join: join29 } = require("path");
+    const instructionsPath = join29(process.cwd(), ".gossip", "agents", ac.id, "instructions.md");
+    const instructions = existsSync25(instructionsPath) ? readFileSync27(instructionsPath, "utf-8") : void 0;
     const worker = new m.WorkerAgent(ac.id, llm, relay.url, m.ALL_TOOLS, instructions);
     worker.setOnTaskComplete?.((event) => {
       try {
@@ -27314,7 +27865,7 @@ server.tool(
       }).join("\n");
       const assignedTasks = planned.filter((t) => t.agentId);
       const unassignedTasks = planned.filter((t) => !t.agentId);
-      const planId = (0, import_crypto10.randomUUID)().slice(0, 8);
+      const planId = (0, import_crypto11.randomUUID)().slice(0, 8);
       const planState = {
         id: planId,
         task,
@@ -27420,7 +27971,7 @@ server.tool(
     const nativeConfig = nativeAgentConfigs.get(agent_id);
     if (nativeConfig) {
       evictStaleNativeTasks();
-      const taskId = (0, import_crypto10.randomUUID)().slice(0, 8);
+      const taskId = (0, import_crypto11.randomUUID)().slice(0, 8);
       nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), planId: plan_id, step });
       try {
         mainAgent.recordNativeTask(taskId, agent_id, task);
@@ -27525,7 +28076,7 @@ server.tool(
     const nativeInstructions = [];
     for (const def of nativeTasks) {
       const nativeConfig = nativeAgentConfigs.get(def.agent_id);
-      const taskId = (0, import_crypto10.randomUUID)().slice(0, 8);
+      const taskId = (0, import_crypto11.randomUUID)().slice(0, 8);
       nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now() });
       try {
         mainAgent.recordNativeTask(taskId, def.agent_id, def.task);
@@ -27736,7 +28287,7 @@ server.tool(
     const nativeInstructions = [];
     for (const def of nativeTasks) {
       const nativeConfig = nativeAgentConfigs.get(def.agent_id);
-      const taskId = (0, import_crypto10.randomUUID)().slice(0, 8);
+      const taskId = (0, import_crypto11.randomUUID)().slice(0, 8);
       nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now() });
       try {
         mainAgent.recordNativeTask(taskId, def.agent_id, def.task);
@@ -27906,7 +28457,7 @@ server.tool(
   async () => {
     const { loadClaudeSubagents: loadClaudeSubagents2 } = await Promise.resolve().then(() => (init_config(), config_exports));
     const claudeCount = loadClaudeSubagents2(process.cwd()).length;
-    return { content: [{ type: "text", text: [
+    const lines = [
       "Gossip Mesh Status:",
       `  Host: ${env.host}${env.supportsNativeAgents ? " (native agents supported)" : ""}`,
       `  Native agent dir: ${env.nativeAgentDir || "n/a"}`,
@@ -27914,7 +28465,11 @@ server.tool(
       `  Tool Server: ${toolServer ? "running" : "not started"}`,
       `  Workers: ${workers.size} (${Array.from(workers.keys()).join(", ") || "none"})`,
       `  Claude subagents found: ${claudeCount}`
-    ].join("\n") }] };
+    ];
+    if (relay?.dashboardUrl) {
+      lines.push(`  Dashboard: ${relay.dashboardUrl} (key: ${relay.dashboardKeyPrefix}...)`);
+    }
+    return { content: [{ type: "text", text: lines.join("\n") }] };
   }
 );
 server.tool(
@@ -27985,10 +28540,10 @@ server.tool(
     const { BootstrapGenerator: BootstrapGenerator2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
     const generator = new BootstrapGenerator2(process.cwd());
     const result = generator.generate();
-    const { writeFileSync: writeFileSync12, mkdirSync: mkdirSync13 } = require("fs");
-    const { join: join25 } = require("path");
-    mkdirSync13(join25(process.cwd(), ".gossip"), { recursive: true });
-    writeFileSync12(join25(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
+    const { writeFileSync: writeFileSync13, mkdirSync: mkdirSync14 } = require("fs");
+    const { join: join29 } = require("path");
+    mkdirSync14(join29(process.cwd(), ".gossip"), { recursive: true });
+    writeFileSync13(join29(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
     return { content: [{ type: "text", text: result.prompt }] };
   }
 );
@@ -28016,8 +28571,8 @@ server.tool(
     })).describe("Array of agents to create")
   },
   async ({ main_provider, main_model, agents }) => {
-    const { writeFileSync: writeFileSync12, mkdirSync: mkdirSync13 } = require("fs");
-    const { join: join25 } = require("path");
+    const { writeFileSync: writeFileSync13, mkdirSync: mkdirSync14 } = require("fs");
+    const { join: join29 } = require("path");
     const root = process.cwd();
     const CLAUDE_MODEL_MAP2 = {
       opus: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -28055,9 +28610,9 @@ server.tool(
           "",
           body
         ].join("\n");
-        const agentsDir = join25(root, ".claude", "agents");
-        mkdirSync13(agentsDir, { recursive: true });
-        writeFileSync12(join25(agentsDir, `${agent.id}.md`), md, "utf-8");
+        const agentsDir = join29(root, ".claude", "agents");
+        mkdirSync14(agentsDir, { recursive: true });
+        writeFileSync13(join29(agentsDir, `${agent.id}.md`), md, "utf-8");
         nativeCreated.push(agent.id);
         configAgents[agent.id] = {
           provider: mapped.provider,
@@ -28083,9 +28638,9 @@ server.tool(
         };
         customCreated.push(agent.id);
         if (agent.instructions) {
-          const instrDir = join25(root, ".gossip", "agents", agent.id);
-          mkdirSync13(instrDir, { recursive: true });
-          writeFileSync12(join25(instrDir, "instructions.md"), agent.instructions, "utf-8");
+          const instrDir = join29(root, ".gossip", "agents", agent.id);
+          mkdirSync14(instrDir, { recursive: true });
+          writeFileSync13(join29(instrDir, "instructions.md"), agent.instructions, "utf-8");
         }
       }
     }
@@ -28099,13 +28654,13 @@ server.tool(
     } catch (err) {
       return { content: [{ type: "text", text: `Invalid config: ${err.message}` }] };
     }
-    mkdirSync13(join25(root, ".gossip"), { recursive: true });
-    writeFileSync12(join25(root, ".gossip", "config.json"), JSON.stringify(config2, null, 2));
+    mkdirSync14(join29(root, ".gossip"), { recursive: true });
+    writeFileSync13(join29(root, ".gossip", "config.json"), JSON.stringify(config2, null, 2));
     const agentList = Object.entries(configAgents).map(([id, a]) => `- ${id}: ${a.provider}/${a.model} (${a.preset || "custom"})`).join("\n");
-    const rulesDir = join25(root, env.rulesDir);
-    const rulesFile = join25(root, env.rulesFile);
-    mkdirSync13(rulesDir, { recursive: true });
-    writeFileSync12(rulesFile, `# Gossipcat \u2014 Multi-Agent Orchestration
+    const rulesDir = join29(root, env.rulesDir);
+    const rulesFile = join29(root, env.rulesFile);
+    mkdirSync14(rulesDir, { recursive: true });
+    writeFileSync13(rulesFile, `# Gossipcat \u2014 Multi-Agent Orchestration
 
 This project uses gossipcat for multi-agent orchestration via MCP.
 
@@ -28330,6 +28885,7 @@ server.tool(
         tester: "You are a testing agent. Write thorough tests, find edge cases, verify behavior. Run tests and report results."
       };
       const presetPrompt = presetPrompts[preset] || `You are a ${preset} agent.`;
+      const scopePrefix = write_mode === "scoped" && scope ? `SCOPE RESTRICTION: Only modify files within ${scope}. Do not edit files outside this directory.\\n\\n` : "";
       return {
         content: [{
           type: "text",
@@ -28337,7 +28893,7 @@ server.tool(
 
 NATIVE_DISPATCH:
 
-Agent(model: "${config2.model}", prompt: "${presetPrompt}\\n\\n---\\n\\nTask: ${task.slice(0, 200)}...")
+Agent(model: "${config2.model}", prompt: "${scopePrefix}${presetPrompt}\\n\\n---\\n\\nTask: ${task.slice(0, 200)}...")
   \u2192 then: gossip_run_complete(task_id: "${taskId}", result: "<output>")
 `
         }]
@@ -28537,12 +29093,12 @@ server.tool(
     if (findings.length === 0) {
       return { content: [{ type: "text", text: "No findings to log." }] };
     }
-    const { appendFileSync: appendFileSync7, mkdirSync: mkdirSync13, existsSync: existsSync21 } = require("fs");
-    const { join: join25 } = require("path");
+    const { appendFileSync: appendFileSync7, mkdirSync: mkdirSync14, existsSync: existsSync25 } = require("fs");
+    const { join: join29 } = require("path");
     const root = process.cwd();
-    const dir = join25(root, ".gossip");
-    if (!existsSync21(dir)) mkdirSync13(dir, { recursive: true });
-    const filePath = join25(dir, "implementation-findings.jsonl");
+    const dir = join29(root, ".gossip");
+    if (!existsSync25(dir)) mkdirSync14(dir, { recursive: true });
+    const filePath = join29(dir, "implementation-findings.jsonl");
     const timestamp = (/* @__PURE__ */ new Date()).toISOString();
     const data = findings.map((f) => JSON.stringify({
       timestamp,
@@ -28583,15 +29139,15 @@ server.tool(
     agent_id: external_exports.string().optional().describe("Filter by implementer agent ID. Omit to see all.")
   },
   async ({ agent_id }) => {
-    const { existsSync: existsSync21, readFileSync: readFileSync23 } = require("fs");
-    const { join: join25 } = require("path");
-    const filePath = join25(process.cwd(), ".gossip", "implementation-findings.jsonl");
-    if (!existsSync21(filePath)) {
+    const { existsSync: existsSync25, readFileSync: readFileSync27 } = require("fs");
+    const { join: join29 } = require("path");
+    const filePath = join29(process.cwd(), ".gossip", "implementation-findings.jsonl");
+    if (!existsSync25(filePath)) {
       return { content: [{ type: "text", text: "No implementation findings yet. Use gossip_log_finding to record findings after code reviews." }] };
     }
     const entries = [];
     try {
-      const lines = readFileSync23(filePath, "utf-8").trim().split("\n").filter(Boolean);
+      const lines = readFileSync27(filePath, "utf-8").trim().split("\n").filter(Boolean);
       for (const l of lines) {
         try {
           entries.push(JSON.parse(l));
@@ -28654,16 +29210,16 @@ server.tool(
     const { SkillGapTracker: SkillGapTracker2, parseSkillFrontmatter: parseSkillFrontmatter2, normalizeSkillName: normalizeSkillName2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
     const tracker = new SkillGapTracker2(process.cwd());
     if (skills && skills.length > 0) {
-      const { writeFileSync: writeFileSync12, mkdirSync: mkdirSync13, existsSync: existsSync21, readFileSync: readFileSync23 } = require("fs");
-      const { join: join25 } = require("path");
-      const dir = join25(process.cwd(), ".gossip", "skills");
-      mkdirSync13(dir, { recursive: true });
+      const { writeFileSync: writeFileSync13, mkdirSync: mkdirSync14, existsSync: existsSync25, readFileSync: readFileSync27 } = require("fs");
+      const { join: join29 } = require("path");
+      const dir = join29(process.cwd(), ".gossip", "skills");
+      mkdirSync14(dir, { recursive: true });
       const results = [];
       for (const skill of skills) {
         const name = normalizeSkillName2(skill.name);
-        const filePath = join25(dir, `${name}.md`);
-        if (existsSync21(filePath)) {
-          const existing = readFileSync23(filePath, "utf-8");
+        const filePath = join29(dir, `${name}.md`);
+        if (existsSync25(filePath)) {
+          const existing = readFileSync27(filePath, "utf-8");
           const fm = parseSkillFrontmatter2(existing);
           if (fm) {
             if (fm.generated_by === "manual") {
@@ -28680,7 +29236,7 @@ server.tool(
             }
           }
         }
-        writeFileSync12(filePath, skill.content);
+        writeFileSync13(filePath, skill.content);
         tracker.recordResolution(name);
         results.push(`\u2705 Created .gossip/skills/${name}.md`);
       }
