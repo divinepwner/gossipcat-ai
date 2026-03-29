@@ -62,7 +62,10 @@ class PresenceTracker {
         return entry ? entry.status === 'online' : false;
     }
     getOnlineAgents() {
-        return Array.from(this.presence.keys()).sort();
+        return Array.from(this.presence.entries())
+            .filter(([, entry]) => entry.status === 'online')
+            .map(([id]) => id)
+            .sort();
     }
     count() {
         return this.presence.size;

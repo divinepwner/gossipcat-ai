@@ -27,6 +27,7 @@ export declare class GossipAgent extends EventEmitter {
     private _connected;
     private _sessionId;
     private intentionalDisconnect;
+    private subscribedChannels;
     constructor(config: GossipAgentConfig);
     get agentId(): string;
     get sessionId(): string | null;

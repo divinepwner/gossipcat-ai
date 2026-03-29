@@ -8,24 +8,25 @@ describe('ShellTools', () => {
     expect(result).toContain('hello');
   });
 
-  it('blocks disallowed command', async () => {
+  it('blocks disallowed command with helpful hint', async () => {
     await expect(shell.shellExec({ command: 'curl http://evil.com' }))
-      .rejects.toThrow('not in the allowed commands list');
+      .rejects.toThrow(/not allowed/);
   });
 
-  it('blocks rm -rf', async () => {
+  it('blocks rm with hint to use file_delete', async () => {
     await expect(shell.shellExec({ command: 'rm -rf /' }))
-      .rejects.toThrow(/not in the allowed|blocked by safety/);
+      .rejects.toThrow(/not allowed|blocked by safety/);
   });
 
   it('enforces timeout', async () => {
-    const result = await shell.shellExec({ command: 'sleep 10', timeout: 100 });
+    // node is in the allowlist; sleep was removed (DoS vector)
+    const result = await shell.shellExec({ command: 'node', args: ['-e', 'setTimeout(()=>{},60000)'], timeout: 100 });
     expect(result).toContain('timed out');
   }, 5000);
 
-  it('blocks unknown commands', async () => {
+  it('blocks unknown commands with allowed list', async () => {
     await expect(shell.shellExec({ command: 'python3 --version' }))
-      .rejects.toThrow('not in the allowed commands list');
+      .rejects.toThrow(/not allowed/);
   });
 
   it('blocks git push --force', async () => {

@@ -98,7 +98,7 @@ export async function runSetupWizard(): Promise<void> {
   }
 
   const selectedProviders = await p.multiselect({
-    message: 'Which providers do you want to use?',
+    message: 'Which providers do you want to use? (space to toggle, enter to confirm)',
     options: providerOptions,
     required: true,
   });
@@ -295,6 +295,40 @@ ${agentList}
 
 ## Skills & agents
 Skills auto-inject from agent config. Edit gossip.agents.json to add agents (hot-reloads).
+
+## Agent Memory
+Gossipcat MCP agents get memory auto-injected at dispatch and auto-written at collect.
+
+Claude Code subagents (Agent tool) bypass the MCP pipeline. You MUST manually handle memory:
+- Before dispatch: read \`.gossip/agents/<id>/memory/MEMORY.md\` and include in the Agent prompt
+- After completion: append a task entry to \`.gossip/agents/<id>/memory/tasks.jsonl\`
+
+## When to Use Multi-Agent Dispatch (REQUIRED)
+
+These tasks MUST use parallel multi-agent dispatch. Never use a single agent or Explore subagent.
+
+| Task Type | Why Multi-Agent | Split Strategy |
+|-----------|----------------|----------------|
+| Security review | Different agents catch different vulnerability classes | Split by package |
+| Code review | Cross-validation finds bugs single reviewers miss | Split by concern (logic, style, perf) |
+| Bug investigation | Competing hypotheses tested in parallel | One agent per hypothesis |
+| Architecture review | Multiple perspectives on trade-offs | Split by dimension (scale, security, DX) |
+
+### Single agent is fine for:
+- Quick lookups ("what does function X do?")
+- Simple implementation tasks
+- Running tests
+- File reads / grep searches
+
+### Pattern:
+\`\`\`
+gossip_dispatch_parallel(tasks: [
+  {agent_id: "<reviewer>", task: "Review packages/relay/ for <concern>"},
+  {agent_id: "<tester>", task: "Review packages/tools/ for <concern>"}
+])
+Agent(model: "sonnet", prompt: "Review packages/orchestrator/ for <concern>", run_in_background: true)
+\`\`\`
+Then synthesize all results — cross-reference findings, deduplicate, resolve conflicts.
 `);
 
   p.log.success('Claude Code rules saved to .claude/rules/gossipcat.md');

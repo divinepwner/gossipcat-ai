@@ -1,4 +1,7 @@
-import { AgentRegistry } from '@gossip/orchestrator';
+import { AgentRegistry, SkillCatalog } from '@gossip/orchestrator';
+import { writeFileSync, mkdirSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 describe('AgentRegistry', () => {
   let registry: AgentRegistry;
@@ -72,5 +75,81 @@ describe('AgentRegistry', () => {
     registry.register({ id: 'a1', provider: 'anthropic', model: 'claude-4', skills: ['ts', 'review'] });
     expect(registry.count).toBe(1);
     expect(registry.get('a1')?.model).toBe('claude-4');
+  });
+});
+
+describe('AgentRegistry with project skills', () => {
+  const testDir = join(tmpdir(), `gossip-registry-test-${Date.now()}`);
+  const skillsDir = join(testDir, '.gossip', 'skills');
+  let registry: AgentRegistry;
+  let catalog: SkillCatalog;
+
+  beforeEach(() => {
+    mkdirSync(skillsDir, { recursive: true });
+    writeFileSync(join(skillsDir, 'dos-resilience.md'), `---
+name: dos-resilience
+description: Review for DoS vectors.
+keywords: [dos, rate-limit, payload]
+status: active
+---
+# DoS
+`);
+    catalog = new SkillCatalog(testDir);
+    registry = new AgentRegistry();
+    registry.register({ id: 'reviewer', provider: 'anthropic', model: 'claude', skills: ['code-review', 'security-audit'] });
+    registry.register({ id: 'impl', provider: 'openai', model: 'gpt', skills: ['typescript', 'implementation'] });
+  });
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('gives projectMatchBoost when task text matches project skill keywords', () => {
+    const match = registry.findBestMatchExcluding([], new Set(), {
+      taskText: 'check rate-limit and DoS protection',
+      catalog,
+    });
+    expect(match).not.toBeNull();
+  });
+
+  it('gives suggesterBoost to agents who suggested the skill', () => {
+    registry.setSuggesterCache(new Map([
+      ['dos-resilience', new Set(['reviewer'])],
+    ]));
+    const match = registry.findBestMatchExcluding([], new Set(), {
+      taskText: 'check rate-limit and DoS protection',
+      catalog,
+    });
+    expect(match?.id).toBe('reviewer');
+  });
+
+  it('still uses staticOverlap for regular skills', () => {
+    const match = registry.findBestMatchExcluding(['typescript', 'implementation'], new Set());
+    expect(match?.id).toBe('impl');
+  });
+
+  it('combines staticOverlap + projectMatchBoost + suggesterBoost', () => {
+    registry.setSuggesterCache(new Map([
+      ['dos-resilience', new Set(['reviewer'])],
+    ]));
+    const match = registry.findBestMatchExcluding(['security-audit'], new Set(), {
+      taskText: 'check rate-limit and DoS protection',
+      catalog,
+    });
+    expect(match?.id).toBe('reviewer');
+  });
+
+  it('normalizes skill names in overlap check', () => {
+    registry.register({ id: 'norm', provider: 'local', model: 'test', skills: ['security_audit'] });
+    const match = registry.findBestMatch(['security-audit']);
+    expect(match?.id).toBe('norm');
+  });
+
+  it('returns null when all agents excluded even with project skill match', () => {
+    const match = registry.findBestMatchExcluding([], new Set(['reviewer', 'impl']), {
+      taskText: 'check rate-limit and DoS protection',
+      catalog,
+    });
+    expect(match).toBeNull();
   });
 });

@@ -42,4 +42,5 @@ export declare class MessageRouter {
     getMetrics(): RouterMetrics;
     getChannelManager(): ChannelManager;
     getPresenceTracker(): PresenceTracker;
+    stop(): void;
 }

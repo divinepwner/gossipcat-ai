@@ -2,37 +2,13 @@
 
 ## Gossipcat — Multi-Agent Orchestration
 
-This project has a gossipcat MCP server that dispatches tasks to worker agents (Gemini, GPT, local models) via a WebSocket relay. Config is in `gossip.agents.json`.
+**FIRST:** Read `.gossip/bootstrap.md` before exploring the codebase.
+It contains team config, session context from the last session (what shipped, what failed, what's in progress), and dispatch rules. This saves you from re-exploring files the previous session already understood.
 
-### How to use agents
+Also read `.gossip/next-session.md` if it exists — it has the prioritized task list.
 
-**Gemini/GPT/local agents** — use gossipcat MCP tools:
-```
-gossip_dispatch(agent_id: "gemini-reviewer", task: "Review packages/relay/src/server.ts for security issues")
-gossip_dispatch_parallel(tasks: [{agent_id: "gemini-reviewer", task: "..."}, {agent_id: "gemini-tester", task: "..."}])
-gossip_collect(task_ids: ["abc123"])
-gossip_agents()   — list available agents
-gossip_status()   — check system status
-```
-
-**Claude agents (Sonnet/Haiku)** — use Claude Code's built-in Agent tool (free, no API key needed):
-```
-Agent(model: "sonnet", prompt: "Review this file for bugs...", run_in_background: true)
-Agent(model: "haiku", prompt: "Quick check...", run_in_background: true)
-```
-
-**Parallel multi-provider dispatch** — combine both in one message:
-```
-gossip_dispatch(agent_id: "gemini-reviewer", task: "Security review of X")     ← Gemini via relay
-Agent(model: "sonnet", prompt: "Review X for performance issues")               ← Sonnet via Claude Code
-```
-Then synthesize both results.
-
-### Agent skills
-Skills are auto-injected from `.gossip/agents/<id>/skills/` and `packages/orchestrator/src/default-skills/`. Project-wide skills in `.gossip/skills/`. No need to pass skills manually.
-
-### Adding agents
-Edit `gossip.agents.json` — new agents are hot-reloaded on next dispatch (no restart needed).
+Call `gossip_bootstrap()` to refresh after adding/removing agents.
+Call `gossip_session_save()` before ending your session to preserve context.
 
 ---
 

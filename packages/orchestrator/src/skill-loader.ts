@@ -1,5 +1,6 @@
 import { readFileSync, existsSync, readdirSync } from 'fs';
-import { resolve } from 'path';
+import { resolve, sep } from 'path';
+import type { SkillIndex } from './skill-index';
 
 /**
  * Load skill files for an agent and return concatenated content
@@ -9,11 +10,19 @@ import { resolve } from 'path';
  * 1. Agent's local skills: .gossip/agents/<id>/skills/
  * 2. Project skills: .gossip/skills/
  * 3. Default skills: packages/orchestrator/src/default-skills/
+ *
+ * If a SkillIndex is provided, uses its enabled skills as source of truth
+ * (filtering out disabled slots). Falls back to skills[] when no index.
  */
-export function loadSkills(agentId: string, skills: string[], projectRoot: string): string {
+export function loadSkills(agentId: string, skills: string[], projectRoot: string, index?: SkillIndex): string {
+  // Use index as source of truth when available and agent has slots
+  const effectiveSkills = index && index.getAgentSlots(agentId).length > 0
+    ? index.getEnabledSkills(agentId)
+    : skills;
+
   const sections: string[] = [];
 
-  for (const skill of skills) {
+  for (const skill of effectiveSkills) {
     const content = resolveSkill(agentId, skill, projectRoot);
     if (content) {
       sections.push(content);
@@ -30,25 +39,21 @@ function resolveSkill(agentId: string, skill: string, projectRoot: string): stri
   const sanitized = skill.replace(/[^a-z0-9_-]/gi, '');
   if (!sanitized) return null;
   const filename = `${sanitized}.md`;
+  const hyphenFilename = `${sanitized.replace(/_/g, '-')}.md`;
 
-  // 1. Agent's local skills
-  const agentBase = resolve(projectRoot, '.gossip', 'agents', agentId, 'skills');
-  const agentPath = resolve(agentBase, filename);
-  if (!agentPath.startsWith(agentBase + '/')) return null;
-  if (existsSync(agentPath)) return readFileSync(agentPath, 'utf-8');
+  const bases = [
+    resolve(projectRoot, '.gossip', 'agents', agentId, 'skills'),
+    resolve(projectRoot, '.gossip', 'skills'),
+    resolve(__dirname, 'default-skills'),
+  ];
 
-  // 2. Project-wide skills
-  const projectBase = resolve(projectRoot, '.gossip', 'skills');
-  const projectPath = resolve(projectBase, filename);
-  if (!projectPath.startsWith(projectBase + '/')) return null;
-  if (existsSync(projectPath)) return readFileSync(projectPath, 'utf-8');
-
-  // 3. Default skills (bundled)
-  const defaultBase = resolve(__dirname, 'default-skills');
-  const defaultPath = resolve(defaultBase, filename);
-  if (!defaultPath.startsWith(defaultBase + '/')) return null;
-  if (existsSync(defaultPath)) return readFileSync(defaultPath, 'utf-8');
-
+  for (const base of bases) {
+    for (const fname of [filename, hyphenFilename]) {
+      const candidate = resolve(base, fname);
+      if (!candidate.startsWith(base + sep)) continue;
+      if (existsSync(candidate)) return readFileSync(candidate, 'utf-8');
+    }
+  }
   return null;
 }
 

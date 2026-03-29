@@ -1,0 +1,11 @@
+{
+  "name": "@gossip/dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node build.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.4"
+  }
+}

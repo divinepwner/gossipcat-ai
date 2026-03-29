@@ -6,6 +6,7 @@
   "scripts": { "build": "tsc" },
   "dependencies": {
     "@gossip/types": "*",
+    "@gossip/orchestrator": "*",
     "ws": "^8.19.0"
   },
   "devDependencies": {

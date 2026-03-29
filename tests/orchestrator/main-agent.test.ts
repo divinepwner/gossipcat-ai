@@ -1,4 +1,4 @@
-import { AgentRegistry, TaskDispatcher, ILLMProvider } from '@gossip/orchestrator';
+import { AgentRegistry, TaskDispatcher, ILLMProvider, MainAgent } from '@gossip/orchestrator';
 import { LLMMessage } from '@gossip/types';
 
 /**
@@ -78,5 +78,124 @@ describe('MainAgent orchestration flow', () => {
 
     // Sub-task should remain unassigned (no rust skill)
     expect(plan.subTasks[0].assignedAgent).toBeUndefined();
+  });
+});
+
+describe('MainAgent bootstrapPrompt', () => {
+  it('accepts bootstrapPrompt config and prepends it to the system prompt', async () => {
+    const systemMessages: string[] = [];
+    const mockLLM: ILLMProvider = {
+      async generate(messages: LLMMessage[]) {
+        if (messages[0]?.role === 'system') {
+          systemMessages.push(messages[0].content as string);
+        }
+        // Always return unassigned path: single subTask with no matching skill
+        return {
+          text: '{"strategy":"single","subTasks":[{"description":"do something","requiredSkills":["unknown"]}]}',
+        };
+      },
+    };
+
+    const mainAgent = new MainAgent({
+      provider: 'local',
+      model: 'mock',
+      relayUrl: 'ws://localhost:0',
+      agents: [],
+      llm: mockLLM,
+      bootstrapPrompt: '## Bootstrap Context\nTeam info here.',
+    });
+
+    await mainAgent.handleMessage('do something', { mode: 'decompose' });
+
+    // The system prompt used in the unassigned path should contain bootstrapPrompt + CHAT_SYSTEM_PROMPT
+    expect(systemMessages.length).toBeGreaterThan(0);
+    const lastSystem = systemMessages[systemMessages.length - 1];
+    expect(lastSystem).toContain('## Bootstrap Context');
+    expect(lastSystem).toContain('Team info here.');
+    expect(lastSystem).toContain('orchestrator'); // CHAT_SYSTEM_PROMPT identifies as orchestrator
+  });
+
+  it('uses CHAT_SYSTEM_PROMPT alone when bootstrapPrompt is not set', async () => {
+    const systemMessages: string[] = [];
+    const mockLLM: ILLMProvider = {
+      async generate(messages: LLMMessage[]) {
+        if (messages[0]?.role === 'system') {
+          systemMessages.push(messages[0].content as string);
+        }
+        return {
+          text: '{"strategy":"single","subTasks":[{"description":"do something","requiredSkills":["unknown"]}]}',
+        };
+      },
+    };
+
+    const mainAgent = new MainAgent({
+      provider: 'local',
+      model: 'mock',
+      relayUrl: 'ws://localhost:0',
+      agents: [],
+      llm: mockLLM,
+    });
+
+    await mainAgent.handleMessage('do something', { mode: 'decompose' });
+
+    const lastSystem = systemMessages[systemMessages.length - 1];
+    // Should contain CHAT_SYSTEM_PROMPT (orchestrator prompt) without bootstrap prefix
+    expect(lastSystem).toContain('orchestrator');
+    expect(lastSystem).toContain('RULES');
+    expect(lastSystem).not.toContain('## Bootstrap Context');
+  });
+});
+
+describe('MainAgent dispatch pipeline', () => {
+  it('exposes dispatch() that delegates to pipeline', () => {
+    expect(typeof MainAgent.prototype.dispatch).toBe('function');
+  });
+
+  it('exposes collect() that delegates to pipeline', () => {
+    expect(typeof MainAgent.prototype.collect).toBe('function');
+  });
+
+  it('exposes getWorker() to access workers', () => {
+    expect(typeof MainAgent.prototype.getWorker).toBe('function');
+  });
+});
+
+describe('MainAgent handleMessage → pipeline integration', () => {
+  it('executeSubTask uses dispatch pipeline for task execution', async () => {
+    const mockLLM: ILLMProvider = {
+      async generate(messages: LLMMessage[]) {
+        if (messages[0]?.content?.toString().includes('task decomposition engine')) {
+          return {
+            text: JSON.stringify({
+              strategy: 'single',
+              subTasks: [{ description: 'review the code', requiredSkills: ['code_review'] }],
+            }),
+          };
+        }
+        return { text: 'synthesized result' };
+      },
+    };
+
+    const mainAgent = new MainAgent({
+      provider: 'local', model: 'mock', relayUrl: 'ws://localhost:0',
+      agents: [{ id: 'reviewer', provider: 'local', model: 'mock', skills: ['code_review'] }],
+      projectRoot: '/tmp/gossip-pipeline-test-' + Date.now(),
+      llm: mockLLM,
+    });
+
+    const executeTaskCalls: string[] = [];
+    const mockWorker = {
+      executeTask: async (task: string, _lens?: string, _promptContent?: string) => {
+        executeTaskCalls.push(task);
+        return { result: 'review complete', inputTokens: 0, outputTokens: 0 };
+      },
+      start: async () => {},
+      stop: async () => {},
+    };
+    mainAgent.setWorkers(new Map([['reviewer', mockWorker as any]]));
+
+    const response = await mainAgent.handleMessage('review the code', { mode: 'decompose' });
+    expect(response.status).toBe('done');
+    expect(executeTaskCalls).toContain('review the code');
   });
 });

@@ -8,6 +8,7 @@ export declare class ShellTools {
     constructor(options?: ShellToolsOptions);
     shellExec(args: {
         command: string;
+        args?: string[];
         timeout?: number;
         cwd?: string;
     }): Promise<string>;

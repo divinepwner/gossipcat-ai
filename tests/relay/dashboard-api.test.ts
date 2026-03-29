@@ -1,0 +1,182 @@
+import { overviewHandler } from '@gossip/relay/dashboard/api-overview';
+import { agentsHandler } from '@gossip/relay/dashboard/api-agents';
+import { skillsGetHandler, skillsBindHandler } from '@gossip/relay/dashboard/api-skills';
+import { memoryHandler } from '@gossip/relay/dashboard/api-memory';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+
+describe('Overview API', () => {
+  let projectRoot: string;
+
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'gossip-dash-'));
+    mkdirSync(join(projectRoot, '.gossip'), { recursive: true });
+  });
+
+  it('returns zero counts for fresh project', async () => {
+    const result = await overviewHandler(projectRoot, { agentConfigs: [], relayConnections: 0 });
+    expect(result).toEqual({
+      agentsOnline: 0, relayCount: 0, relayConnected: 0, nativeCount: 0,
+      consensusRuns: 0, totalFindings: 0, confirmedFindings: 0, totalSignals: 0,
+      tasksCompleted: 0, tasksFailed: 0, avgDurationMs: 0,
+    });
+  });
+
+  it('counts agents by type', async () => {
+    const configs = [
+      { id: 'a', provider: 'anthropic', model: 'm', skills: [], native: true },
+      { id: 'b', provider: 'google', model: 'm', skills: [] },
+      { id: 'c', provider: 'google', model: 'm', skills: [] },
+    ];
+    const result = await overviewHandler(projectRoot, { agentConfigs: configs as any, relayConnections: 2 });
+    expect(result.agentsOnline).toBe(3);
+    expect(result.nativeCount).toBe(1);
+    expect(result.relayCount).toBe(2);
+  });
+
+  it('counts signals from agent-performance.jsonl', async () => {
+    const signals = [
+      { type: 'consensus', signal: 'agreement', agentId: 'a', evidence: 'x', timestamp: new Date().toISOString() },
+      { type: 'consensus', signal: 'agreement', agentId: 'b', evidence: 'y', timestamp: new Date().toISOString() },
+      { type: 'consensus', signal: 'hallucination_caught', agentId: 'a', evidence: 'z', timestamp: new Date().toISOString() },
+    ];
+    writeFileSync(
+      join(projectRoot, '.gossip', 'agent-performance.jsonl'),
+      signals.map(s => JSON.stringify(s)).join('\n') + '\n'
+    );
+    const result = await overviewHandler(projectRoot, { agentConfigs: [], relayConnections: 0 });
+    expect(result.totalSignals).toBe(3);
+  });
+});
+
+describe('Agents API', () => {
+  let projectRoot: string;
+
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'gossip-dash-'));
+    mkdirSync(join(projectRoot, '.gossip'), { recursive: true });
+  });
+
+  it('returns agent configs with default scores for fresh project', async () => {
+    const configs = [
+      { id: 'sonnet-reviewer', provider: 'anthropic' as const, model: 'claude-sonnet-4-6', preset: 'reviewer', skills: ['code_review'], native: true },
+    ];
+    const result = await agentsHandler(projectRoot, configs);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('sonnet-reviewer');
+    expect(result[0].native).toBe(true);
+    expect(result[0].scores.accuracy).toBe(0.5);
+  });
+
+  it('reads real scores from agent-performance.jsonl', async () => {
+    const configs = [
+      { id: 'agent-a', provider: 'anthropic' as const, model: 'm', skills: [] },
+    ];
+    const signals = Array.from({ length: 5 }, () => ({
+      type: 'consensus', signal: 'agreement', agentId: 'agent-a',
+      evidence: 'x', timestamp: new Date().toISOString(),
+    }));
+    writeFileSync(
+      join(projectRoot, '.gossip', 'agent-performance.jsonl'),
+      signals.map(s => JSON.stringify(s)).join('\n') + '\n'
+    );
+    const result = await agentsHandler(projectRoot, configs);
+    expect(result[0].scores.accuracy).toBeGreaterThan(0.5);
+    expect(result[0].scores.agreements).toBe(5);
+  });
+
+  it('returns empty array when no agents configured', async () => {
+    const result = await agentsHandler(projectRoot, []);
+    expect(result).toEqual([]);
+  });
+});
+
+describe('Skills API', () => {
+  let projectRoot: string;
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'gossip-dash-'));
+    mkdirSync(join(projectRoot, '.gossip'), { recursive: true });
+  });
+
+  it('returns empty index for fresh project', async () => {
+    const result = await skillsGetHandler(projectRoot);
+    expect(result.index).toEqual({});
+    expect(result.suggestions).toEqual([]);
+  });
+
+  it('returns skill index data when populated', async () => {
+    writeFileSync(join(projectRoot, '.gossip', 'skill-index.json'), JSON.stringify({
+      'agent-a': { code_review: { skill: 'code_review', enabled: true, source: 'config', version: 1, boundAt: '2026-01-01' } }
+    }));
+    const result = await skillsGetHandler(projectRoot);
+    expect(result.index['agent-a']).toBeDefined();
+    expect(result.index['agent-a']['code_review'].enabled).toBe(true);
+  });
+
+  it('toggles skill enabled state', async () => {
+    writeFileSync(join(projectRoot, '.gossip', 'skill-index.json'), JSON.stringify({
+      'agent-a': { code_review: { skill: 'code_review', enabled: true, source: 'config', version: 1, boundAt: '2026-01-01' } }
+    }));
+    const result = await skillsBindHandler(projectRoot, { agent_id: 'agent-a', skill: 'code_review', enabled: false });
+    expect(result.success).toBe(true);
+    const updated = await skillsGetHandler(projectRoot);
+    expect(updated.index['agent-a']['code_review'].enabled).toBe(false);
+  });
+
+  it('rejects invalid agent_id', async () => {
+    const result = await skillsBindHandler(projectRoot, { agent_id: '../etc', skill: 'x', enabled: true });
+    expect(result.success).toBe(false);
+    expect(result.error).toBeDefined();
+  });
+});
+
+describe('Memory API', () => {
+  let projectRoot: string;
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'gossip-dash-'));
+    mkdirSync(join(projectRoot, '.gossip', 'agents', 'agent-a', 'memory'), { recursive: true });
+  });
+
+  it('returns empty data for agent with no memory', async () => {
+    const result = await memoryHandler(projectRoot, 'agent-a');
+    expect(result.index).toBe('');
+    expect(result.knowledge).toEqual([]);
+    expect(result.tasks).toEqual([]);
+  });
+
+  it('reads MEMORY.md index', async () => {
+    const memDir = join(projectRoot, '.gossip', 'agents', 'agent-a', 'memory');
+    writeFileSync(join(memDir, 'MEMORY.md'), '# Agent A Memory\n- [Skill review](skill-review.md)');
+    const result = await memoryHandler(projectRoot, 'agent-a');
+    expect(result.index).toContain('Agent A Memory');
+  });
+
+  it('reads knowledge files with frontmatter', async () => {
+    const memDir = join(projectRoot, '.gossip', 'agents', 'agent-a', 'memory');
+    writeFileSync(join(memDir, 'MEMORY.md'), '');
+    writeFileSync(join(memDir, 'review.md'), '---\nname: review\ndescription: code review notes\nimportance: 3\n---\nSome content');
+    const result = await memoryHandler(projectRoot, 'agent-a');
+    expect(result.knowledge).toHaveLength(1);
+    expect(result.knowledge[0].filename).toBe('review.md');
+    expect(result.knowledge[0].content).toContain('Some content');
+  });
+
+  it('reads tasks.jsonl', async () => {
+    const memDir = join(projectRoot, '.gossip', 'agents', 'agent-a', 'memory');
+    writeFileSync(join(memDir, 'MEMORY.md'), '');
+    const task = { version: 1, taskId: 't1', task: 'review', skills: [], findings: 0, hallucinated: 0, scores: { relevance: 1, accuracy: 1, uniqueness: 0 }, warmth: 1, importance: 3, timestamp: '2026-01-01' };
+    writeFileSync(join(memDir, 'tasks.jsonl'), JSON.stringify(task) + '\n');
+    const result = await memoryHandler(projectRoot, 'agent-a');
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0].taskId).toBe('t1');
+  });
+
+  it('rejects path traversal in agentId', async () => {
+    await expect(memoryHandler(projectRoot, '../../../etc/passwd')).rejects.toThrow('Invalid agent ID');
+  });
+
+  it('rejects prototype-polluting agent IDs', async () => {
+    await expect(memoryHandler(projectRoot, '__proto__')).rejects.toThrow('Invalid agent ID');
+  });
+});

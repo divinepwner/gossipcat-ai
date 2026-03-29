@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gossipcat Dashboard</title>
+  <link rel="stylesheet" href="/dashboard/assets/style.css">
+</head>
+<body>
+  <!-- Auth Gate -->
+  <div id="auth-gate" class="auth-gate">
+    <div class="auth-card">
+      <h1>gossipcat</h1>
+      <p class="auth-subtitle">Enter your dashboard key to continue</p>
+      <form id="auth-form">
+        <input type="password" id="auth-key" placeholder="Dashboard key" autocomplete="off" autofocus>
+        <button type="submit">Unlock</button>
+      </form>
+      <p id="auth-error" class="auth-error" hidden>Invalid key. Check your terminal for the correct key.</p>
+    </div>
+  </div>
+
+  <!-- Dashboard (hidden until authenticated) -->
+  <div id="dashboard" class="dashboard" hidden>
+    <nav class="nav">
+      <div class="nav-brand">gossipcat</div>
+      <div class="nav-tabs">
+        <button class="nav-tab active" data-tab="overview">Overview</button>
+        <button class="nav-tab" data-tab="agents">Agents</button>
+        <button class="nav-tab" data-tab="tasks">Tasks</button>
+        <button class="nav-tab" data-tab="consensus">Consensus</button>
+        <button class="nav-tab" data-tab="skills">Skills</button>
+        <button class="nav-tab" data-tab="memory">Memory</button>
+      </div>
+      <div class="nav-status">
+        <span id="ws-status" class="status-dot offline"></span>
+        <span id="ws-label">Disconnected</span>
+      </div>
+    </nav>
+
+    <main class="main">
+      <div id="tab-overview" class="tab-content active"></div>
+      <div id="tab-agents" class="tab-content"></div>
+      <div id="tab-tasks" class="tab-content"></div>
+      <div id="tab-consensus" class="tab-content"></div>
+      <div id="tab-skills" class="tab-content"></div>
+      <div id="tab-memory" class="tab-content"></div>
+    </main>
+  </div>
+
+  <script src="/dashboard/assets/app.js"></script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ALL_TOOLS = exports.GIT_TOOLS = exports.SHELL_TOOLS = exports.FILE_TOOLS = void 0;
+exports.ALL_TOOLS = exports.VERIFY_TOOLS = exports.SKILL_TOOLS = exports.GIT_TOOLS = exports.SHELL_TOOLS = exports.FILE_TOOLS = void 0;
 exports.FILE_TOOLS = [
     {
         name: 'file_read',
@@ -9,8 +9,8 @@ exports.FILE_TOOLS = [
             type: 'object',
             properties: {
                 path: { type: 'string', description: 'File path relative to project root' },
-                startLine: { type: 'string', description: 'Optional start line number' },
-                endLine: { type: 'string', description: 'Optional end line number' }
+                startLine: { type: 'number', description: 'Optional start line number' },
+                endLine: { type: 'number', description: 'Optional end line number' }
             },
             required: ['path']
         }
@@ -25,6 +25,17 @@ exports.FILE_TOOLS = [
                 content: { type: 'string', description: 'Content to write to the file' }
             },
             required: ['path', 'content']
+        }
+    },
+    {
+        name: 'file_delete',
+        description: 'Delete a file',
+        parameters: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'File path relative to project root' }
+            },
+            required: ['path']
         }
     },
     {
@@ -66,7 +77,7 @@ exports.FILE_TOOLS = [
 exports.SHELL_TOOLS = [
     {
         name: 'shell_exec',
-        description: 'Execute a shell command in the project directory',
+        description: 'Execute a shell command (60s timeout). Use for: npm install, npm run build, npx tsc --noEmit, etc. NEVER run dev servers (npm run dev, npm start) — they run forever and will timeout.',
         parameters: {
             type: 'object',
             properties: {
@@ -93,7 +104,7 @@ exports.GIT_TOOLS = [
         parameters: {
             type: 'object',
             properties: {
-                staged: { type: 'string', description: 'If "true", show staged differences' }
+                staged: { type: 'boolean', description: 'Show staged differences' }
             },
             required: []
         }
@@ -133,5 +144,32 @@ exports.GIT_TOOLS = [
         }
     }
 ];
-exports.ALL_TOOLS = [...exports.FILE_TOOLS, ...exports.SHELL_TOOLS, ...exports.GIT_TOOLS];
+exports.SKILL_TOOLS = [
+    {
+        name: 'suggest_skill',
+        description: 'Suggest a skill that would help with the current task. Non-blocking — logs the suggestion and you keep working.',
+        parameters: {
+            type: 'object',
+            properties: {
+                skill_name: { type: 'string', description: 'Skill name using underscores (e.g. "dos_resilience")' },
+                reason: { type: 'string', description: 'Why you need this skill' },
+                task_context: { type: 'string', description: 'What you were doing when you noticed the gap' }
+            },
+            required: ['skill_name', 'reason', 'task_context']
+        }
+    }
+];
+exports.VERIFY_TOOLS = [
+    {
+        name: 'verify_write',
+        description: 'Run tests and get a peer review of your changes. Call this after writing files to verify correctness. Returns test results + reviewer feedback.',
+        parameters: {
+            type: 'object',
+            properties: {
+                test_file: { type: 'string', description: 'Specific test file to run (e.g. "tests/tools/tool-server-scope.test.ts"). If omitted, runs full test suite.' },
+            },
+        },
+    },
+];
+exports.ALL_TOOLS = [...exports.FILE_TOOLS, ...exports.SHELL_TOOLS, ...exports.GIT_TOOLS, ...exports.SKILL_TOOLS, ...exports.VERIFY_TOOLS];
 //# sourceMappingURL=definitions.js.map

@@ -1,111 +1,89 @@
-import * as p from '@clack/prompts';
-import { createInterface, Interface } from 'readline';
-import { MainAgent, MainAgentConfig, ChatResponse } from '@gossip/orchestrator';
+/**
+ * Chat entry point — thin boot layer.
+ * Creates infrastructure (relay, toolServer, mainAgent),
+ * then delegates all interaction to ChatSession.
+ */
+
+import { MainAgent, MainAgentConfig, BootstrapGenerator, createProvider, OverlapDetector, LensGenerator, GossipPublisher, AgentConfig } from '@gossip/orchestrator';
 import { RelayServer } from '@gossip/relay';
 import { ToolServer } from '@gossip/tools';
+import { GossipAgent } from '@gossip/client';
 import { GossipConfig, configToAgentConfigs } from './config';
 import { Keychain } from './keychain';
+import { ChatSession } from './chat-session';
+import { Spinner } from './spinner';
+import { existsSync, readFileSync, readdirSync } from 'fs';
+import { join } from 'path';
 
-// ── ANSI helpers ─────────────────────────────────────────────────────────────
-const c = {
-  reset:  '\x1b[0m',
-  bold:   '\x1b[1m',
-  dim:    '\x1b[2m',
-  cyan:   '\x1b[36m',
-  green:  '\x1b[32m',
-  yellow: '\x1b[33m',
-  gray:   '\x1b[90m',
-};
+/** Load project context from agent memory and task history for session continuity */
+function loadProjectContext(projectRoot: string, agents: AgentConfig[]): { summary: string; details: string } | null {
+  const parts: string[] = [];
 
-// ── Render a ChatResponse ───────────────────────────────────────────────────
-async function renderResponse(
-  response: ChatResponse,
-  originalMessage: string,
-  mainAgent: MainAgent,
-): Promise<void> {
-  // Show agent attribution if multiple agents contributed
-  if (response.agents && response.agents.length > 1) {
-    console.log(`${c.dim}  Agents: ${response.agents.join(', ')}${c.reset}`);
-  }
-
-  // Show main text
-  if (response.text) {
-    console.log('');
-    console.log(response.text);
-  }
-
-  // Show interactive choices if present
-  if (response.choices && response.choices.options.length > 0) {
-    console.log('');
-
-    const options = response.choices.options.map(opt => ({
-      value: opt.value,
-      label: opt.label,
-      hint: opt.hint,
-    }));
-
-    // Add custom input option if allowed
-    if (response.choices.allowCustom) {
-      options.push({
-        value: '__custom__',
-        label: 'Let me explain what I want...',
-        hint: 'Type a custom response',
-      });
+  // Read config for project archetype
+  try {
+    const configPath = join(projectRoot, '.gossip', 'config.json');
+    if (existsSync(configPath)) {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+      if (config.project?.archetype) parts.push(`Type: ${config.project.archetype}`);
     }
+  } catch { /* skip */ }
 
-    if (response.choices.type === 'confirm') {
-      const confirmed = await p.confirm({
-        message: response.choices.message,
-      });
-      if (p.isCancel(confirmed)) return;
-      const choice = confirmed ? 'yes' : 'no';
-      const followUp = await mainAgent.handleChoice(originalMessage, choice);
-      await renderResponse(followUp, originalMessage, mainAgent);
-
-    } else if (response.choices.type === 'multiselect') {
-      const selected = await p.multiselect({
-        message: response.choices.message,
-        options,
-        required: true,
-      });
-      if (p.isCancel(selected)) return;
-      const choice = (selected as string[]).join(', ');
-      const followUp = await mainAgent.handleChoice(originalMessage, choice);
-      await renderResponse(followUp, originalMessage, mainAgent);
-
-    } else {
-      // Default: single select
-      const selected = await p.select({
-        message: response.choices.message,
-        options,
-      });
-      if (p.isCancel(selected)) return;
-
-      if (selected === '__custom__') {
-        const custom = await p.text({
-          message: 'What do you want instead?',
-          placeholder: 'Describe your preferred approach...',
-        });
-        if (p.isCancel(custom)) return;
-        const followUp = await mainAgent.handleChoice(originalMessage, custom as string);
-        await renderResponse(followUp, originalMessage, mainAgent);
-      } else {
-        const followUp = await mainAgent.handleChoice(originalMessage, selected as string);
-        await renderResponse(followUp, originalMessage, mainAgent);
+  // Read recent tasks from the first agent's memory
+  for (const agent of agents) {
+    try {
+      const tasksPath = join(projectRoot, '.gossip', 'agents', agent.id, 'memory', 'tasks.jsonl');
+      if (!existsSync(tasksPath)) continue;
+      const lines = readFileSync(tasksPath, 'utf-8').trim().split('\n').filter(Boolean);
+      const recent = lines.slice(-3).reverse();
+      for (const line of recent) {
+        try {
+          const entry = JSON.parse(line);
+          parts.push(entry.task?.slice(0, 100) || '');
+        } catch { /* skip */ }
       }
-    }
+      break; // only need one agent's history
+    } catch { /* skip */ }
   }
 
-  console.log('');
+  // Read knowledge files for tech/file info
+  for (const agent of agents) {
+    try {
+      const knowledgeDir = join(projectRoot, '.gossip', 'agents', agent.id, 'memory', 'knowledge');
+      if (!existsSync(knowledgeDir)) continue;
+      const files = readdirSync(knowledgeDir).filter(f => f.endsWith('.md')).slice(-3);
+      for (const file of files) {
+        const content = readFileSync(join(knowledgeDir, file), 'utf-8');
+        // Extract the body (after frontmatter)
+        const bodyMatch = content.match(/---\n[\s\S]*?\n---\n([\s\S]*)/);
+        if (bodyMatch) parts.push(bodyMatch[1].trim().slice(0, 200));
+      }
+      break;
+    } catch { /* skip */ }
+  }
+
+  if (parts.length === 0) return null;
+
+  const summary = parts[0]?.slice(0, 80) || 'Project in progress';
+  const details = parts.filter(Boolean).join('\n');
+  return { summary, details };
 }
 
-// ── Main chat loop ──────────────────────────────────────────────────────────
 export async function startChat(config: GossipConfig): Promise<void> {
-  const keychain = new Keychain();
+  // Register early so boot errors don't crash without cleanup
+  let session: ChatSession | null = null;
+  process.on('unhandledRejection', (err) => {
+    console.error('\n  Unhandled error:', err instanceof Error ? err.message : err);
+    if (session) {
+      session.shutdown().catch(() => process.exit(1));
+    } else {
+      process.exit(1);
+    }
+  });
 
-  // ── Boot infrastructure ─────────────────────────────────────────────────
-  const s = p.spinner();
-  s.start('Starting Gossip Mesh...');
+  const spinner = new Spinner();
+  spinner.start('Starting Gossip Mesh...');
+
+  // ── Boot infrastructure ─────────────────────────────────────────────
 
   const relay = new RelayServer({ port: 0 });
   await relay.start();
@@ -116,7 +94,20 @@ export async function startChat(config: GossipConfig): Promise<void> {
   });
   await toolServer.start();
 
+  const keychain = new Keychain();
   const mainKey = await keychain.getKey(config.main_agent.provider);
+
+  // Generate bootstrap prompt for team context
+  const bootstrapGen = new BootstrapGenerator(process.cwd());
+  const { prompt: bootstrapPrompt } = bootstrapGen.generate();
+  const { writeFileSync, mkdirSync } = await import('fs');
+  const { join } = await import('path');
+  mkdirSync(join(process.cwd(), '.gossip'), { recursive: true });
+  writeFileSync(join(process.cwd(), '.gossip', 'bootstrap.md'), bootstrapPrompt);
+
+  // TaskGraph Supabase sync (same as MCP path)
+  const supaKey = await keychain.getKey('supabase');
+  const supaTeamSalt = await keychain.getKey('supabase-team-salt');
 
   const mainAgentConfig: MainAgentConfig = {
     provider: config.main_agent.provider,
@@ -124,70 +115,121 @@ export async function startChat(config: GossipConfig): Promise<void> {
     apiKey: mainKey || undefined,
     relayUrl: relay.url,
     agents: configToAgentConfigs(config),
+    projectRoot: process.cwd(),
+    bootstrapPrompt,
+    keyProvider: async (provider: string) => keychain.getKey(provider),
+    toolServer: {
+      assignScope: (agentId: string, scope: string) => toolServer.assignScope(agentId, scope),
+      assignRoot: (agentId: string, root: string) => toolServer.assignRoot(agentId, root),
+      releaseAgent: (agentId: string) => toolServer.releaseAgent(agentId),
+    },
+    syncFactory: () => {
+      try {
+        const { existsSync: exists, readFileSync: readF } = require('fs');
+        const configPath = join(process.cwd(), '.gossip', 'supabase.json');
+        if (!exists(configPath) || !supaKey) return null;
+        const supaConfig = JSON.parse(readF(configPath, 'utf-8'));
+        const { TaskGraph, TaskGraphSync } = require('@gossip/orchestrator');
+        const { getUserId, getProjectId, getTeamUserId, getGitEmail } = require('./identity');
+
+        let userId: string;
+        let displayName: string | null = null;
+        if (supaConfig.mode === 'team') {
+          const email = getGitEmail();
+          if (!supaTeamSalt || !email) return null;
+          userId = getTeamUserId(email, supaTeamSalt);
+          displayName = supaConfig.displayName || email;
+        } else {
+          userId = getUserId(process.cwd());
+        }
+
+        return new TaskGraphSync(new TaskGraph(process.cwd()), supaConfig.url, supaKey, userId, getProjectId(process.cwd()), process.cwd(), displayName);
+      } catch { return null; }
+    },
   };
 
   const mainAgent = new MainAgent(mainAgentConfig);
   await mainAgent.start();
 
-  const agentCount = configToAgentConfigs(config).length;
-  s.stop(`Ready — ${agentCount} agent${agentCount !== 1 ? 's' : ''} online (relay :${relay.port})`);
+  // ── Wire agent coordination (same as MCP path) ───────────────────
 
-  console.log(`${c.dim}  Type a task or question. "exit" to quit.${c.reset}\n`);
+  // Overlap detection + focus lenses for co-dispatched agents
+  try {
+    const llmForLens = createProvider(config.main_agent.provider, config.main_agent.model, mainKey || undefined);
+    mainAgent.setOverlapDetector(new OverlapDetector());
+    mainAgent.setLensGenerator(new LensGenerator(llmForLens));
+  } catch (err) {
+    process.stderr.write(`[gossipcat] Lens generator failed: ${(err as Error).message}\n`);
+  }
 
-  // ── REPL loop ───────────────────────────────────────────────────────────
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: `${c.cyan}>${c.reset} `,
-  });
-  rl.prompt();
+  // Gossip publisher — real-time summaries between parallel agents
+  try {
+    const publisherAgent = new GossipAgent({
+      agentId: 'gossip-publisher',
+      relayUrl: relay.url,
+      reconnect: true,
+    });
+    await publisherAgent.connect();
+    const llmForGossip = createProvider(config.main_agent.provider, config.main_agent.model, mainKey || undefined);
+    const gossipPublisher = new GossipPublisher(
+      llmForGossip,
+      { publishToChannel: (channel: string, data: unknown) => publisherAgent.sendChannel(channel, data as Record<string, unknown>) },
+    );
+    mainAgent.setGossipPublisher(gossipPublisher);
+  } catch (err) {
+    process.stderr.write(`[gossipcat] Gossip publisher failed: ${(err as Error).message}\n`);
+  }
 
-  rl.on('line', async (line) => {
-    const input = line.trim();
-    if (!input) { rl.prompt(); return; }
-    if (input === 'exit' || input === 'quit') {
-      await shutdown(relay, toolServer, mainAgent, rl);
-      return;
+  spinner.stop();
+
+  // ── Welcome message ─────────────────────────────────────────────────
+
+  const orchestratorLabel = `${config.main_agent.provider}/${config.main_agent.model}`;
+  const agentCount = mainAgent.getAgentCount();
+
+  if (agentCount === 0) {
+    console.log(`Ready — orchestrator online (${orchestratorLabel}), no agents yet`);
+    console.log("\n  Describe what you want to build. I'll brainstorm with you first, then assemble the right team.");
+    console.log('  \x1b[2mType / + Enter for commands, Tab to autocomplete\x1b[0m\n');
+  } else {
+    console.log(`Ready — ${agentCount} agent${agentCount !== 1 ? 's' : ''} online (${orchestratorLabel}, relay :${relay.port})`);
+
+    // Load project context from previous sessions
+    const projectContext = loadProjectContext(process.cwd(), configToAgentConfigs(config));
+    if (projectContext) {
+      console.log(`\n  \x1b[2mProject: ${projectContext.summary}\x1b[0m`);
+      // Seed the orchestrator so it knows what the project is about
+      mainAgent.seedContext(`This is a returning session. Here's what we've been working on:\n${projectContext.details}`);
     }
+    console.log('  \x1b[2mType / + Enter for commands, Tab to autocomplete\x1b[0m\n');
+  }
 
-    try {
-      // Show spinner while agent thinks
-      // We can't use p.spinner here because readline is active
-      // Instead show a simple indicator
-      process.stdout.write(`${c.dim}  thinking...${c.reset}`);
+  // ── Create and start chat session ───────────────────────────────────
 
-      const response = await mainAgent.handleMessage(input);
+  session = new ChatSession({
+    mainAgent,
+    config,
+    onShutdown: async () => {
+      // Use allSettled so one failure doesn't skip the rest
+      await Promise.allSettled([
+        mainAgent.stop(),
+        toolServer.stop(),
+        relay.stop(),
+      ]);
+    },
+  });
+  session.start();
 
-      // Clear the "thinking..." line
-      process.stdout.write('\r\x1b[K');
+  // ── Process-level handlers ──────────────────────────────────────────
 
-      await renderResponse(response, input, mainAgent);
-    } catch (err) {
-      process.stdout.write('\r\x1b[K');
-      console.log(`\n${c.yellow}  Error: ${(err as Error).message}${c.reset}\n`);
+  // SIGINT is handled by ChatSession's rl.on('SIGINT') — cancel or exit based on state.
+  // This process-level handler is a fallback if readline isn't active.
+  process.on('SIGINT', () => {
+    if (session) {
+      session.shutdown().catch(() => process.exit(0));
+    } else {
+      process.exit(0);
     }
-    rl.prompt();
   });
 
-  rl.on('close', async () => {
-    await shutdown(relay, toolServer, mainAgent, rl);
-  });
-
-  process.on('SIGINT', async () => {
-    await shutdown(relay, toolServer, mainAgent, rl);
-  });
-}
-
-async function shutdown(
-  relay: RelayServer,
-  toolServer: ToolServer,
-  mainAgent: MainAgent,
-  rl: Interface,
-): Promise<void> {
-  console.log(`\n${c.dim}  Shutting down...${c.reset}`);
-  rl.close();
-  await mainAgent.stop();
-  await toolServer.stop();
-  await relay.stop();
-  process.exit(0);
 }

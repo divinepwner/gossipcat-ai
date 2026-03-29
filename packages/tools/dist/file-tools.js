@@ -10,14 +10,24 @@ class FileTools {
     }
     async fileRead(args) {
         const absPath = this.sandbox.validatePath(args.path);
-        const content = await (0, promises_1.readFile)(absPath, 'utf-8');
-        if (args.startLine !== undefined || args.endLine !== undefined) {
-            const lines = content.split('\n');
-            const start = (args.startLine || 1) - 1;
-            const end = args.endLine || lines.length;
-            return lines.slice(start, end).join('\n');
+        try {
+            const content = await (0, promises_1.readFile)(absPath, 'utf-8');
+            if (args.startLine !== undefined || args.endLine !== undefined) {
+                const lines = content.split('\n');
+                const start = (args.startLine || 1) - 1;
+                const end = args.endLine || lines.length;
+                return lines.slice(start, end).join('\n');
+            }
+            return content;
         }
-        return content;
+        catch (err) {
+            const msg = err.message;
+            if (msg.includes('ENOENT'))
+                throw new Error(`File not found: ${args.path}`);
+            if (msg.includes('encoding') || msg.includes('invalid'))
+                throw new Error(`Cannot read ${args.path} — it may be a binary file`);
+            throw err;
+        }
     }
     async fileWrite(args) {
         const absPath = this.sandbox.validatePath(args.path);
@@ -26,18 +36,29 @@ class FileTools {
         await (0, promises_1.writeFile)(absPath, args.content, 'utf-8');
         return `Written ${args.content.length} bytes to ${args.path}`;
     }
+    async fileDelete(args) {
+        const absPath = this.sandbox.validatePath(args.path);
+        await (0, promises_1.unlink)(absPath);
+        return `Deleted ${args.path}`;
+    }
     async fileSearch(args) {
         const results = [];
-        await this.walkDir(this.sandbox.projectRoot, args.pattern, results);
+        await this.walkDir(this.sandbox.projectRoot, args.pattern, results, 0, 10);
         return results.join('\n') || 'No files found';
     }
     async fileGrep(args) {
         const searchRoot = args.path
             ? this.sandbox.validatePath(args.path)
             : this.sandbox.projectRoot;
-        const regex = new RegExp(args.pattern);
+        let regex;
+        try {
+            regex = new RegExp(args.pattern);
+        }
+        catch (error) {
+            return `Invalid regex pattern: ${error instanceof Error ? error.message : 'Unknown error'}`;
+        }
         const results = [];
-        await this.grepDir(searchRoot, regex, results);
+        await this.grepDir(searchRoot, regex, results, 0, 10);
         return results.join('\n') || 'No matches found';
     }
     async fileTree(args) {
@@ -50,7 +71,9 @@ class FileTools {
         return lines.join('\n');
     }
     // ─── Private helpers ──────────────────────────────────────────────────────
-    async walkDir(dir, pattern, results) {
+    async walkDir(dir, pattern, results, depth = 0, maxDepth = 10) {
+        if (depth >= maxDepth)
+            return;
         let entries;
         try {
             entries = await (0, promises_1.readdir)(dir);
@@ -70,7 +93,7 @@ class FileTools {
                 continue;
             }
             if (info.isDirectory()) {
-                await this.walkDir(fullPath, pattern, results);
+                await this.walkDir(fullPath, pattern, results, depth + 1, maxDepth);
             }
             else {
                 // Match glob-style pattern: convert * and ? to regex
@@ -86,7 +109,9 @@ class FileTools {
             }
         }
     }
-    async grepDir(dir, regex, results) {
+    async grepDir(dir, regex, results, depth = 0, maxDepth = 10) {
+        if (depth >= maxDepth)
+            return;
         let entries;
         try {
             entries = await (0, promises_1.readdir)(dir);
@@ -106,7 +131,7 @@ class FileTools {
                 continue;
             }
             if (info.isDirectory()) {
-                await this.grepDir(fullPath, regex, results);
+                await this.grepDir(fullPath, regex, results, depth + 1, maxDepth);
             }
             else {
                 try {

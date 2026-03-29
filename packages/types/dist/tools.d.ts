@@ -20,10 +20,23 @@ export interface ToolCall {
     name: string;
     arguments: Record<string, unknown>;
 }
+/** Image content block for multimodal messages */
+export interface ImageContent {
+    type: 'image';
+    data: string;
+    mediaType: string;
+}
+/** Text content block for multimodal messages */
+export interface TextContent {
+    type: 'text';
+    text: string;
+}
+/** A content block — either text or image */
+export type ContentBlock = TextContent | ImageContent;
 /** A single message in the multi-turn LLM session history */
 export interface LLMMessage {
     role: 'system' | 'user' | 'assistant' | 'tool';
-    content: string;
+    content: string | ContentBlock[];
     toolCallId?: string;
     name?: string;
     toolCalls?: ToolCall[];

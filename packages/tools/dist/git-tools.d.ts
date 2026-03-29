@@ -5,7 +5,9 @@ export declare class GitTools {
     gitStatus(): Promise<string>;
     gitDiff(args?: {
         staged?: boolean;
+        paths?: string[];
     }): Promise<string>;
+    gitUntrackedDiff(paths: string[]): Promise<string>;
     gitLog(args?: {
         count?: number;
     }): Promise<string>;

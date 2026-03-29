@@ -5,8 +5,9 @@ const execFileAsync = promisify(execFile);
 
 const DEFAULT_ALLOWED_COMMANDS = [
   'npm', 'npx', 'node', 'git', 'tsc', 'jest',
-  'ls', 'cat', 'head', 'tail', 'wc', 'grep',
-  'echo', 'pwd', 'which', 'env', 'sleep'
+  'ls', 'wc', 'echo', 'pwd', 'which',
+  // REMOVED: env (leaks API keys), sleep (DoS vector),
+  // cat/head/tail/grep (bypass sandbox — use file_read/file_grep instead)
 ];
 
 const BLOCKED_PATTERNS = [
@@ -58,13 +59,21 @@ export class ShellTools {
 
     // Check allowlist
     if (!this.allowedCommands.includes(cmd)) {
-      throw new Error(`Command "${cmd}" is not in the allowed commands list`);
+      const alternatives: Record<string, string> = {
+        cat: 'Use file_read instead', head: 'Use file_read with startLine/endLine',
+        tail: 'Use file_read with startLine/endLine', grep: 'Use file_grep instead',
+        find: 'Use file_search instead', curl: 'Not available — describe what you need in your output',
+        wget: 'Not available', rm: 'Use file_delete instead', mkdir: 'file_write auto-creates directories',
+      };
+      const hint = alternatives[cmd] ? `. ${alternatives[cmd]}` : `. Allowed: ${this.allowedCommands.join(', ')}`;
+      throw new Error(`Command "${cmd}" is not allowed${hint}`);
     }
 
-    // Check for blocked patterns
+    // Check for blocked patterns against full command (including args)
+    const fullCommand = [cmd, ...cmdArgs].join(' ');
     for (const pattern of BLOCKED_PATTERNS) {
-      if (pattern.test(args.command)) {
-        throw new Error(`Command blocked by safety rules: ${args.command}`);
+      if (pattern.test(fullCommand)) {
+        throw new Error(`Command blocked by safety rules: ${fullCommand}`);
       }
     }
 

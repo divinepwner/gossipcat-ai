@@ -8,3 +8,5 @@ gossip.agents.json
 coverage/
 .full-review/
 .gossip/
+.superpowers/
+.gstack/

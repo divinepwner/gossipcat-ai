@@ -1,4 +1,4 @@
-import { ILLMProvider } from '@gossip/orchestrator';
+import { ILLMProvider, WorkerProgressCallback } from '@gossip/orchestrator';
 import { LLMMessage, ToolDefinition } from '@gossip/types';
 
 /**
@@ -19,11 +19,26 @@ async function simulateToolLoop(
     { role: 'user', content: task },
   ];
 
+  let lastToolSig = '';
+  let repeatCount = 0;
+
   for (let turn = 0; turn < maxTurns; turn++) {
     const response = await llm.generate(messages, { tools });
 
     if (!response.toolCalls?.length) {
       return response.text;
+    }
+
+    // Detect repetitive tool calls
+    const toolSig = response.toolCalls.map(tc => `${tc.name}:${JSON.stringify(tc.arguments)}`).join('|');
+    if (toolSig === lastToolSig) {
+      repeatCount++;
+      if (repeatCount >= 2) {
+        return response.text || 'Task completed (agent was repeating the same action).';
+      }
+    } else {
+      lastToolSig = toolSig;
+      repeatCount = 0;
     }
 
     messages.push({
@@ -44,6 +59,64 @@ async function simulateToolLoop(
   }
 
   return 'Max tool turns reached';
+}
+
+// Simulate the worker's executeTask loop with onProgress callback support
+async function simulateToolLoopWithProgress(
+  llm: ILLMProvider,
+  tools: ToolDefinition[],
+  task: string,
+  callTool: (name: string, args: Record<string, unknown>) => Promise<string>,
+  onProgress?: WorkerProgressCallback,
+  maxTurns = 10
+): Promise<{ result: string; inputTokens: number; outputTokens: number }> {
+  const messages: LLMMessage[] = [
+    { role: 'system', content: 'You are a developer agent.' },
+    { role: 'user', content: task },
+  ];
+
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let toolCallCount = 0;
+
+  for (let turn = 0; turn < maxTurns; turn++) {
+    const response = await llm.generate(messages, { tools });
+
+    if (response.usage) {
+      totalInputTokens += response.usage.inputTokens;
+      totalOutputTokens += response.usage.outputTokens;
+    }
+
+    if (!response.toolCalls?.length) {
+      return { result: response.text, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+    }
+
+    messages.push({
+      role: 'assistant',
+      content: response.text || '',
+      toolCalls: response.toolCalls,
+    });
+
+    for (const toolCall of response.toolCalls) {
+      const result = await callTool(toolCall.name, toolCall.arguments);
+      messages.push({
+        role: 'tool',
+        content: result,
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+      });
+      toolCallCount++;
+      onProgress?.({
+        toolCalls: toolCallCount,
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        currentTool: toolCall.name,
+        turn,
+      });
+    }
+  }
+
+  return { result: 'Max tool turns reached', inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
 }
 
 describe('WorkerAgent tool loop', () => {
@@ -111,17 +184,39 @@ describe('WorkerAgent tool loop', () => {
   });
 
   it('stops at max tool turns', async () => {
+    let turn = 0;
     const llm: ILLMProvider = {
       async generate() {
+        turn++;
         return {
           text: 'more work',
-          toolCalls: [{ id: 'call', name: 'read_file', arguments: { path: '/loop' } }],
+          toolCalls: [{ id: `call_${turn}`, name: 'read_file', arguments: { path: `/file${turn}` } }],
         };
       },
     };
 
     const result = await simulateToolLoop(llm, tools, 'infinite loop', async () => 'result', 3);
     expect(result).toBe('Max tool turns reached');
+  });
+
+  it('exits early when agent repeats the same tool call 3 times', async () => {
+    const llm: ILLMProvider = {
+      async generate() {
+        return {
+          text: 'I am done.',
+          toolCalls: [{ id: 'call', name: 'read_file', arguments: { path: '/same-file' } }],
+        };
+      },
+    };
+
+    let callCount = 0;
+    const callTool = async () => { callCount++; return 'ok'; };
+
+    const result = await simulateToolLoop(llm, tools, 'stuck agent', callTool, 15);
+    expect(result).toBe('I am done.');
+    // Stops before executing the 3rd repeat — only 2 calls executed
+    expect(callCount).toBeLessThanOrEqual(3);
+    expect(callCount).toBeGreaterThan(0);
   });
 
   it('handles multiple tool calls in single turn', async () => {
@@ -151,5 +246,119 @@ describe('WorkerAgent tool loop', () => {
     const result = await simulateToolLoop(llm, tools, 'read two files', callTool);
     expect(result).toBe('Got both files');
     expect(paths).toEqual(['/file1', '/file2']);
+  });
+});
+
+describe('WorkerProgressCallback', () => {
+  const tools: ToolDefinition[] = [
+    { name: 'read_file', description: 'Read file', parameters: { type: 'object', properties: { path: { type: 'string', description: 'path' } } } },
+  ];
+
+  it('fires onProgress after each tool call with cumulative counts', async () => {
+    let llmCallCount = 0;
+    const llm: ILLMProvider = {
+      async generate() {
+        llmCallCount++;
+        if (llmCallCount === 1) {
+          return {
+            text: 'Reading files...',
+            toolCalls: [
+              { id: 'call_1', name: 'read_file', arguments: { path: '/file1' } },
+              { id: 'call_2', name: 'read_file', arguments: { path: '/file2' } },
+            ],
+          };
+        }
+        return { text: 'Done' };
+      },
+    };
+
+    const progressEvents: Parameters<WorkerProgressCallback>[0][] = [];
+    const onProgress: WorkerProgressCallback = (event) => {
+      progressEvents.push({ ...event });
+    };
+
+    await simulateToolLoopWithProgress(llm, tools, 'read two files', async () => 'ok', onProgress);
+
+    expect(progressEvents).toHaveLength(2);
+    expect(progressEvents[0].toolCalls).toBe(1);
+    expect(progressEvents[0].currentTool).toBe('read_file');
+    expect(progressEvents[0].turn).toBe(0);
+    expect(progressEvents[1].toolCalls).toBe(2);
+    expect(progressEvents[1].currentTool).toBe('read_file');
+    expect(progressEvents[1].turn).toBe(0);
+  });
+
+  it('accumulates tokens across turns', async () => {
+    let llmCallCount = 0;
+    const llm: ILLMProvider = {
+      async generate() {
+        llmCallCount++;
+        if (llmCallCount === 1) {
+          return {
+            text: 'Turn 1',
+            toolCalls: [{ id: 'call_1', name: 'read_file', arguments: { path: '/file1' } }],
+            usage: { inputTokens: 100, outputTokens: 50 },
+          };
+        }
+        if (llmCallCount === 2) {
+          return {
+            text: 'Turn 2',
+            toolCalls: [{ id: 'call_2', name: 'read_file', arguments: { path: '/file2' } }],
+            usage: { inputTokens: 200, outputTokens: 80 },
+          };
+        }
+        return { text: 'Done', usage: { inputTokens: 50, outputTokens: 20 } };
+      },
+    };
+
+    const progressEvents: Parameters<WorkerProgressCallback>[0][] = [];
+    const onProgress: WorkerProgressCallback = (event) => {
+      progressEvents.push({ ...event });
+    };
+
+    const { inputTokens, outputTokens } = await simulateToolLoopWithProgress(
+      llm, tools, 'multi-turn task', async () => 'result', onProgress
+    );
+
+    // After turn 0 tool call: tokens from first LLM call only
+    expect(progressEvents[0].inputTokens).toBe(100);
+    expect(progressEvents[0].outputTokens).toBe(50);
+    expect(progressEvents[0].toolCalls).toBe(1);
+    expect(progressEvents[0].turn).toBe(0);
+
+    // After turn 1 tool call: cumulative tokens from both LLM calls
+    expect(progressEvents[1].inputTokens).toBe(300);
+    expect(progressEvents[1].outputTokens).toBe(130);
+    expect(progressEvents[1].toolCalls).toBe(2);
+    expect(progressEvents[1].turn).toBe(1);
+
+    // Final result includes all 3 LLM calls
+    expect(inputTokens).toBe(350);
+    expect(outputTokens).toBe(150);
+  });
+});
+
+describe('instructions and gossip', () => {
+  it('accepts instructions at constructor', () => {
+    // Create a WorkerAgent with custom instructions (don't need to connect for this)
+    const mockLlm = { generate: jest.fn().mockResolvedValue({ text: 'ok' }) };
+    const { WorkerAgent } = require('@gossip/orchestrator');
+    const worker = new WorkerAgent('test', mockLlm as any, 'ws://localhost:9999', [], 'You are a reviewer.');
+    expect(worker.getInstructions()).toBe('You are a reviewer.');
+  });
+
+  it('uses default instructions when none provided', () => {
+    const mockLlm = { generate: jest.fn().mockResolvedValue({ text: 'ok' }) };
+    const { WorkerAgent } = require('@gossip/orchestrator');
+    const worker = new WorkerAgent('test', mockLlm as any, 'ws://localhost:9999', []);
+    expect(worker.getInstructions()).toContain('skilled developer agent');
+  });
+
+  it('setInstructions updates instructions', () => {
+    const mockLlm = { generate: jest.fn().mockResolvedValue({ text: 'ok' }) };
+    const { WorkerAgent } = require('@gossip/orchestrator');
+    const worker = new WorkerAgent('test', mockLlm as any, 'ws://localhost:9999', []);
+    worker.setInstructions('New instructions');
+    expect(worker.getInstructions()).toBe('New instructions');
   });
 });
