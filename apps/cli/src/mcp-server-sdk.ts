@@ -173,17 +173,62 @@ const nativeResultMap: Map<string, {
   startedAt: number; completedAt: number;
 }> = new Map();
 
-const NATIVE_TASK_TTL_MS = 30 * 60 * 1000; // 30 min
+const NATIVE_TASK_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours — implementation tasks can run long
 
 /** Evict stale entries from nativeTaskMap and nativeResultMap */
 function evictStaleNativeTasks(): void {
   const now = Date.now();
+  let changed = false;
   for (const [id, info] of nativeTaskMap) {
-    if (now - info.startedAt > NATIVE_TASK_TTL_MS) nativeTaskMap.delete(id);
+    if (now - info.startedAt > NATIVE_TASK_TTL_MS) { nativeTaskMap.delete(id); changed = true; }
   }
   for (const [id, info] of nativeResultMap) {
-    if (now - info.startedAt > NATIVE_TASK_TTL_MS) nativeResultMap.delete(id);
+    if (now - info.startedAt > NATIVE_TASK_TTL_MS) { nativeResultMap.delete(id); changed = true; }
   }
+  if (changed) persistNativeTaskMap();
+}
+
+/** Persist nativeTaskMap to disk so /mcp reconnects don't lose task IDs */
+function persistNativeTaskMap(): void {
+  try {
+    const projectRoot = mainAgent?.projectRoot;
+    if (!projectRoot) return;
+    const { writeFileSync: wf, mkdirSync: md } = require('fs');
+    const { join: j } = require('path');
+    const dir = j(projectRoot, '.gossip');
+    md(dir, { recursive: true });
+    const data = {
+      tasks: Object.fromEntries([...nativeTaskMap]),
+      results: Object.fromEntries([...nativeResultMap]),
+    };
+    wf(j(dir, 'native-tasks.json'), JSON.stringify(data, null, 2));
+  } catch { /* best-effort */ }
+}
+
+/** Restore nativeTaskMap from disk (called on boot) */
+function restoreNativeTaskMap(projectRoot: string): void {
+  try {
+    const { existsSync: ex, readFileSync: rf } = require('fs');
+    const { join: j } = require('path');
+    const filePath = j(projectRoot, '.gossip', 'native-tasks.json');
+    if (!ex(filePath)) return;
+    const raw = JSON.parse(rf(filePath, 'utf-8'));
+    const now = Date.now();
+    if (raw.tasks) {
+      for (const [id, info] of Object.entries(raw.tasks) as [string, any][]) {
+        if (now - info.startedAt < NATIVE_TASK_TTL_MS && !nativeTaskMap.has(id)) {
+          nativeTaskMap.set(id, info);
+        }
+      }
+    }
+    if (raw.results) {
+      for (const [id, info] of Object.entries(raw.results) as [string, any][]) {
+        if (now - info.startedAt < NATIVE_TASK_TTL_MS && !nativeResultMap.has(id)) {
+          nativeResultMap.set(id, info);
+        }
+      }
+    }
+  } catch { /* best-effort — corrupt file is fine, just start fresh */ }
 }
 
 // Lazy state — populated during boot()
@@ -382,6 +427,9 @@ async function doBoot() {
   // Pass existing workers so MainAgent doesn't create duplicates
   mainAgent.setWorkers(workers);
   await mainAgent.start();
+
+  // Restore native task tracking from disk (survives /mcp reconnects)
+  restoreNativeTaskMap(process.cwd());
 
   // Wire adaptive team intelligence (overlap detection + lens generation)
   try {
@@ -766,6 +814,7 @@ server.tool(
       evictStaleNativeTasks();
       const taskId = randomUUID().slice(0, 8);
       nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), planId: plan_id, step });
+      persistNativeTaskMap();
 
       // Fix: register in TaskGraph so native tasks are visible to CLI/sync
       try { mainAgent.recordNativeTask(taskId, agent_id, task); } catch { /* best-effort */ }
@@ -878,6 +927,7 @@ server.tool(
       const taskId = randomUUID().slice(0, 8);
       nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now() });
       try { mainAgent.recordNativeTask(taskId, def.agent_id, def.task); } catch { /* best-effort */ }
+      persistNativeTaskMap();
 
       const agentPrompt = nativeConfig.instructions
         ? `${nativeConfig.instructions}\n\n---\n\nTask: ${def.task}`
@@ -1100,6 +1150,7 @@ server.tool(
       nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now() });
       try { mainAgent.recordNativeTask(taskId, def.agent_id, def.task); } catch { /* best-effort */ }
       allTaskIds.push(taskId);
+      persistNativeTaskMap();
 
       const agentPrompt = (nativeConfig.instructions || '') + consensusInstruction + `\n\n---\n\nTask: ${def.task}`;
       lines.push(`  ${taskId} → ${def.agent_id} (native — dispatch via Agent tool)`);
@@ -1662,6 +1713,7 @@ server.tool(
       startedAt: taskInfo.startedAt,
       completedAt: Date.now(),
     });
+    persistNativeTaskMap();
 
     const status = error ? `failed (${elapsed}ms): ${error}` : `completed (${elapsed}ms)`;
     return { content: [{ type: 'text' as const, text: `Result relayed for ${agentId} [${task_id}]: ${status}\n\nThe result is now available for gossip_collect and consensus cross-review.` }] };
@@ -1690,6 +1742,7 @@ server.tool(
       evictStaleNativeTasks();
       const taskId = require('crypto').randomUUID().slice(0, 8);
       nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now() });
+      persistNativeTaskMap();
       try { mainAgent.recordNativeTask(taskId, agent_id, task); } catch { /* best-effort */ }
       const config = nativeAgentConfigs.get(agent_id)!;
       const agentConfig = mainAgent.getAgentList?.()?.find((a: any) => a.id === agent_id);
@@ -1814,6 +1867,7 @@ server.tool(
       result: error ? undefined : cappedResult, error: error || undefined,
       startedAt: taskInfo.startedAt, completedAt: Date.now(),
     });
+    persistNativeTaskMap();
 
     const status = error ? `failed (${elapsed}ms): ${error}` : `completed (${elapsed}ms)`;
     return { content: [{ type: 'text' as const, text: `✅ Result relayed for ${agentId} [${task_id}]: ${status}` }] };
