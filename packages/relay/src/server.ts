@@ -12,12 +12,21 @@ import { Codec } from '@gossip/types';
 import { ConnectionManager } from './connection-manager';
 import { MessageRouter } from './router';
 import { AgentConnection } from './agent-connection';
+import { DashboardAuth } from './dashboard/auth';
+import { DashboardRouter } from './dashboard/routes';
+import { DashboardWs } from './dashboard/ws';
+
+export interface DashboardConfig {
+  projectRoot: string;
+  agentConfigs: Array<{ id: string; provider: string; model: string; preset?: string; skills: string[]; native?: boolean }>;
+}
 
 export interface RelayServerConfig {
   port: number;
   host?: string;
   authTimeoutMs?: number;
   apiKey?: string;  // If set, clients must provide this exact key to authenticate
+  dashboard?: DashboardConfig;  // If set, enables the dashboard UI
 }
 
 export class RelayServer {
@@ -31,6 +40,10 @@ export class RelayServer {
   private connectionsByIp = new Map<string, number>();
   private readonly maxConnectionsPerIp = 10;
   private readonly maxTotalConnections = 500;
+  private dashboardAuth: DashboardAuth | null = null;
+  private dashboardRouter: DashboardRouter | null = null;
+  private dashboardWs: DashboardWs | null = null;
+  private dashboardUpgrader: WebSocketServer | null = null; // single instance — avoids per-request leak
 
   constructor(private config: RelayServerConfig) {
     this.connectionManager = new ConnectionManager();
@@ -44,11 +57,49 @@ export class RelayServer {
   async start(): Promise<void> {
     return new Promise((resolve) => {
       this.httpServer = createServer(this.handleHttp.bind(this));
-      this.wss = new WebSocketServer({
-        server: this.httpServer,
-        maxPayload: 1 * 1024 * 1024, // S1: 1 MiB — rejects oversized frames before buffering
-      });
+
+      if (this.config.dashboard) {
+        this.dashboardAuth = new DashboardAuth(this.config.dashboard.projectRoot);
+        this.dashboardAuth.init();
+        this.dashboardWs = new DashboardWs();
+        this.dashboardUpgrader = new WebSocketServer({ noServer: true });
+        this.dashboardRouter = new DashboardRouter(
+          this.dashboardAuth,
+          this.config.dashboard.projectRoot,
+          {
+            agentConfigs: this.config.dashboard.agentConfigs,
+            relayConnections: this.connectionManager.count,
+          },
+        );
+      }
+
+      this.wss = new WebSocketServer({ noServer: true, maxPayload: 1 * 1024 * 1024 });
       this.wss.on('connection', this.handleConnection.bind(this));
+
+      this.httpServer.on('upgrade', (req, socket, head) => {
+        const url = req.url ?? '';
+        if (url === '/dashboard/ws' && this.dashboardWs && this.dashboardUpgrader) {
+          // Dashboard WebSocket — validate session cookie before accepting
+          const cookie = req.headers.cookie ?? '';
+          const match = cookie.match(/dashboard_session=([^;]+)/);
+          const token = match ? match[1] : null;
+          if (!token || !this.dashboardAuth?.validateSession(token)) {
+            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+            socket.destroy();
+            return;
+          }
+          this.dashboardUpgrader.handleUpgrade(req, socket, head, (ws) => {
+            this.dashboardWs!.addClient(ws);
+            ws.on('close', () => this.dashboardWs!.removeClient(ws));
+          });
+        } else {
+          // Agent WebSocket — existing logic
+          this.wss.handleUpgrade(req, socket, head, (ws) => {
+            this.wss.emit('connection', ws, req);
+          });
+        }
+      });
+
       this.httpServer.listen(this.config.port, this.config.host || '0.0.0.0', () => {
         const addr = this.httpServer.address() as { port: number };
         this._port = addr.port;
@@ -107,6 +158,7 @@ export class RelayServer {
       if (connection) {
         this.router.onAgentDisconnect(connection.sessionId);
         this.connectionManager.unregister(connection.sessionId);
+        this.updateDashboardConnectionCount();
       }
     };
 
@@ -159,6 +211,7 @@ export class RelayServer {
             }
 
             authenticated = true;
+            this.updateDashboardConnectionCount();
             ws.send(JSON.stringify({ type: 'auth_ok', sessionId, agentId: authMsg.agentId }));
             return;
           }
@@ -201,7 +254,27 @@ export class RelayServer {
       res.end(JSON.stringify({ status: 'ok', connections: this.connectionManager.count }));
       return;
     }
+
+    if (req.url?.startsWith('/dashboard') && this.dashboardRouter) {
+      this.dashboardRouter.handle(req, res);
+      return;
+    }
+
     res.writeHead(404);
     res.end();
+  }
+
+  get dashboardKeyPrefix(): string {
+    return this.dashboardAuth?.getKeyPrefix() ?? '';
+  }
+
+  get dashboardUrl(): string {
+    if (!this.dashboardAuth) return '';
+    return `http://localhost:${this._port}/dashboard`;
+  }
+
+  /** Call from handleConnection cleanup to keep relay count current */
+  private updateDashboardConnectionCount(): void {
+    this.dashboardRouter?.updateContext({ relayConnections: this.connectionManager.count });
   }
 }
