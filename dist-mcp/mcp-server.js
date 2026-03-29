@@ -2853,7 +2853,13 @@ async function overviewHandler(projectRoot, ctx) {
   if ((0, import_fs2.existsSync)(perfPath)) {
     try {
       const lines = (0, import_fs2.readFileSync)(perfPath, "utf-8").trim().split("\n").filter(Boolean);
-      totalSignals = lines.length;
+      for (const line of lines) {
+        try {
+          JSON.parse(line);
+          totalSignals++;
+        } catch {
+        }
+      }
     } catch {
     }
   }
@@ -3258,6 +3264,9 @@ var init_skill_index = __esm({
 });
 
 // packages/relay/src/dashboard/api-skills.ts
+function isCorrupt(projectRoot, index) {
+  return (0, import_fs5.existsSync)((0, import_path5.join)(projectRoot, ".gossip", "skill-index.json")) && !index.exists();
+}
 async function skillsGetHandler(projectRoot) {
   const index = new SkillIndex(projectRoot);
   return { index: index.getIndex(), suggestions: [] };
@@ -3267,18 +3276,27 @@ async function skillsBindHandler(projectRoot, body) {
   if (!body.skill || typeof body.skill !== "string") return { success: false, error: "Invalid skill name" };
   try {
     const index = new SkillIndex(projectRoot);
-    const changed = body.enabled ? index.enable(body.agent_id, body.skill) : index.disable(body.agent_id, body.skill);
-    if (!changed) return { success: false, error: "Skill not bound to agent" };
+    if (isCorrupt(projectRoot, index)) {
+      return { success: false, error: "Could not parse skill-index.json" };
+    }
+    if (body.enabled) {
+      index.bind(body.agent_id, body.skill, { enabled: true, source: "manual" });
+    } else {
+      const changed = index.disable(body.agent_id, body.skill);
+      if (!changed) return { success: false, error: "Skill not bound to agent" };
+    }
     return { success: true };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
   }
 }
-var AGENT_ID_RE;
+var import_fs5, import_path5, AGENT_ID_RE;
 var init_api_skills = __esm({
   "packages/relay/src/dashboard/api-skills.ts"() {
     "use strict";
     init_skill_index();
+    import_fs5 = require("fs");
+    import_path5 = require("path");
     AGENT_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
   }
 });
@@ -3286,22 +3304,22 @@ var init_api_skills = __esm({
 // packages/relay/src/dashboard/api-memory.ts
 async function memoryHandler(projectRoot, agentId) {
   if (!agentId || !AGENT_ID_RE2.test(agentId) || DANGEROUS_IDS.has(agentId)) throw new Error("Invalid agent ID");
-  const memDir = (0, import_path5.join)(projectRoot, ".gossip", "agents", agentId, "memory");
+  const memDir = (0, import_path6.join)(projectRoot, ".gossip", "agents", agentId, "memory");
   let index = "";
-  const indexPath = (0, import_path5.join)(memDir, "MEMORY.md");
-  if ((0, import_fs5.existsSync)(indexPath)) {
+  const indexPath = (0, import_path6.join)(memDir, "MEMORY.md");
+  if ((0, import_fs6.existsSync)(indexPath)) {
     try {
-      index = (0, import_fs5.readFileSync)(indexPath, "utf-8");
+      index = (0, import_fs6.readFileSync)(indexPath, "utf-8");
     } catch {
     }
   }
   const knowledge = [];
-  if ((0, import_fs5.existsSync)(memDir)) {
+  if ((0, import_fs6.existsSync)(memDir)) {
     try {
-      const files = (0, import_fs5.readdirSync)(memDir).filter((f) => f.endsWith(".md") && f !== "MEMORY.md");
+      const files = (0, import_fs6.readdirSync)(memDir).filter((f) => f.endsWith(".md") && f !== "MEMORY.md");
       for (const filename of files) {
         try {
-          const raw = (0, import_fs5.readFileSync)((0, import_path5.join)(memDir, filename), "utf-8");
+          const raw = (0, import_fs6.readFileSync)((0, import_path6.join)(memDir, filename), "utf-8");
           const { frontmatter, content } = parseFrontmatter(raw);
           knowledge.push({ filename, frontmatter, content });
         } catch {
@@ -3311,10 +3329,10 @@ async function memoryHandler(projectRoot, agentId) {
     }
   }
   const tasks = [];
-  const tasksPath = (0, import_path5.join)(memDir, "tasks.jsonl");
-  if ((0, import_fs5.existsSync)(tasksPath)) {
+  const tasksPath = (0, import_path6.join)(memDir, "tasks.jsonl");
+  if ((0, import_fs6.existsSync)(tasksPath)) {
     try {
-      const lines = (0, import_fs5.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean).slice(-200);
+      const lines = (0, import_fs6.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean).slice(-200);
       for (const line of lines) {
         try {
           tasks.push(JSON.parse(line));
@@ -3338,12 +3356,12 @@ function parseFrontmatter(raw) {
   }
   return { frontmatter: fm, content: raw.slice(end + 3).trim() };
 }
-var import_fs5, import_path5, AGENT_ID_RE2, DANGEROUS_IDS;
+var import_fs6, import_path6, AGENT_ID_RE2, DANGEROUS_IDS;
 var init_api_memory = __esm({
   "packages/relay/src/dashboard/api-memory.ts"() {
     "use strict";
-    import_fs5 = require("fs");
-    import_path5 = require("path");
+    import_fs6 = require("fs");
+    import_path6 = require("path");
     AGENT_ID_RE2 = /^[a-zA-Z0-9_-]{1,64}$/;
     DANGEROUS_IDS = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype", "_project"]);
   }
@@ -3367,7 +3385,7 @@ function readBody(req) {
     req.on("error", reject);
   });
 }
-var import_fs6, import_path6, DashboardRouter, MAX_BODY_SIZE;
+var import_fs7, import_path7, DashboardRouter, MAX_BODY_SIZE;
 var init_routes = __esm({
   "packages/relay/src/dashboard/routes.ts"() {
     "use strict";
@@ -3375,8 +3393,8 @@ var init_routes = __esm({
     init_api_agents();
     init_api_skills();
     init_api_memory();
-    import_fs6 = require("fs");
-    import_path6 = require("path");
+    import_fs7 = require("fs");
+    import_path7 = require("path");
     DashboardRouter = class {
       constructor(auth, projectRoot, ctx) {
         this.auth = auth;
@@ -3426,7 +3444,7 @@ var init_routes = __esm({
           }
           res.writeHead(200, {
             "Content-Type": "application/json",
-            "Set-Cookie": `dashboard_session=${token}; HttpOnly; SameSite=Lax; Path=/dashboard; Max-Age=86400`
+            "Set-Cookie": `dashboard_session=${token}; HttpOnly; SameSite=Strict; Path=/dashboard; Max-Age=86400`
           });
           res.end(JSON.stringify({ ok: true }));
         } catch {
@@ -3474,13 +3492,13 @@ var init_routes = __esm({
         return true;
       }
       serveDashboard(res) {
-        const htmlPath = (0, import_path6.join)(this.projectRoot, "dist-dashboard", "index.html");
-        if (!(0, import_fs6.existsSync)(htmlPath)) {
+        const htmlPath = (0, import_path7.join)(this.projectRoot, "dist-dashboard", "index.html");
+        if (!(0, import_fs7.existsSync)(htmlPath)) {
           res.writeHead(503, { "Content-Type": "text/plain" });
           res.end("Dashboard not built. Run: npm run build:dashboard");
           return true;
         }
-        const html = (0, import_fs6.readFileSync)(htmlPath, "utf-8");
+        const html = (0, import_fs7.readFileSync)(htmlPath, "utf-8");
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(html);
         return true;
@@ -4079,12 +4097,12 @@ var init_src3 = __esm({
 });
 
 // packages/tools/src/file-tools.ts
-var import_promises, import_path7, FileTools;
+var import_promises, import_path8, FileTools;
 var init_file_tools = __esm({
   "packages/tools/src/file-tools.ts"() {
     "use strict";
     import_promises = require("fs/promises");
-    import_path7 = require("path");
+    import_path8 = require("path");
     FileTools = class {
       constructor(sandbox) {
         this.sandbox = sandbox;
@@ -4109,7 +4127,7 @@ var init_file_tools = __esm({
       }
       async fileWrite(args) {
         const absPath = this.sandbox.validatePath(args.path);
-        const dir = (0, import_path7.resolve)(absPath, "..");
+        const dir = (0, import_path8.resolve)(absPath, "..");
         await (0, import_promises.mkdir)(dir, { recursive: true });
         await (0, import_promises.writeFile)(absPath, args.content, "utf-8");
         return `Written ${args.content.length} bytes to ${args.path}`;
@@ -4154,7 +4172,7 @@ var init_file_tools = __esm({
         }
         for (const entry of entries) {
           if (entry === "node_modules" || entry === ".git") continue;
-          const fullPath = (0, import_path7.join)(dir, entry);
+          const fullPath = (0, import_path8.join)(dir, entry);
           let info;
           try {
             info = await (0, import_promises.stat)(fullPath);
@@ -4166,7 +4184,7 @@ var init_file_tools = __esm({
           } else {
             const regexStr = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
             const regex = new RegExp(regexStr);
-            const relPath = (0, import_path7.relative)(this.sandbox.projectRoot, fullPath);
+            const relPath = (0, import_path8.relative)(this.sandbox.projectRoot, fullPath);
             if (regex.test(entry) || regex.test(relPath)) {
               results.push(relPath);
             }
@@ -4183,7 +4201,7 @@ var init_file_tools = __esm({
         }
         for (const entry of entries) {
           if (entry === "node_modules" || entry === ".git") continue;
-          const fullPath = (0, import_path7.join)(dir, entry);
+          const fullPath = (0, import_path8.join)(dir, entry);
           let info;
           try {
             info = await (0, import_promises.stat)(fullPath);
@@ -4196,7 +4214,7 @@ var init_file_tools = __esm({
             try {
               const content = await (0, import_promises.readFile)(fullPath, "utf-8");
               const lines = content.split("\n");
-              const relPath = (0, import_path7.relative)(this.sandbox.projectRoot, fullPath);
+              const relPath = (0, import_path8.relative)(this.sandbox.projectRoot, fullPath);
               lines.forEach((line, idx) => {
                 if (regex.test(line)) {
                   results.push(`${relPath}:${idx + 1}: ${line}`);
@@ -4220,7 +4238,7 @@ var init_file_tools = __esm({
           const entry = filtered[i];
           const isLast = i === filtered.length - 1;
           const connector = isLast ? "\u2514\u2500\u2500 " : "\u251C\u2500\u2500 ";
-          const fullPath = (0, import_path7.join)(dir, entry);
+          const fullPath = (0, import_path8.join)(dir, entry);
           let info;
           try {
             info = await (0, import_promises.stat)(fullPath);
@@ -4425,20 +4443,20 @@ var init_git_tools = __esm({
 });
 
 // packages/tools/src/skill-tools.ts
-var import_fs7, import_path8, SkillTools;
+var import_fs8, import_path9, SkillTools;
 var init_skill_tools = __esm({
   "packages/tools/src/skill-tools.ts"() {
     "use strict";
-    import_fs7 = require("fs");
-    import_path8 = require("path");
+    import_fs8 = require("fs");
+    import_path9 = require("path");
     SkillTools = class {
       gapLogPath;
       constructor(projectRoot) {
-        const gossipDir = (0, import_path8.join)(projectRoot, ".gossip");
-        if (!(0, import_fs7.existsSync)(gossipDir)) {
-          (0, import_fs7.mkdirSync)(gossipDir, { recursive: true });
+        const gossipDir = (0, import_path9.join)(projectRoot, ".gossip");
+        if (!(0, import_fs8.existsSync)(gossipDir)) {
+          (0, import_fs8.mkdirSync)(gossipDir, { recursive: true });
         }
-        this.gapLogPath = (0, import_path8.join)(gossipDir, "skill-gaps.jsonl");
+        this.gapLogPath = (0, import_path9.join)(gossipDir, "skill-gaps.jsonl");
       }
       async suggestSkill(args, callerId) {
         const entry = {
@@ -4449,16 +4467,16 @@ var init_skill_tools = __esm({
           task_context: args.task_context,
           timestamp: (/* @__PURE__ */ new Date()).toISOString()
         };
-        (0, import_fs7.appendFileSync)(this.gapLogPath, JSON.stringify(entry) + "\n");
+        (0, import_fs8.appendFileSync)(this.gapLogPath, JSON.stringify(entry) + "\n");
         this.truncateIfNeeded();
         return `Suggestion noted: '${args.skill_name}'. Continue with your current skills.`;
       }
       truncateIfNeeded() {
         try {
-          const content = (0, import_fs7.readFileSync)(this.gapLogPath, "utf-8");
+          const content = (0, import_fs8.readFileSync)(this.gapLogPath, "utf-8");
           const lines = content.trim().split("\n").filter(Boolean);
           if (lines.length > 5e3) {
-            (0, import_fs7.writeFileSync)(this.gapLogPath, lines.slice(-1e3).join("\n") + "\n");
+            (0, import_fs8.writeFileSync)(this.gapLogPath, lines.slice(-1e3).join("\n") + "\n");
           }
         } catch {
         }
@@ -4468,16 +4486,16 @@ var init_skill_tools = __esm({
 });
 
 // packages/tools/src/sandbox.ts
-var import_path9, import_fs8, Sandbox;
+var import_path10, import_fs9, Sandbox;
 var init_sandbox = __esm({
   "packages/tools/src/sandbox.ts"() {
     "use strict";
-    import_path9 = require("path");
-    import_fs8 = require("fs");
+    import_path10 = require("path");
+    import_fs9 = require("fs");
     Sandbox = class {
       root;
       constructor(projectRoot) {
-        this.root = (0, import_fs8.realpathSync)((0, import_path9.resolve)(projectRoot));
+        this.root = (0, import_fs9.realpathSync)((0, import_path10.resolve)(projectRoot));
       }
       get projectRoot() {
         return this.root;
@@ -4489,14 +4507,14 @@ var init_sandbox = __esm({
        * Resolves symlinks to prevent symlink escape attacks.
        */
       validatePath(filePath) {
-        const resolved = (0, import_path9.resolve)(this.root, filePath);
+        const resolved = (0, import_path10.resolve)(this.root, filePath);
         let checkPath = resolved;
-        while (!(0, import_fs8.existsSync)(checkPath)) {
-          const parent = (0, import_path9.dirname)(checkPath);
+        while (!(0, import_fs9.existsSync)(checkPath)) {
+          const parent = (0, import_path10.dirname)(checkPath);
           if (parent === checkPath) break;
           checkPath = parent;
         }
-        const real = (0, import_fs8.existsSync)(checkPath) ? (0, import_fs8.realpathSync)(checkPath) : checkPath;
+        const real = (0, import_fs9.existsSync)(checkPath) ? (0, import_fs9.realpathSync)(checkPath) : checkPath;
         const remainder = resolved.slice(checkPath.length);
         const fullReal = real + remainder;
         if (!fullReal.startsWith(this.root + "/") && fullReal !== this.root) {
@@ -4514,7 +4532,7 @@ function truncateAtLine(text, maxLength) {
   const cut = text.lastIndexOf("\n", maxLength);
   return text.slice(0, cut !== -1 ? cut : maxLength);
 }
-var import_msgpack3, import_crypto5, import_path10, ToolServer;
+var import_msgpack3, import_crypto5, import_path11, ToolServer;
 var init_tool_server = __esm({
   "packages/tools/src/tool-server.ts"() {
     "use strict";
@@ -4527,7 +4545,7 @@ var init_tool_server = __esm({
     init_git_tools();
     init_skill_tools();
     init_sandbox();
-    import_path10 = require("path");
+    import_path11 = require("path");
     ToolServer = class _ToolServer {
       agent;
       fileTools;
@@ -4640,8 +4658,8 @@ var init_tool_server = __esm({
         if (toolName === "file_write") {
           const filePath = args.path;
           if (scope) {
-            const resolved = (0, import_path10.resolve)(this.sandbox.projectRoot, filePath);
-            const rel = (0, import_path10.relative)(this.sandbox.projectRoot, resolved);
+            const resolved = (0, import_path11.resolve)(this.sandbox.projectRoot, filePath);
+            const rel = (0, import_path11.relative)(this.sandbox.projectRoot, resolved);
             if (rel.startsWith("..")) {
               throw new Error(`Write blocked: "${filePath}" resolves outside project root`);
             }
@@ -4651,7 +4669,7 @@ var init_tool_server = __esm({
             }
           }
           if (root) {
-            const resolved = (0, import_path10.resolve)(root, filePath);
+            const resolved = (0, import_path11.resolve)(root, filePath);
             if (!resolved.startsWith(root)) {
               throw new Error(`Write blocked: "${filePath}" is outside worktree root "${root}"`);
             }
@@ -6084,25 +6102,25 @@ function resolveSkill(agentId, skill, projectRoot) {
   const filename = `${sanitized}.md`;
   const hyphenFilename = `${sanitized.replace(/_/g, "-")}.md`;
   const bases = [
-    (0, import_path11.resolve)(projectRoot, ".gossip", "agents", agentId, "skills"),
-    (0, import_path11.resolve)(projectRoot, ".gossip", "skills"),
-    (0, import_path11.resolve)(__dirname, "default-skills")
+    (0, import_path12.resolve)(projectRoot, ".gossip", "agents", agentId, "skills"),
+    (0, import_path12.resolve)(projectRoot, ".gossip", "skills"),
+    (0, import_path12.resolve)(__dirname, "default-skills")
   ];
   for (const base of bases) {
     for (const fname of [filename, hyphenFilename]) {
-      const candidate = (0, import_path11.resolve)(base, fname);
+      const candidate = (0, import_path12.resolve)(base, fname);
       if (!candidate.startsWith(base + "/")) continue;
-      if ((0, import_fs9.existsSync)(candidate)) return (0, import_fs9.readFileSync)(candidate, "utf-8");
+      if ((0, import_fs10.existsSync)(candidate)) return (0, import_fs10.readFileSync)(candidate, "utf-8");
     }
   }
   return null;
 }
-var import_fs9, import_path11;
+var import_fs10, import_path12;
 var init_skill_loader = __esm({
   "packages/orchestrator/src/skill-loader.ts"() {
     "use strict";
-    import_fs9 = require("fs");
-    import_path11 = require("path");
+    import_fs10 = require("fs");
+    import_path12 = require("path");
   }
 });
 
@@ -6232,29 +6250,29 @@ var init_prompt_assembler = __esm({
 });
 
 // packages/orchestrator/src/agent-memory.ts
-var import_fs10, import_path12, AgentMemoryReader;
+var import_fs11, import_path13, AgentMemoryReader;
 var init_agent_memory = __esm({
   "packages/orchestrator/src/agent-memory.ts"() {
     "use strict";
-    import_fs10 = require("fs");
-    import_path12 = require("path");
+    import_fs11 = require("fs");
+    import_path13 = require("path");
     AgentMemoryReader = class {
       constructor(projectRoot) {
         this.projectRoot = projectRoot;
       }
       loadMemory(agentId, taskText) {
-        const memDir = (0, import_path12.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
-        const indexPath = (0, import_path12.join)(memDir, "MEMORY.md");
-        if (!(0, import_fs10.existsSync)(indexPath)) return null;
+        const memDir = (0, import_path13.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
+        const indexPath = (0, import_path13.join)(memDir, "MEMORY.md");
+        if (!(0, import_fs11.existsSync)(indexPath)) return null;
         const parts = [];
-        const indexContent = (0, import_fs10.readFileSync)(indexPath, "utf-8");
+        const indexContent = (0, import_fs11.readFileSync)(indexPath, "utf-8");
         const indexLines = indexContent.split("\n");
         parts.push(indexLines.length > 200 ? indexLines.slice(0, 200).join("\n") + "\n[Truncated]" : indexContent);
-        const knowledgeDir = (0, import_path12.join)(memDir, "knowledge");
-        if ((0, import_fs10.existsSync)(knowledgeDir)) {
+        const knowledgeDir = (0, import_path13.join)(memDir, "knowledge");
+        if ((0, import_fs11.existsSync)(knowledgeDir)) {
           const files = this.selectKnowledgeFiles(knowledgeDir, taskText);
           for (const file2 of files) {
-            let content = (0, import_fs10.readFileSync)(file2.path, "utf-8");
+            let content = (0, import_fs11.readFileSync)(file2.path, "utf-8");
             content = content.replace(/<\/?(?:agent-memory|system|instructions)>/gi, "");
             parts.push(`<agent-memory>
 ${content}
@@ -6264,19 +6282,19 @@ ${content}
             }
           }
         }
-        const calPath = (0, import_path12.join)(memDir, "calibration", "accuracy.md");
-        if ((0, import_fs10.existsSync)(calPath)) {
-          parts.push((0, import_fs10.readFileSync)(calPath, "utf-8"));
+        const calPath = (0, import_path13.join)(memDir, "calibration", "accuracy.md");
+        if ((0, import_fs11.existsSync)(calPath)) {
+          parts.push((0, import_fs11.readFileSync)(calPath, "utf-8"));
         }
         return parts.join("\n\n");
       }
       selectKnowledgeFiles(knowledgeDir, taskText) {
-        const files = (0, import_fs10.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
+        const files = (0, import_fs11.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
         const scored = [];
         const lower = taskText.toLowerCase();
         for (const file2 of files) {
-          const filePath = (0, import_path12.join)(knowledgeDir, file2);
-          const content = (0, import_fs10.readFileSync)(filePath, "utf-8");
+          const filePath = (0, import_path13.join)(knowledgeDir, file2);
+          const content = (0, import_fs11.readFileSync)(filePath, "utf-8");
           const frontmatter = this.parseFrontmatter(content);
           if (frontmatter) {
             const warmth = this.calculateWarmth(frontmatter.importance, frontmatter.lastAccessed);
@@ -6290,7 +6308,7 @@ ${content}
           } else {
             const relevance = this.calculateRelevance(content.slice(0, 500), lower);
             try {
-              const mtime = (0, import_fs10.statSync)(filePath).mtimeMs;
+              const mtime = (0, import_fs11.statSync)(filePath).mtimeMs;
               const ageDays = (Date.now() - mtime) / 864e5;
               const ageFactor = 1 / (1 + ageDays / 30);
               scored.push({ path: filePath, score: Math.max(relevance * ageFactor, 0.05) });
@@ -6347,7 +6365,7 @@ ${content}
           const newCount = parseInt(countMatch[1]) + 1;
           updated = updated.replace(/accessCount:\s*\d+/, `accessCount: ${newCount}`);
         }
-        (0, import_fs10.writeFileSync)(filePath, updated);
+        (0, import_fs11.writeFileSync)(filePath, updated);
       }
     };
   }
@@ -6369,12 +6387,12 @@ function truncateStartAndEnd(text, maxLen) {
 
 ${text.slice(-half)}`;
 }
-var import_fs11, import_path13, MemoryWriter;
+var import_fs12, import_path14, MemoryWriter;
 var init_memory_writer = __esm({
   "packages/orchestrator/src/memory-writer.ts"() {
     "use strict";
-    import_fs11 = require("fs");
-    import_path13 = require("path");
+    import_fs12 = require("fs");
+    import_path14 = require("path");
     MemoryWriter = class {
       constructor(projectRoot) {
         this.projectRoot = projectRoot;
@@ -6385,12 +6403,12 @@ var init_memory_writer = __esm({
         this.summaryLlm = llm;
       }
       getMemDir(agentId) {
-        return (0, import_path13.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
+        return (0, import_path14.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
       }
       ensureDirs(agentId) {
         const memDir = this.getMemDir(agentId);
-        (0, import_fs11.mkdirSync)((0, import_path13.join)(memDir, "knowledge"), { recursive: true });
-        (0, import_fs11.mkdirSync)((0, import_path13.join)(memDir, "calibration"), { recursive: true });
+        (0, import_fs12.mkdirSync)((0, import_path14.join)(memDir, "knowledge"), { recursive: true });
+        (0, import_fs12.mkdirSync)((0, import_path14.join)(memDir, "calibration"), { recursive: true });
         return memDir;
       }
       async writeTaskEntry(agentId, data) {
@@ -6408,7 +6426,7 @@ var init_memory_writer = __esm({
           importance: this.deriveImportance(data.scores),
           timestamp: (/* @__PURE__ */ new Date()).toISOString()
         };
-        (0, import_fs11.appendFileSync)((0, import_path13.join)(memDir, "tasks.jsonl"), JSON.stringify(entry) + "\n");
+        (0, import_fs12.appendFileSync)((0, import_path14.join)(memDir, "tasks.jsonl"), JSON.stringify(entry) + "\n");
       }
       /**
        * Extract key facts from a task result and write as a knowledge entry.
@@ -6417,7 +6435,7 @@ var init_memory_writer = __esm({
        */
       async writeKnowledgeFromResult(agentId, data) {
         const memDir = this.ensureDirs(agentId);
-        const knowledgeDir = (0, import_path13.join)(memDir, "knowledge");
+        const knowledgeDir = (0, import_path14.join)(memDir, "knowledge");
         const safeResult = data.result.length > 5e4 ? data.result.slice(0, 5e4) : data.result;
         const facts = this.extractFacts(data.task, safeResult);
         if (!facts) return;
@@ -6433,12 +6451,12 @@ var init_memory_writer = __esm({
         const filename = `${timestamp}-${data.taskId}.md`;
         const today = now.toISOString().split("T")[0];
         try {
-          const existing = (0, import_fs11.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
+          const existing = (0, import_fs12.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
           const MAX_KNOWLEDGE_FILES = 10;
           if (existing.length >= MAX_KNOWLEDGE_FILES) {
             const toRemove = existing.slice(0, existing.length - MAX_KNOWLEDGE_FILES + 1);
             for (const old of toRemove) {
-              (0, import_fs11.unlinkSync)((0, import_path13.join)(knowledgeDir, old));
+              (0, import_fs12.unlinkSync)((0, import_path14.join)(knowledgeDir, old));
             }
           }
         } catch {
@@ -6457,7 +6475,7 @@ ${cognitiveSummary}` : facts.body;
           "",
           body
         ].join("\n");
-        (0, import_fs11.writeFileSync)((0, import_path13.join)(knowledgeDir, filename), content);
+        (0, import_fs12.writeFileSync)((0, import_path14.join)(knowledgeDir, filename), content);
       }
       /**
        * Generate a cognitive summary — what the agent learned, not just what it saw.
@@ -6499,7 +6517,7 @@ ${truncateStartAndEnd(result, 4e3)}`
        */
       async writeSessionSummary(data) {
         const memDir = this.ensureDirs("_project");
-        const knowledgeDir = (0, import_path13.join)(memDir, "knowledge");
+        const knowledgeDir = (0, import_path14.join)(memDir, "knowledge");
         const now = /* @__PURE__ */ new Date();
         const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
         const filename = `${timestamp}-session.md`;
@@ -6571,7 +6589,13 @@ Rules:
           "",
           summaryBody
         ].filter((l) => l !== "").join("\n");
-        (0, import_fs11.writeFileSync)((0, import_path13.join)(knowledgeDir, filename), content);
+        (0, import_fs12.writeFileSync)((0, import_path14.join)(knowledgeDir, filename), content);
+        const nextSessionPath = (0, import_path14.join)(this.projectRoot, ".gossip", "next-session.md");
+        const nextSessionContent = `# Next Session Plan
+
+${summaryBody}
+`;
+        (0, import_fs12.writeFileSync)(nextSessionPath, nextSessionContent);
         await this.writeTaskEntry("_project", {
           taskId: `session-${timestamp}`,
           task: `Session ${today}`,
@@ -6584,11 +6608,11 @@ Rules:
       /** Warmth-aware pruning for _project knowledge files (respects pinned) */
       pruneProjectKnowledge(knowledgeDir) {
         try {
-          const existing = (0, import_fs11.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
+          const existing = (0, import_fs12.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
           const MAX_KNOWLEDGE_FILES = 10;
           if (existing.length < MAX_KNOWLEDGE_FILES) return;
           const scored = existing.map((f) => {
-            const content = (0, import_fs11.readFileSync)((0, import_path13.join)(knowledgeDir, f), "utf-8");
+            const content = (0, import_fs12.readFileSync)((0, import_path14.join)(knowledgeDir, f), "utf-8");
             const importance = parseFloat(content.match(/importance:\s*([\d.]+)/)?.[1] ?? "0.5");
             const isPinned = /pinned:\s*true/i.test(content);
             const ts = f.slice(0, 19).replace(/T/, "T").replace(/-(\d\d)-(\d\d)-/, ":$1:$2:");
@@ -6600,7 +6624,7 @@ Rules:
           const toRemove = scored.slice(0, existing.length - MAX_KNOWLEDGE_FILES + 1);
           for (const item of toRemove) {
             if (item.isPinned) continue;
-            (0, import_fs11.unlinkSync)((0, import_path13.join)(knowledgeDir, item.file));
+            (0, import_fs12.unlinkSync)((0, import_path14.join)(knowledgeDir, item.file));
           }
         } catch {
         }
@@ -6773,7 +6797,7 @@ ${result}`;
       writeConsensusKnowledge(agentId, findings) {
         if (findings.length === 0) return;
         const memDir = this.ensureDirs(agentId);
-        const knowledgeDir = (0, import_path13.join)(memDir, "knowledge");
+        const knowledgeDir = (0, import_path14.join)(memDir, "knowledge");
         const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
         const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
         const filename = `${timestamp}-consensus.md`;
@@ -6793,17 +6817,17 @@ ${result}`;
           ...peerFindings.map((f) => `- [${f.originalAgentId}] ${f.finding}`)
         ].join("\n");
         try {
-          const existing = (0, import_fs11.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
+          const existing = (0, import_fs12.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
           const MAX_KNOWLEDGE_FILES = 10;
           if (existing.length >= MAX_KNOWLEDGE_FILES) {
             const toRemove = existing.slice(0, existing.length - MAX_KNOWLEDGE_FILES + 1);
             for (const old of toRemove) {
-              (0, import_fs11.unlinkSync)((0, import_path13.join)(knowledgeDir, old));
+              (0, import_fs12.unlinkSync)((0, import_path14.join)(knowledgeDir, old));
             }
           }
         } catch {
         }
-        (0, import_fs11.writeFileSync)((0, import_path13.join)(knowledgeDir, filename), content);
+        (0, import_fs12.writeFileSync)((0, import_path14.join)(knowledgeDir, filename), content);
       }
       /**
        * Update task memory importance based on consensus signals.
@@ -6826,13 +6850,13 @@ ${result}`;
           taskAdj.set(s.taskId, (taskAdj.get(s.taskId) ?? 0) + weight);
         }
         for (const [agentId, taskAdjustments] of adjustments) {
-          const memDir = (0, import_path13.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
-          const tasksPath = (0, import_path13.join)(memDir, "tasks.jsonl");
-          const lockPath = (0, import_path13.join)(memDir, "tasks.jsonl.lock");
-          if (!(0, import_fs11.existsSync)(tasksPath)) continue;
-          if ((0, import_fs11.existsSync)(lockPath)) continue;
+          const memDir = (0, import_path14.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
+          const tasksPath = (0, import_path14.join)(memDir, "tasks.jsonl");
+          const lockPath = (0, import_path14.join)(memDir, "tasks.jsonl.lock");
+          if (!(0, import_fs12.existsSync)(tasksPath)) continue;
+          if ((0, import_fs12.existsSync)(lockPath)) continue;
           try {
-            const lines = (0, import_fs11.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+            const lines = (0, import_fs12.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
             let modified = false;
             const updated = lines.map((line) => {
               try {
@@ -6849,7 +6873,7 @@ ${result}`;
               }
             });
             if (modified) {
-              (0, import_fs11.writeFileSync)(tasksPath, updated.join("\n") + "\n");
+              (0, import_fs12.writeFileSync)(tasksPath, updated.join("\n") + "\n");
             }
           } catch {
           }
@@ -6859,13 +6883,13 @@ ${result}`;
         const memDir = this.getMemDir(agentId);
         const parts = [`# Agent Memory \u2014 ${agentId}
 `];
-        const knowledgeDir = (0, import_path13.join)(memDir, "knowledge");
-        if ((0, import_fs11.existsSync)(knowledgeDir)) {
-          const files = (0, import_fs11.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort().reverse();
+        const knowledgeDir = (0, import_path14.join)(memDir, "knowledge");
+        if ((0, import_fs12.existsSync)(knowledgeDir)) {
+          const files = (0, import_fs12.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort().reverse();
           if (files.length > 0) {
             parts.push("## Knowledge (most recent first)");
             for (const file2 of files) {
-              const content = (0, import_fs11.readFileSync)((0, import_path13.join)(knowledgeDir, file2), "utf-8");
+              const content = (0, import_fs12.readFileSync)((0, import_path14.join)(knowledgeDir, file2), "utf-8");
               const descMatch = content.match(/description:\s*(.+)/);
               const desc = descMatch ? descMatch[1].trim() : file2.replace(".md", "");
               parts.push(`- [${file2.replace(".md", "")}](knowledge/${file2}) \u2014 ${desc}`);
@@ -6873,17 +6897,17 @@ ${result}`;
             parts.push("");
           }
         }
-        const calPath = (0, import_path13.join)(memDir, "calibration", "accuracy.md");
-        if ((0, import_fs11.existsSync)(calPath)) {
-          const content = (0, import_fs11.readFileSync)(calPath, "utf-8");
+        const calPath = (0, import_path14.join)(memDir, "calibration", "accuracy.md");
+        if ((0, import_fs12.existsSync)(calPath)) {
+          const content = (0, import_fs12.readFileSync)(calPath, "utf-8");
           const descMatch = content.match(/description:\s*(.+)/);
           parts.push("## Calibration");
           parts.push(`- [accuracy](calibration/accuracy.md) \u2014 ${descMatch ? descMatch[1].trim() : "accuracy data"}`);
           parts.push("");
         }
-        const tasksPath = (0, import_path13.join)(memDir, "tasks.jsonl");
-        if ((0, import_fs11.existsSync)(tasksPath)) {
-          const lines = (0, import_fs11.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+        const tasksPath = (0, import_path14.join)(memDir, "tasks.jsonl");
+        if ((0, import_fs12.existsSync)(tasksPath)) {
+          const lines = (0, import_fs12.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
           const recent = lines.slice(-5).reverse();
           if (recent.length > 0) {
             parts.push("## Recent Tasks");
@@ -6900,12 +6924,12 @@ ${result}`;
           }
         }
         try {
-          const knowledgeDir2 = (0, import_path13.join)(memDir, "knowledge");
-          if ((0, import_fs11.existsSync)(knowledgeDir2)) {
-            const knowledgeFiles = (0, import_fs11.readdirSync)(knowledgeDir2).filter((f) => f.endsWith(".md")).sort().reverse().slice(0, 5);
+          const knowledgeDir2 = (0, import_path14.join)(memDir, "knowledge");
+          if ((0, import_fs12.existsSync)(knowledgeDir2)) {
+            const knowledgeFiles = (0, import_fs12.readdirSync)(knowledgeDir2).filter((f) => f.endsWith(".md")).sort().reverse().slice(0, 5);
             const patterns = [];
             for (const kf of knowledgeFiles) {
-              const kContent = (0, import_fs11.readFileSync)((0, import_path13.join)(knowledgeDir2, kf), "utf-8");
+              const kContent = (0, import_fs12.readFileSync)((0, import_path14.join)(knowledgeDir2, kf), "utf-8");
               const decisionsMatch = kContent.match(/Decisions: (.+)/);
               if (decisionsMatch) patterns.push(decisionsMatch[1].trim());
               const failuresMatch = kContent.match(/Failures: (.+)/);
@@ -6917,19 +6941,19 @@ ${result}`;
           }
         } catch {
         }
-        (0, import_fs11.writeFileSync)((0, import_path13.join)(memDir, "MEMORY.md"), parts.join("\n"));
+        (0, import_fs12.writeFileSync)((0, import_path14.join)(memDir, "MEMORY.md"), parts.join("\n"));
       }
     };
   }
 });
 
 // packages/orchestrator/src/memory-compactor.ts
-var import_fs12, import_path14, MAX_ARCHIVE_LINES, MemoryCompactor;
+var import_fs13, import_path15, MAX_ARCHIVE_LINES, MemoryCompactor;
 var init_memory_compactor = __esm({
   "packages/orchestrator/src/memory-compactor.ts"() {
     "use strict";
-    import_fs12 = require("fs");
-    import_path14 = require("path");
+    import_fs13 = require("fs");
+    import_path15 = require("path");
     MAX_ARCHIVE_LINES = 5e3;
     MemoryCompactor = class {
       constructor(projectRoot) {
@@ -6941,30 +6965,30 @@ var init_memory_compactor = __esm({
         return (importance || 0.5) * (1 / (1 + days / 30));
       }
       compactIfNeeded(agentId, maxEntries = 20) {
-        const memDir = (0, import_path14.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
-        const tasksPath = (0, import_path14.join)(memDir, "tasks.jsonl");
-        const lockPath = (0, import_path14.join)(memDir, "tasks.jsonl.lock");
-        if (!(0, import_fs12.existsSync)(tasksPath)) return { archived: 0 };
-        if ((0, import_fs12.existsSync)(lockPath)) {
+        const memDir = (0, import_path15.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
+        const tasksPath = (0, import_path15.join)(memDir, "tasks.jsonl");
+        const lockPath = (0, import_path15.join)(memDir, "tasks.jsonl.lock");
+        if (!(0, import_fs13.existsSync)(tasksPath)) return { archived: 0 };
+        if ((0, import_fs13.existsSync)(lockPath)) {
           try {
-            const lockAge = Date.now() - parseInt((0, import_fs12.readFileSync)(lockPath, "utf-8"), 10);
+            const lockAge = Date.now() - parseInt((0, import_fs13.readFileSync)(lockPath, "utf-8"), 10);
             if (lockAge < 6e4) return { archived: 0 };
-            (0, import_fs12.unlinkSync)(lockPath);
+            (0, import_fs13.unlinkSync)(lockPath);
           } catch {
             try {
-              (0, import_fs12.unlinkSync)(lockPath);
+              (0, import_fs13.unlinkSync)(lockPath);
             } catch {
               return { archived: 0 };
             }
           }
         }
         try {
-          (0, import_fs12.writeFileSync)(lockPath, `${Date.now()}`);
+          (0, import_fs13.writeFileSync)(lockPath, `${Date.now()}`);
         } catch {
           return { archived: 0 };
         }
         try {
-          const lines = (0, import_fs12.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+          const lines = (0, import_fs13.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
           if (lines.length <= maxEntries) return { archived: 0 };
           const entries = [];
           for (const line of lines) {
@@ -6978,7 +7002,7 @@ var init_memory_compactor = __esm({
           entries.sort((a, b) => a.warmth - b.warmth);
           const toArchive = entries.slice(0, entries.length - maxEntries);
           const toKeep = entries.slice(entries.length - maxEntries);
-          const archivePath = (0, import_path14.join)(memDir, "archive.jsonl");
+          const archivePath = (0, import_path15.join)(memDir, "archive.jsonl");
           for (const item of toArchive) {
             const archived = {
               archivedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -6986,22 +7010,22 @@ var init_memory_compactor = __esm({
               warmth: item.warmth,
               entry: item.entry
             };
-            (0, import_fs12.appendFileSync)(archivePath, JSON.stringify(archived) + "\n");
+            (0, import_fs13.appendFileSync)(archivePath, JSON.stringify(archived) + "\n");
           }
           try {
-            if ((0, import_fs12.existsSync)(archivePath)) {
-              const archiveLines = (0, import_fs12.readFileSync)(archivePath, "utf-8").trim().split("\n");
+            if ((0, import_fs13.existsSync)(archivePath)) {
+              const archiveLines = (0, import_fs13.readFileSync)(archivePath, "utf-8").trim().split("\n");
               if (archiveLines.length > MAX_ARCHIVE_LINES) {
-                (0, import_fs12.writeFileSync)(archivePath, archiveLines.slice(-MAX_ARCHIVE_LINES).join("\n") + "\n");
+                (0, import_fs13.writeFileSync)(archivePath, archiveLines.slice(-MAX_ARCHIVE_LINES).join("\n") + "\n");
               }
             }
           } catch {
           }
-          (0, import_fs12.writeFileSync)(tasksPath, toKeep.map((e) => e.line).join("\n") + "\n");
+          (0, import_fs13.writeFileSync)(tasksPath, toKeep.map((e) => e.line).join("\n") + "\n");
           return { archived: toArchive.length, message: `Compacted ${toArchive.length} memories for ${agentId}` };
         } finally {
           try {
-            (0, import_fs12.unlinkSync)(lockPath);
+            (0, import_fs13.unlinkSync)(lockPath);
           } catch {
           }
         }
@@ -7011,12 +7035,12 @@ var init_memory_compactor = __esm({
 });
 
 // packages/orchestrator/src/task-graph.ts
-var import_fs13, import_path15, MAX_SCAN_LINES, TaskGraph;
+var import_fs14, import_path16, MAX_SCAN_LINES, TaskGraph;
 var init_task_graph = __esm({
   "packages/orchestrator/src/task-graph.ts"() {
     "use strict";
-    import_fs13 = require("fs");
-    import_path15 = require("path");
+    import_fs14 = require("fs");
+    import_path16 = require("path");
     MAX_SCAN_LINES = 1e3;
     TaskGraph = class {
       graphPath;
@@ -7026,14 +7050,14 @@ var init_task_graph = __esm({
       // taskId → last event line number
       eventCount = 0;
       constructor(projectRoot) {
-        const gossipDir = (0, import_path15.join)(projectRoot, ".gossip");
-        (0, import_fs13.mkdirSync)(gossipDir, { recursive: true });
-        this.graphPath = (0, import_path15.join)(gossipDir, "task-graph.jsonl");
-        this.syncMetaPath = (0, import_path15.join)(gossipDir, "task-graph-sync.json");
-        this.indexPath = (0, import_path15.join)(gossipDir, "task-graph-index.json");
+        const gossipDir = (0, import_path16.join)(projectRoot, ".gossip");
+        (0, import_fs14.mkdirSync)(gossipDir, { recursive: true });
+        this.graphPath = (0, import_path16.join)(gossipDir, "task-graph.jsonl");
+        this.syncMetaPath = (0, import_path16.join)(gossipDir, "task-graph-sync.json");
+        this.indexPath = (0, import_path16.join)(gossipDir, "task-graph-index.json");
         this.loadIndex();
-        if ((0, import_fs13.existsSync)(this.graphPath)) {
-          const buf = (0, import_fs13.readFileSync)(this.graphPath);
+        if ((0, import_fs14.existsSync)(this.graphPath)) {
+          const buf = (0, import_fs14.readFileSync)(this.graphPath);
           let count = 0;
           for (let i = 0; i < buf.length; i++) {
             if (buf[i] === 10) count++;
@@ -7042,9 +7066,9 @@ var init_task_graph = __esm({
         }
       }
       loadIndex() {
-        if ((0, import_fs13.existsSync)(this.indexPath)) {
+        if ((0, import_fs14.existsSync)(this.indexPath)) {
           try {
-            const data = JSON.parse((0, import_fs13.readFileSync)(this.indexPath, "utf-8"));
+            const data = JSON.parse((0, import_fs14.readFileSync)(this.indexPath, "utf-8"));
             this.index = new Map(Object.entries(data).map(([k, v]) => [k, Number(v)]));
           } catch {
           }
@@ -7052,10 +7076,10 @@ var init_task_graph = __esm({
       }
       /** Save index to disk (call explicitly, not on every append) */
       flushIndex() {
-        (0, import_fs13.writeFileSync)(this.indexPath, JSON.stringify(Object.fromEntries(this.index)));
+        (0, import_fs14.writeFileSync)(this.indexPath, JSON.stringify(Object.fromEntries(this.index)));
       }
       appendEvent(event) {
-        (0, import_fs13.appendFileSync)(this.graphPath, JSON.stringify(event) + "\n");
+        (0, import_fs14.appendFileSync)(this.graphPath, JSON.stringify(event) + "\n");
         if ("taskId" in event) {
           this.index.set(event.taskId, this.eventCount);
         }
@@ -7137,8 +7161,8 @@ var init_task_graph = __esm({
       }
       // ── Read methods ─────────────────────────────────────────────────────
       readEvents() {
-        if (!(0, import_fs13.existsSync)(this.graphPath)) return [];
-        const content = (0, import_fs13.readFileSync)(this.graphPath, "utf-8");
+        if (!(0, import_fs14.existsSync)(this.graphPath)) return [];
+        const content = (0, import_fs14.readFileSync)(this.graphPath, "utf-8");
         const lines = content.trim().split("\n").filter(Boolean);
         const tail = lines.slice(-MAX_SCAN_LINES);
         return tail.map((line) => {
@@ -7220,14 +7244,14 @@ var init_task_graph = __esm({
         return this.eventCount;
       }
       getSyncMeta() {
-        if (!(0, import_fs13.existsSync)(this.syncMetaPath)) {
+        if (!(0, import_fs14.existsSync)(this.syncMetaPath)) {
           return { lastSync: "", lastSyncEventCount: 0 };
         }
-        return JSON.parse((0, import_fs13.readFileSync)(this.syncMetaPath, "utf-8"));
+        return JSON.parse((0, import_fs14.readFileSync)(this.syncMetaPath, "utf-8"));
       }
       updateSyncMeta(meta3) {
         const current = this.getSyncMeta();
-        (0, import_fs13.writeFileSync)(this.syncMetaPath, JSON.stringify({ ...current, ...meta3 }, null, 2));
+        (0, import_fs14.writeFileSync)(this.syncMetaPath, JSON.stringify({ ...current, ...meta3 }, null, 2));
       }
       getUnsynced(lastSyncTimestamp) {
         if (!lastSyncTimestamp) return this.readEvents();
@@ -7277,12 +7301,12 @@ var init_skill_parser = __esm({
 });
 
 // packages/orchestrator/src/skill-catalog.ts
-var import_fs14, import_path16, SkillCatalog;
+var import_fs15, import_path17, SkillCatalog;
 var init_skill_catalog = __esm({
   "packages/orchestrator/src/skill-catalog.ts"() {
     "use strict";
-    import_fs14 = require("fs");
-    import_path16 = require("path");
+    import_fs15 = require("fs");
+    import_path17 = require("path");
     init_skill_name();
     init_skill_parser();
     SkillCatalog = class {
@@ -7291,11 +7315,11 @@ var init_skill_catalog = __esm({
       projectSkillsDir;
       projectFileMtimes = /* @__PURE__ */ new Map();
       constructor(projectRoot, catalogPath) {
-        const defaultPath = catalogPath || (0, import_path16.resolve)(__dirname, "default-skills", "catalog.json");
-        this.defaultSkillsDir = (0, import_path16.resolve)(__dirname, "default-skills");
-        this.projectSkillsDir = projectRoot ? (0, import_path16.join)(projectRoot, ".gossip", "skills") : null;
+        const defaultPath = catalogPath || (0, import_path17.resolve)(__dirname, "default-skills", "catalog.json");
+        this.defaultSkillsDir = (0, import_path17.resolve)(__dirname, "default-skills");
+        this.projectSkillsDir = projectRoot ? (0, import_path17.join)(projectRoot, ".gossip", "skills") : null;
         try {
-          const raw = (0, import_fs14.readFileSync)(defaultPath, "utf-8");
+          const raw = (0, import_fs15.readFileSync)(defaultPath, "utf-8");
           const data = JSON.parse(raw);
           this.entries = data.skills.map((s) => ({
             ...s,
@@ -7333,7 +7357,7 @@ var init_skill_catalog = __esm({
       }
       validate() {
         const issues = [];
-        const mdFiles = (0, import_fs14.readdirSync)(this.defaultSkillsDir).filter((f) => f.endsWith(".md")).map((f) => normalizeSkillName(f.replace(".md", "")));
+        const mdFiles = (0, import_fs15.readdirSync)(this.defaultSkillsDir).filter((f) => f.endsWith(".md")).map((f) => normalizeSkillName(f.replace(".md", "")));
         for (const file2 of mdFiles) {
           if (!this.entries.find((e) => e.name === file2)) {
             issues.push(`Skill file '${file2}' has no catalog entry`);
@@ -7342,15 +7366,15 @@ var init_skill_catalog = __esm({
         return issues;
       }
       loadProjectSkills() {
-        if (!this.projectSkillsDir || !(0, import_fs14.existsSync)(this.projectSkillsDir)) return;
-        const files = (0, import_fs14.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
+        if (!this.projectSkillsDir || !(0, import_fs15.existsSync)(this.projectSkillsDir)) return;
+        const files = (0, import_fs15.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
         const newMtimes = /* @__PURE__ */ new Map();
         for (const file2 of files) {
-          const filePath = (0, import_path16.join)(this.projectSkillsDir, file2);
+          const filePath = (0, import_path17.join)(this.projectSkillsDir, file2);
           try {
-            const mtime = (0, import_fs14.statSync)(filePath).mtimeMs;
+            const mtime = (0, import_fs15.statSync)(filePath).mtimeMs;
             newMtimes.set(file2, mtime);
-            const content = (0, import_fs14.readFileSync)(filePath, "utf-8");
+            const content = (0, import_fs15.readFileSync)(filePath, "utf-8");
             const fm = parseSkillFrontmatter(content);
             if (!fm) continue;
             const entry = {
@@ -7372,14 +7396,14 @@ var init_skill_catalog = __esm({
         this.projectFileMtimes = newMtimes;
       }
       reloadIfChanged() {
-        if (!this.projectSkillsDir || !(0, import_fs14.existsSync)(this.projectSkillsDir)) return;
-        const files = (0, import_fs14.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
+        if (!this.projectSkillsDir || !(0, import_fs15.existsSync)(this.projectSkillsDir)) return;
+        const files = (0, import_fs15.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
         let changed = files.length !== this.projectFileMtimes.size;
         if (!changed) {
           for (const file2 of files) {
-            const filePath = (0, import_path16.join)(this.projectSkillsDir, file2);
+            const filePath = (0, import_path17.join)(this.projectSkillsDir, file2);
             try {
-              const mtime = (0, import_fs14.statSync)(filePath).mtimeMs;
+              const mtime = (0, import_fs15.statSync)(filePath).mtimeMs;
               if (mtime !== this.projectFileMtimes.get(file2)) {
                 changed = true;
                 break;
@@ -7400,12 +7424,12 @@ var init_skill_catalog = __esm({
 });
 
 // packages/orchestrator/src/skill-gap-tracker.ts
-var import_fs15, import_path17, MAX_LOG_LINES, TRUNCATE_TO, SkillGapTracker;
+var import_fs16, import_path18, MAX_LOG_LINES, TRUNCATE_TO, SkillGapTracker;
 var init_skill_gap_tracker = __esm({
   "packages/orchestrator/src/skill-gap-tracker.ts"() {
     "use strict";
-    import_fs15 = require("fs");
-    import_path17 = require("path");
+    import_fs16 = require("fs");
+    import_path18 = require("path");
     init_skill_name();
     MAX_LOG_LINES = 5e3;
     TRUNCATE_TO = 1e3;
@@ -7414,8 +7438,8 @@ var init_skill_gap_tracker = __esm({
       resolutionsPath;
       resolutionsCache = null;
       constructor(projectRoot) {
-        this.gapLogPath = (0, import_path17.join)(projectRoot, ".gossip", "skill-gaps.jsonl");
-        this.resolutionsPath = (0, import_path17.join)(projectRoot, ".gossip", "skill-resolutions.json");
+        this.gapLogPath = (0, import_path18.join)(projectRoot, ".gossip", "skill-gaps.jsonl");
+        this.resolutionsPath = (0, import_path18.join)(projectRoot, ".gossip", "skill-resolutions.json");
         this.migrateResolutions();
       }
       checkThresholds() {
@@ -7443,9 +7467,9 @@ var init_skill_gap_tracker = __esm({
         const normalized = normalizeSkillName(skillName);
         const resolutions = this.loadResolutions();
         resolutions[normalized] = (/* @__PURE__ */ new Date()).toISOString();
-        const dir = (0, import_path17.join)(this.resolutionsPath, "..");
-        if (!(0, import_fs15.existsSync)(dir)) (0, import_fs15.mkdirSync)(dir, { recursive: true });
-        (0, import_fs15.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
+        const dir = (0, import_path18.join)(this.resolutionsPath, "..");
+        if (!(0, import_fs16.existsSync)(dir)) (0, import_fs16.mkdirSync)(dir, { recursive: true });
+        (0, import_fs16.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
         this.resolutionsCache = resolutions;
       }
       getSuggestionsSince(agentId, sinceMs) {
@@ -7478,9 +7502,9 @@ var init_skill_gap_tracker = __esm({
         );
       }
       readSuggestions() {
-        if (!(0, import_fs15.existsSync)(this.gapLogPath)) return [];
+        if (!(0, import_fs16.existsSync)(this.gapLogPath)) return [];
         try {
-          const lines = (0, import_fs15.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
+          const lines = (0, import_fs16.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
           return lines.map((line) => {
             try {
               return JSON.parse(line);
@@ -7494,12 +7518,12 @@ var init_skill_gap_tracker = __esm({
       }
       loadResolutions() {
         if (this.resolutionsCache) return this.resolutionsCache;
-        if (!(0, import_fs15.existsSync)(this.resolutionsPath)) {
+        if (!(0, import_fs16.existsSync)(this.resolutionsPath)) {
           this.resolutionsCache = {};
           return this.resolutionsCache;
         }
         try {
-          this.resolutionsCache = JSON.parse((0, import_fs15.readFileSync)(this.resolutionsPath, "utf-8"));
+          this.resolutionsCache = JSON.parse((0, import_fs16.readFileSync)(this.resolutionsPath, "utf-8"));
           return this.resolutionsCache;
         } catch {
           this.resolutionsCache = {};
@@ -7507,10 +7531,10 @@ var init_skill_gap_tracker = __esm({
         }
       }
       migrateResolutions() {
-        if ((0, import_fs15.existsSync)(this.resolutionsPath)) return;
-        if (!(0, import_fs15.existsSync)(this.gapLogPath)) return;
+        if ((0, import_fs16.existsSync)(this.resolutionsPath)) return;
+        if (!(0, import_fs16.existsSync)(this.gapLogPath)) return;
         try {
-          const lines = (0, import_fs15.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
+          const lines = (0, import_fs16.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
           const resolutions = {};
           for (const line of lines) {
             try {
@@ -7522,21 +7546,21 @@ var init_skill_gap_tracker = __esm({
             }
           }
           if (Object.keys(resolutions).length > 0) {
-            const dir = (0, import_path17.join)(this.resolutionsPath, "..");
-            if (!(0, import_fs15.existsSync)(dir)) (0, import_fs15.mkdirSync)(dir, { recursive: true });
-            (0, import_fs15.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
+            const dir = (0, import_path18.join)(this.resolutionsPath, "..");
+            if (!(0, import_fs16.existsSync)(dir)) (0, import_fs16.mkdirSync)(dir, { recursive: true });
+            (0, import_fs16.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
             this.resolutionsCache = resolutions;
           }
         } catch {
         }
       }
       truncateIfNeeded() {
-        if (!(0, import_fs15.existsSync)(this.gapLogPath)) return;
+        if (!(0, import_fs16.existsSync)(this.gapLogPath)) return;
         try {
-          const content = (0, import_fs15.readFileSync)(this.gapLogPath, "utf-8");
+          const content = (0, import_fs16.readFileSync)(this.gapLogPath, "utf-8");
           const lines = content.trim().split("\n").filter(Boolean);
           if (lines.length > MAX_LOG_LINES) {
-            (0, import_fs15.writeFileSync)(this.gapLogPath, lines.slice(-TRUNCATE_TO).join("\n") + "\n");
+            (0, import_fs16.writeFileSync)(this.gapLogPath, lines.slice(-TRUNCATE_TO).join("\n") + "\n");
           }
         } catch {
         }
@@ -7546,11 +7570,11 @@ var init_skill_gap_tracker = __esm({
 });
 
 // packages/orchestrator/src/scope-tracker.ts
-var import_path18, ScopeTracker;
+var import_path19, ScopeTracker;
 var init_scope_tracker = __esm({
   "packages/orchestrator/src/scope-tracker.ts"() {
     "use strict";
-    import_path18 = require("path");
+    import_path19 = require("path");
     ScopeTracker = class {
       // taskId → scope (for release)
       constructor(projectRoot) {
@@ -7561,8 +7585,8 @@ var init_scope_tracker = __esm({
       taskToScope = /* @__PURE__ */ new Map();
       normalize(scope) {
         if (!scope || !scope.trim()) throw new Error("Scope must not be empty");
-        const abs = (0, import_path18.resolve)(this.projectRoot, scope);
-        const rel = (0, import_path18.relative)(this.projectRoot, abs);
+        const abs = (0, import_path19.resolve)(this.projectRoot, scope);
+        const rel = (0, import_path19.relative)(this.projectRoot, abs);
         if (rel.startsWith("..")) throw new Error(`Scope "${scope}" resolves outside project root`);
         if (rel === "") throw new Error(`Scope "${scope}" resolves to project root \u2014 too broad`);
         return rel.endsWith("/") ? rel : rel + "/";
@@ -7600,14 +7624,14 @@ var init_scope_tracker = __esm({
 });
 
 // packages/orchestrator/src/worktree-manager.ts
-var import_child_process3, import_util5, import_promises2, import_path19, import_os, execFileAsync3, WorktreeManager;
+var import_child_process3, import_util5, import_promises2, import_path20, import_os, execFileAsync3, WorktreeManager;
 var init_worktree_manager = __esm({
   "packages/orchestrator/src/worktree-manager.ts"() {
     "use strict";
     import_child_process3 = require("child_process");
     import_util5 = require("util");
     import_promises2 = require("fs/promises");
-    import_path19 = require("path");
+    import_path20 = require("path");
     import_os = require("os");
     execFileAsync3 = (0, import_util5.promisify)(import_child_process3.execFile);
     WorktreeManager = class {
@@ -7616,7 +7640,7 @@ var init_worktree_manager = __esm({
       }
       async create(taskId) {
         const branch = `gossip-${taskId}`;
-        const wtPath = await (0, import_promises2.mkdtemp)((0, import_path19.join)((0, import_os.tmpdir)(), "gossip-wt-"));
+        const wtPath = await (0, import_promises2.mkdtemp)((0, import_path20.join)((0, import_os.tmpdir)(), "gossip-wt-"));
         await execFileAsync3("git", ["branch", branch, "HEAD"], { cwd: this.projectRoot });
         try {
           await execFileAsync3("git", ["worktree", "add", wtPath, branch], { cwd: this.projectRoot });
@@ -7681,12 +7705,12 @@ var init_worktree_manager = __esm({
 });
 
 // packages/orchestrator/src/consensus-engine.ts
-var import_promises3, import_path20, SUMMARY_HEADER, FALLBACK_MAX_LENGTH, MAX_SUMMARY_LENGTH, MAX_CROSS_REVIEW_ENTRIES, VALID_ACTIONS, ConsensusEngine;
+var import_promises3, import_path21, SUMMARY_HEADER, FALLBACK_MAX_LENGTH, MAX_SUMMARY_LENGTH, MAX_CROSS_REVIEW_ENTRIES, VALID_ACTIONS, ConsensusEngine;
 var init_consensus_engine = __esm({
   "packages/orchestrator/src/consensus-engine.ts"() {
     "use strict";
     import_promises3 = require("fs/promises");
-    import_path20 = require("path");
+    import_path21 = require("path");
     SUMMARY_HEADER = "## Consensus Summary";
     FALLBACK_MAX_LENGTH = 2e3;
     MAX_SUMMARY_LENGTH = 3e3;
@@ -8109,20 +8133,20 @@ ${snippet}`);
         const root = this.config.projectRoot;
         const fileName = fileRef.split("/").pop();
         try {
-          await (0, import_promises3.stat)((0, import_path20.join)(root, fileRef));
-          return (0, import_path20.join)(root, fileRef);
+          await (0, import_promises3.stat)((0, import_path21.join)(root, fileRef));
+          return (0, import_path21.join)(root, fileRef);
         } catch {
         }
         if (fileName !== fileRef) {
           try {
-            await (0, import_promises3.stat)((0, import_path20.join)(root, fileName));
-            return (0, import_path20.join)(root, fileName);
+            await (0, import_promises3.stat)((0, import_path21.join)(root, fileName));
+            return (0, import_path21.join)(root, fileName);
           } catch {
           }
         }
         const searchDirs = ["packages", "src", "apps", "tests", "test", "tools", "scripts", "lib"];
         for (const dir of searchDirs) {
-          const found = await this.findFile((0, import_path20.join)(root, dir), fileName);
+          const found = await this.findFile((0, import_path21.join)(root, dir), fileName);
           if (found) return found;
         }
         return null;
@@ -8131,7 +8155,7 @@ ${snippet}`);
         try {
           const entries = await (0, import_promises3.readdir)(dir, { withFileTypes: true });
           for (const entry of entries) {
-            const fullPath = (0, import_path20.join)(dir, entry.name);
+            const fullPath = (0, import_path21.join)(dir, entry.name);
             if (entry.isFile() && entry.name === fileName) return fullPath;
             if (entry.isDirectory() && entry.name !== "node_modules" && entry.name !== ".git") {
               const found = await this.findFile(fullPath, fileName);
@@ -8373,26 +8397,26 @@ ${snippet}`);
 });
 
 // packages/orchestrator/src/performance-writer.ts
-var import_fs16, import_path21, PerformanceWriter;
+var import_fs17, import_path22, PerformanceWriter;
 var init_performance_writer = __esm({
   "packages/orchestrator/src/performance-writer.ts"() {
     "use strict";
-    import_fs16 = require("fs");
-    import_path21 = require("path");
+    import_fs17 = require("fs");
+    import_path22 = require("path");
     PerformanceWriter = class {
       filePath;
       constructor(projectRoot) {
-        const dir = (0, import_path21.join)(projectRoot, ".gossip");
-        if (!(0, import_fs16.existsSync)(dir)) (0, import_fs16.mkdirSync)(dir, { recursive: true });
-        this.filePath = (0, import_path21.join)(dir, "agent-performance.jsonl");
+        const dir = (0, import_path22.join)(projectRoot, ".gossip");
+        if (!(0, import_fs17.existsSync)(dir)) (0, import_fs17.mkdirSync)(dir, { recursive: true });
+        this.filePath = (0, import_path22.join)(dir, "agent-performance.jsonl");
       }
       appendSignal(signal) {
-        (0, import_fs16.appendFileSync)(this.filePath, JSON.stringify(signal) + "\n");
+        (0, import_fs17.appendFileSync)(this.filePath, JSON.stringify(signal) + "\n");
       }
       appendSignals(signals) {
         if (signals.length === 0) return;
         const data = signals.map((s) => JSON.stringify(s)).join("\n") + "\n";
-        (0, import_fs16.appendFileSync)(this.filePath, data);
+        (0, import_fs17.appendFileSync)(this.filePath, data);
       }
     };
   }
@@ -8438,13 +8462,13 @@ function shouldSkipConsensus(task, agents, costMode, agreementHistory) {
   const firstWord = task.trim().split(/\s+/)[0] || "";
   return OBSERVATION_VERBS.test(firstWord);
 }
-var import_crypto9, import_fs17, import_path22, log2, DispatchPipeline, SECURITY_KEYWORDS, OBSERVATION_VERBS;
+var import_crypto9, import_fs18, import_path23, log2, DispatchPipeline, SECURITY_KEYWORDS, OBSERVATION_VERBS;
 var init_dispatch_pipeline = __esm({
   "packages/orchestrator/src/dispatch-pipeline.ts"() {
     "use strict";
     import_crypto9 = require("crypto");
-    import_fs17 = require("fs");
-    import_path22 = require("path");
+    import_fs18 = require("fs");
+    import_path23 = require("path");
     init_skill_loader();
     init_prompt_assembler();
     init_agent_memory();
@@ -8520,12 +8544,12 @@ var init_dispatch_pipeline = __esm({
         }
         this.worktreeManager.pruneOrphans().catch((err) => log2(`Orphan cleanup failed: ${err.message}`));
         try {
-          const projectMemDir = (0, import_path22.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory");
-          (0, import_fs17.mkdirSync)(projectMemDir, { recursive: true });
+          const projectMemDir = (0, import_path23.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory");
+          (0, import_fs18.mkdirSync)(projectMemDir, { recursive: true });
         } catch {
         }
         try {
-          const gossipPath = (0, import_path22.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
+          const gossipPath = (0, import_path23.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
           const { existsSync: ex, readFileSync: rf } = require("fs");
           if (ex(gossipPath)) {
             const lines = rf(gossipPath, "utf-8").trim().split("\n").filter(Boolean);
@@ -8590,9 +8614,9 @@ var init_dispatch_pipeline = __esm({
         const specRefs = extractSpecReferences(task);
         if (specRefs.length > 0) {
           try {
-            const specPath = (0, import_path22.resolve)(this.projectRoot, specRefs[0]);
+            const specPath = (0, import_path23.resolve)(this.projectRoot, specRefs[0]);
             if (specPath.startsWith(this.projectRoot + "/") || specPath === this.projectRoot) {
-              const specContent = (0, import_fs17.readFileSync)(specPath, "utf-8");
+              const specContent = (0, import_fs18.readFileSync)(specPath, "utf-8");
               const implFiles = extractSpecReferences(task, specContent);
               const enrichment = buildSpecReviewEnrichment(implFiles);
               if (enrichment) specReviewContext = enrichment;
@@ -8600,7 +8624,7 @@ var init_dispatch_pipeline = __esm({
           } catch {
           }
         }
-        const memoryDir = (0, import_path22.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "knowledge");
+        const memoryDir = (0, import_path23.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "knowledge");
         const promptContent = assemblePrompt({
           memory: memory || void 0,
           memoryDir,
@@ -9447,9 +9471,9 @@ ${topFindings}`;
               this.sessionGossip.shift();
             }
             try {
-              const gossipPath = (0, import_path22.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
-              (0, import_fs17.mkdirSync)((0, import_path22.dirname)(gossipPath), { recursive: true });
-              (0, import_fs17.appendFileSync)(gossipPath, JSON.stringify({ agentId, taskSummary: summary, timestamp: Date.now() }) + "\n");
+              const gossipPath = (0, import_path23.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
+              (0, import_fs18.mkdirSync)((0, import_path23.dirname)(gossipPath), { recursive: true });
+              (0, import_fs18.appendFileSync)(gossipPath, JSON.stringify({ agentId, taskSummary: summary, timestamp: Date.now() }) + "\n");
             } catch {
             }
           }
@@ -9712,13 +9736,13 @@ function parseYamlLikeToolCall(content) {
   const args = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   return { tool, args };
 }
-var import_fs18, import_path23, log3, AGENT_ID_RE3, TAG_PATTERN, BLOCK_RE, BLOCK_IN_FENCE_RE, ToolRouter, ToolExecutor;
+var import_fs19, import_path24, log3, AGENT_ID_RE3, TAG_PATTERN, BLOCK_RE, BLOCK_IN_FENCE_RE, ToolRouter, ToolExecutor;
 var init_tool_router = __esm({
   "packages/orchestrator/src/tool-router.ts"() {
     "use strict";
     init_tool_definitions();
-    import_fs18 = require("fs");
-    import_path23 = require("path");
+    import_fs19 = require("fs");
+    import_path24 = require("path");
     log3 = (msg) => process.stderr.write(`[tool-router] ${msg}
 `);
     AGENT_ID_RE3 = /^[a-zA-Z0-9_-]+$/;
@@ -10124,12 +10148,12 @@ ${agentOutputs}` }
           const fsp = await import("fs/promises");
           const updatedIds = [];
           for (const id of pending.agentIds) {
-            const agentDir = (0, import_path23.join)(this.projectRoot, ".gossip", "agents", id);
-            const filePath = (0, import_path23.join)(agentDir, "instructions.md");
-            if (!(0, import_fs18.existsSync)(agentDir)) {
+            const agentDir = (0, import_path24.join)(this.projectRoot, ".gossip", "agents", id);
+            const filePath = (0, import_path24.join)(agentDir, "instructions.md");
+            if (!(0, import_fs19.existsSync)(agentDir)) {
               await fsp.mkdir(agentDir, { recursive: true });
             }
-            if ((0, import_fs18.existsSync)(filePath)) {
+            if ((0, import_fs19.existsSync)(filePath)) {
               await fsp.appendFile(filePath, `
 
 ${pending.instruction}`, "utf-8");
@@ -10243,9 +10267,9 @@ ${collectResult.consensus.summary}`;
       async handlePlan(args) {
         let task = String(args.task);
         try {
-          const specPath = (0, import_path23.join)(this.projectRoot, ".gossip", "spec.md");
-          if ((0, import_fs18.existsSync)(specPath)) {
-            const spec = (0, import_fs18.readFileSync)(specPath, "utf-8");
+          const specPath = (0, import_path24.join)(this.projectRoot, ".gossip", "spec.md");
+          if ((0, import_fs19.existsSync)(specPath)) {
+            const spec = (0, import_fs19.readFileSync)(specPath, "utf-8");
             task = `${task}
 
 [Project Spec]
@@ -10303,11 +10327,11 @@ ${taskLines.join("\n")}`,
         if (!this.llm) {
           return { text: "Tool error: LLM not available for spec generation" };
         }
-        const specPath = (0, import_path23.join)(this.projectRoot, ".gossip", "spec.md");
+        const specPath = (0, import_path24.join)(this.projectRoot, ".gossip", "spec.md");
         let existingSpec = "";
         try {
-          if ((0, import_fs18.existsSync)(specPath)) {
-            existingSpec = (0, import_fs18.readFileSync)(specPath, "utf-8");
+          if ((0, import_fs19.existsSync)(specPath)) {
+            existingSpec = (0, import_fs19.readFileSync)(specPath, "utf-8");
           }
         } catch {
         }
@@ -10343,7 +10367,7 @@ Keep it SHORT \u2014 under 30 lines. This is a working document, not a design do
         const specContent = response.text || "";
         try {
           const { mkdirSync: mkdirSync14, writeFileSync: writeFS } = require("fs");
-          mkdirSync14((0, import_path23.join)(this.projectRoot, ".gossip"), { recursive: true });
+          mkdirSync14((0, import_path24.join)(this.projectRoot, ".gossip"), { recursive: true });
           writeFS(specPath, specContent, "utf-8");
         } catch (err) {
           return { text: `Spec generated but failed to save: ${err.message}
@@ -10381,11 +10405,11 @@ ${lines.join("\n")}` };
         if (!this.registry.get(agentId)) {
           return { text: `Tool error: agent "${agentId}" not found in registry` };
         }
-        const tasksPath = (0, import_path23.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
-        if (!(0, import_fs18.existsSync)(tasksPath)) {
+        const tasksPath = (0, import_path24.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
+        if (!(0, import_fs19.existsSync)(tasksPath)) {
           return { text: `Agent "${agentId}" \u2014 no task history found.` };
         }
-        const rawLines = (0, import_fs18.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+        const rawLines = (0, import_fs19.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
         const last5 = rawLines.slice(-5).map((line) => {
           try {
             return JSON.parse(line);
@@ -10402,11 +10426,11 @@ Last ${last5.length} tasks:
 ${formatted.join("\n")}` };
       }
       handleAgentPerformance() {
-        const perfPath = (0, import_path23.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
-        if (!(0, import_fs18.existsSync)(perfPath)) {
+        const perfPath = (0, import_path24.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
+        if (!(0, import_fs19.existsSync)(perfPath)) {
           return { text: "No performance data found." };
         }
-        const rawLines = (0, import_fs18.readFileSync)(perfPath, "utf-8").trim().split("\n").filter(Boolean);
+        const rawLines = (0, import_fs19.readFileSync)(perfPath, "utf-8").trim().split("\n").filter(Boolean);
         const last20 = rawLines.slice(-20).map((line) => {
           try {
             return JSON.parse(line);
@@ -10457,11 +10481,11 @@ Instruction: "${instruction}"`,
         if (!this.registry.get(agentId)) {
           return { text: `Tool error: agent "${agentId}" not found in registry` };
         }
-        const tasksPath = (0, import_path23.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
-        if (!(0, import_fs18.existsSync)(tasksPath)) {
+        const tasksPath = (0, import_path24.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
+        if (!(0, import_fs19.existsSync)(tasksPath)) {
           return { text: `No task history for agent "${agentId}".` };
         }
-        const rawLines = (0, import_fs18.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+        const rawLines = (0, import_fs19.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
         const entries = rawLines.slice(-limit).map((line) => {
           try {
             return JSON.parse(line);
@@ -10521,17 +10545,17 @@ ${formatted.join("\n")}` };
 });
 
 // packages/orchestrator/src/archetype-catalog.ts
-var import_fs19, import_path24, DEFAULT_PATH, ArchetypeCatalog;
+var import_fs20, import_path25, DEFAULT_PATH, ArchetypeCatalog;
 var init_archetype_catalog = __esm({
   "packages/orchestrator/src/archetype-catalog.ts"() {
     "use strict";
-    import_fs19 = require("fs");
-    import_path24 = require("path");
-    DEFAULT_PATH = (0, import_path24.resolve)(__dirname, "..", "..", "..", "data", "archetypes.json");
+    import_fs20 = require("fs");
+    import_path25 = require("path");
+    DEFAULT_PATH = (0, import_path25.resolve)(__dirname, "..", "..", "..", "data", "archetypes.json");
     ArchetypeCatalog = class {
       archetypes;
       constructor(catalogPath) {
-        const raw = (0, import_fs19.readFileSync)(catalogPath ?? DEFAULT_PATH, "utf-8");
+        const raw = (0, import_fs20.readFileSync)(catalogPath ?? DEFAULT_PATH, "utf-8");
         this.archetypes = JSON.parse(raw);
       }
       /** Return all archetype IDs */
@@ -10581,13 +10605,13 @@ var init_archetype_catalog = __esm({
 });
 
 // packages/orchestrator/src/project-initializer.ts
-var import_fs20, import_path25, SIGNAL_DIRS, SIGNAL_FILES, LANG_FILES, ProjectInitializer;
+var import_fs21, import_path26, SIGNAL_DIRS, SIGNAL_FILES, LANG_FILES, ProjectInitializer;
 var init_project_initializer = __esm({
   "packages/orchestrator/src/project-initializer.ts"() {
     "use strict";
     init_archetype_catalog();
-    import_fs20 = require("fs");
-    import_path25 = require("path");
+    import_fs21 = require("fs");
+    import_path26 = require("path");
     SIGNAL_DIRS = [
       "src",
       "pages",
@@ -10619,16 +10643,16 @@ var init_project_initializer = __esm({
         this.config = config2;
       }
       scanDirectory(root) {
-        const absRoot = (0, import_path25.resolve)(root);
+        const absRoot = (0, import_path26.resolve)(root);
         const signals = { dependencies: [], directories: [], files: [] };
         for (const [file2, lang] of Object.entries(LANG_FILES)) {
-          if (this.safeExists(absRoot, (0, import_path25.join)(absRoot, file2))) signals.language = lang;
+          if (this.safeExists(absRoot, (0, import_path26.join)(absRoot, file2))) signals.language = lang;
         }
-        const pkgPath = (0, import_path25.join)(absRoot, "package.json");
+        const pkgPath = (0, import_path26.join)(absRoot, "package.json");
         if (this.safeExists(absRoot, pkgPath)) {
           signals.files.push("package.json");
           try {
-            const pkg = JSON.parse((0, import_fs20.readFileSync)(pkgPath, "utf-8"));
+            const pkg = JSON.parse((0, import_fs21.readFileSync)(pkgPath, "utf-8"));
             signals.dependencies = [
               ...Object.keys(pkg.dependencies || {}),
               ...Object.keys(pkg.devDependencies || {})
@@ -10638,18 +10662,18 @@ var init_project_initializer = __esm({
           if (!signals.language) signals.language = "JavaScript";
         }
         for (const dir of SIGNAL_DIRS) {
-          const p = (0, import_path25.join)(absRoot, dir);
+          const p = (0, import_path26.join)(absRoot, dir);
           if (this.safeExists(absRoot, p) && this.isDir(p)) signals.directories.push(`${dir}/`);
         }
-        const wfPath = (0, import_path25.join)(absRoot, ".github", "workflows");
+        const wfPath = (0, import_path26.join)(absRoot, ".github", "workflows");
         if (this.safeExists(absRoot, wfPath) && this.isDir(wfPath)) {
           signals.directories.push(".github/workflows/");
         }
         for (const file2 of SIGNAL_FILES) {
-          if (this.safeExists(absRoot, (0, import_path25.join)(absRoot, file2))) signals.files.push(file2);
+          if (this.safeExists(absRoot, (0, import_path26.join)(absRoot, file2))) signals.files.push(file2);
         }
         for (const file2 of Object.keys(LANG_FILES)) {
-          if (this.safeExists(absRoot, (0, import_path25.join)(absRoot, file2))) signals.files.push(file2);
+          if (this.safeExists(absRoot, (0, import_path26.join)(absRoot, file2))) signals.files.push(file2);
         }
         return signals;
       }
@@ -10781,13 +10805,13 @@ ${agentList}`,
       }
       async writeConfig(projectRoot) {
         if (!this.pendingProposal) throw new Error("No pending proposal to write");
-        const gossipDir = (0, import_path25.join)(projectRoot, ".gossip");
-        if (!(0, import_fs20.existsSync)(gossipDir)) (0, import_fs20.mkdirSync)(gossipDir, { recursive: true });
+        const gossipDir = (0, import_path26.join)(projectRoot, ".gossip");
+        if (!(0, import_fs21.existsSync)(gossipDir)) (0, import_fs21.mkdirSync)(gossipDir, { recursive: true });
         const agents = {};
         for (const a of this.pendingProposal.agents || []) {
           agents[a.id] = { provider: a.provider, model: a.model, preset: a.preset, skills: a.skills || [] };
-          const agentDir = (0, import_path25.join)(gossipDir, "agents", a.id);
-          if (!(0, import_fs20.existsSync)(agentDir)) (0, import_fs20.mkdirSync)(agentDir, { recursive: true });
+          const agentDir = (0, import_path26.join)(gossipDir, "agents", a.id);
+          if (!(0, import_fs21.existsSync)(agentDir)) (0, import_fs21.mkdirSync)(agentDir, { recursive: true });
         }
         const config2 = {
           main_agent: this.pendingProposal.main_agent,
@@ -10798,20 +10822,20 @@ ${agentList}`,
           },
           agents
         };
-        (0, import_fs20.writeFileSync)((0, import_path25.join)(gossipDir, "config.json"), JSON.stringify(config2, null, 2));
+        (0, import_fs21.writeFileSync)((0, import_path26.join)(gossipDir, "config.json"), JSON.stringify(config2, null, 2));
       }
       safeExists(root, target) {
-        const resolved = (0, import_path25.resolve)(target);
+        const resolved = (0, import_path26.resolve)(target);
         if (!resolved.startsWith(root)) return false;
         try {
-          return !(0, import_fs20.lstatSync)(resolved).isSymbolicLink();
+          return !(0, import_fs21.lstatSync)(resolved).isSymbolicLink();
         } catch {
           return false;
         }
       }
       isDir(target) {
         try {
-          return (0, import_fs20.lstatSync)(target).isDirectory();
+          return (0, import_fs21.lstatSync)(target).isDirectory();
         } catch {
           return false;
         }
@@ -10821,12 +10845,12 @@ ${agentList}`,
 });
 
 // packages/orchestrator/src/team-manager.ts
-var import_fs21, import_path26, TeamManager;
+var import_fs22, import_path27, TeamManager;
 var init_team_manager = __esm({
   "packages/orchestrator/src/team-manager.ts"() {
     "use strict";
-    import_fs21 = require("fs");
-    import_path26 = require("path");
+    import_fs22 = require("fs");
+    import_path27 = require("path");
     TeamManager = class {
       registry;
       pipeline;
@@ -10882,8 +10906,8 @@ var init_team_manager = __esm({
       applyAdd(config2) {
         this.registry.register(config2);
         this.writeConfig();
-        const dir = (0, import_path26.join)(this.projectRoot, ".gossip", "agents", config2.id);
-        if (!(0, import_fs21.existsSync)(dir)) (0, import_fs21.mkdirSync)(dir, { recursive: true });
+        const dir = (0, import_path27.join)(this.projectRoot, ".gossip", "agents", config2.id);
+        if (!(0, import_fs22.existsSync)(dir)) (0, import_fs22.mkdirSync)(dir, { recursive: true });
         this.pendingAction = null;
       }
       applyRemove(agentId) {
@@ -10917,11 +10941,11 @@ var init_team_manager = __esm({
         };
       }
       writeConfig() {
-        const configPath = (0, import_path26.join)(this.projectRoot, ".gossip", "config.json");
+        const configPath = (0, import_path27.join)(this.projectRoot, ".gossip", "config.json");
         let existing = {};
-        if ((0, import_fs21.existsSync)(configPath)) {
+        if ((0, import_fs22.existsSync)(configPath)) {
           try {
-            existing = JSON.parse((0, import_fs21.readFileSync)(configPath, "utf-8"));
+            existing = JSON.parse((0, import_fs22.readFileSync)(configPath, "utf-8"));
           } catch {
           }
         }
@@ -10933,9 +10957,9 @@ var init_team_manager = __esm({
           ...a.preset ? { preset: a.preset } : {},
           skills: a.skills
         }));
-        const dir = (0, import_path26.join)(this.projectRoot, ".gossip");
-        if (!(0, import_fs21.existsSync)(dir)) (0, import_fs21.mkdirSync)(dir, { recursive: true });
-        (0, import_fs21.writeFileSync)(configPath, JSON.stringify(existing, null, 2) + "\n");
+        const dir = (0, import_path27.join)(this.projectRoot, ".gossip");
+        if (!(0, import_fs22.existsSync)(dir)) (0, import_fs22.mkdirSync)(dir, { recursive: true });
+        (0, import_fs22.writeFileSync)(configPath, JSON.stringify(existing, null, 2) + "\n");
       }
     };
   }
@@ -10949,12 +10973,12 @@ __export(competency_profiler_exports, {
 function clamp2(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
-var import_fs22, import_path27, DECAY_HALF_LIFE, MIN_TASKS_THRESHOLD, MAX_ACCURACY_CHANGE_PER_ROUND, AGREEMENT_WEIGHT, DISAGREEMENT_WEIGHT, CompetencyProfiler;
+var import_fs23, import_path28, DECAY_HALF_LIFE, MIN_TASKS_THRESHOLD, MAX_ACCURACY_CHANGE_PER_ROUND, AGREEMENT_WEIGHT, DISAGREEMENT_WEIGHT, CompetencyProfiler;
 var init_competency_profiler = __esm({
   "packages/orchestrator/src/competency-profiler.ts"() {
     "use strict";
-    import_fs22 = require("fs");
-    import_path27 = require("path");
+    import_fs23 = require("fs");
+    import_path28 = require("path");
     DECAY_HALF_LIFE = 50;
     MIN_TASKS_THRESHOLD = 10;
     MAX_ACCURACY_CHANGE_PER_ROUND = 0.3;
@@ -10965,7 +10989,7 @@ var init_competency_profiler = __esm({
       cachedProfiles = null;
       cachedMtimeMs = 0;
       constructor(projectRoot) {
-        this.filePath = (0, import_path27.join)(projectRoot, ".gossip", "agent-performance.jsonl");
+        this.filePath = (0, import_path28.join)(projectRoot, ".gossip", "agent-performance.jsonl");
       }
       getProfile(agentId) {
         const profiles = this.getProfiles();
@@ -10974,7 +10998,7 @@ var init_competency_profiler = __esm({
       getProfiles() {
         let mtimeMs = 0;
         try {
-          mtimeMs = (0, import_fs22.statSync)(this.filePath).mtimeMs;
+          mtimeMs = (0, import_fs23.statSync)(this.filePath).mtimeMs;
         } catch {
         }
         if (this.cachedProfiles && mtimeMs === this.cachedMtimeMs) {
@@ -11152,9 +11176,9 @@ var init_competency_profiler = __esm({
         return result;
       }
       readSignals() {
-        if (!(0, import_fs22.existsSync)(this.filePath)) return [];
+        if (!(0, import_fs23.existsSync)(this.filePath)) return [];
         try {
-          return (0, import_fs22.readFileSync)(this.filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
+          return (0, import_fs23.readFileSync)(this.filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
             try {
               return JSON.parse(line);
             } catch {
@@ -11385,8 +11409,8 @@ message: Your question?
       }
       /** Start all worker agents (connect to relay) */
       async start() {
-        const { existsSync: existsSync25, readFileSync: readFileSync27 } = await import("fs");
-        const { join: join29 } = await import("path");
+        const { existsSync: existsSync26, readFileSync: readFileSync27 } = await import("fs");
+        const { join: join30 } = await import("path");
         for (const config2 of this.registry.getAll()) {
           if (config2.native) continue;
           if (this.workers.has(config2.id)) continue;
@@ -11395,8 +11419,8 @@ message: Your question?
             apiKey = await this.keyProviderFn(config2.provider) ?? void 0;
           }
           const llm = createProvider(config2.provider, config2.model, apiKey);
-          const instructionsPath = join29(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
-          const instructions = existsSync25(instructionsPath) ? readFileSync27(instructionsPath, "utf-8") : void 0;
+          const instructionsPath = join30(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
+          const instructions = existsSync26(instructionsPath) ? readFileSync27(instructionsPath, "utf-8") : void 0;
           const enableWebSearch = config2.preset === "researcher" || config2.skills.includes("research");
           const worker = new WorkerAgent(config2.id, llm, this.relayUrl, ALL_TOOLS, instructions, enableWebSearch);
           await worker.start();
@@ -11549,16 +11573,16 @@ message: Your question?
         this.registry.register(config2);
       }
       async syncWorkers(keyProvider) {
-        const { existsSync: existsSync25, readFileSync: readFileSync27 } = await import("fs");
-        const { join: join29 } = await import("path");
+        const { existsSync: existsSync26, readFileSync: readFileSync27 } = await import("fs");
+        const { join: join30 } = await import("path");
         let added = 0;
         for (const ac of this.registry.getAll()) {
           if (ac.native) continue;
           if (this.workers.has(ac.id)) continue;
           const key = await keyProvider(ac.provider);
           const llm = createProvider(ac.provider, ac.model, key ?? void 0);
-          const instructionsPath = join29(this.projectRoot, ".gossip", "agents", ac.id, "instructions.md");
-          const instructions = existsSync25(instructionsPath) ? readFileSync27(instructionsPath, "utf-8") : void 0;
+          const instructionsPath = join30(this.projectRoot, ".gossip", "agents", ac.id, "instructions.md");
+          const instructions = existsSync26(instructionsPath) ? readFileSync27(instructionsPath, "utf-8") : void 0;
           const enableWebSearch = ac.preset === "researcher" || ac.skills.includes("research");
           const worker = new WorkerAgent(ac.id, llm, this.relayUrl, ALL_TOOLS, instructions, enableWebSearch);
           await worker.start();
@@ -12099,12 +12123,12 @@ function safeId(value) {
   }
   return encodeURIComponent(value);
 }
-var import_fs23, import_path28, TaskGraphSync;
+var import_fs24, import_path29, TaskGraphSync;
 var init_task_graph_sync = __esm({
   "packages/orchestrator/src/task-graph-sync.ts"() {
     "use strict";
-    import_fs23 = require("fs");
-    import_path28 = require("path");
+    import_fs24 = require("fs");
+    import_path29 = require("path");
     TaskGraphSync = class {
       constructor(graph, supabaseUrl, supabaseKey, userId, projectId, projectRoot, displayName, migration) {
         this.graph = graph;
@@ -12114,7 +12138,7 @@ var init_task_graph_sync = __esm({
         this.projectId = projectId;
         this.displayName = displayName;
         this.migration = migration;
-        this.gossipDir = (0, import_path28.join)(projectRoot, ".gossip");
+        this.gossipDir = (0, import_path29.join)(projectRoot, ".gossip");
       }
       gossipDir;
       migrationDone = false;
@@ -12237,9 +12261,9 @@ var init_task_graph_sync = __esm({
         });
       }
       async syncAgentScores() {
-        const perfPath = (0, import_path28.join)(this.gossipDir, "agent-performance.jsonl");
-        if (!(0, import_fs23.existsSync)(perfPath)) return 0;
-        const content = (0, import_fs23.readFileSync)(perfPath, "utf-8");
+        const perfPath = (0, import_path29.join)(this.gossipDir, "agent-performance.jsonl");
+        if (!(0, import_fs24.existsSync)(perfPath)) return 0;
+        const content = (0, import_fs24.readFileSync)(perfPath, "utf-8");
         const lines = content.trim().split("\n").filter(Boolean);
         const meta3 = this.graph.getSyncMeta();
         let synced = 0;
@@ -12385,12 +12409,12 @@ Return JSON: { "<agentId>": "<summary>", ... }`
 });
 
 // packages/orchestrator/src/bootstrap.ts
-var import_fs24, import_path29, log4, BootstrapGenerator;
+var import_fs25, import_path30, log4, BootstrapGenerator;
 var init_bootstrap = __esm({
   "packages/orchestrator/src/bootstrap.ts"() {
     "use strict";
-    import_fs24 = require("fs");
-    import_path29 = require("path");
+    import_fs25 = require("fs");
+    import_path30 = require("path");
     log4 = (msg) => process.stderr.write(`[gossipcat] ${msg}
 `);
     BootstrapGenerator = class {
@@ -12412,23 +12436,23 @@ var init_bootstrap = __esm({
         };
       }
       migrateConfig() {
-        const oldPath = (0, import_path29.resolve)(this.projectRoot, "gossip.agents.json");
-        const newPath = (0, import_path29.resolve)(this.projectRoot, ".gossip", "config.json");
-        if (!(0, import_fs24.existsSync)(newPath) && (0, import_fs24.existsSync)(oldPath)) {
-          (0, import_fs24.mkdirSync)((0, import_path29.resolve)(this.projectRoot, ".gossip"), { recursive: true });
-          (0, import_fs24.copyFileSync)(oldPath, newPath);
+        const oldPath = (0, import_path30.resolve)(this.projectRoot, "gossip.agents.json");
+        const newPath = (0, import_path30.resolve)(this.projectRoot, ".gossip", "config.json");
+        if (!(0, import_fs25.existsSync)(newPath) && (0, import_fs25.existsSync)(oldPath)) {
+          (0, import_fs25.mkdirSync)((0, import_path30.resolve)(this.projectRoot, ".gossip"), { recursive: true });
+          (0, import_fs25.copyFileSync)(oldPath, newPath);
           log4("Migrated config to .gossip/config.json \u2014 gossip.agents.json is now ignored.");
         }
       }
       loadConfig() {
         const paths = [
-          (0, import_path29.resolve)(this.projectRoot, ".gossip", "config.json"),
-          (0, import_path29.resolve)(this.projectRoot, "gossip.agents.json")
+          (0, import_path30.resolve)(this.projectRoot, ".gossip", "config.json"),
+          (0, import_path30.resolve)(this.projectRoot, "gossip.agents.json")
         ];
         for (const p of paths) {
-          if ((0, import_fs24.existsSync)(p)) {
+          if ((0, import_fs25.existsSync)(p)) {
             try {
-              return JSON.parse((0, import_fs24.readFileSync)(p, "utf-8"));
+              return JSON.parse((0, import_fs25.readFileSync)(p, "utf-8"));
             } catch {
               log4("Config parse error, falling back to setup mode");
               return null;
@@ -12449,9 +12473,9 @@ var init_bootstrap = __esm({
             skills: ac.skills || [],
             taskCount: 0
           };
-          const tasksPath = (0, import_path29.join)(this.projectRoot, ".gossip", "agents", id, "memory", "tasks.jsonl");
-          if ((0, import_fs24.existsSync)(tasksPath)) {
-            const lines = (0, import_fs24.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+          const tasksPath = (0, import_path30.join)(this.projectRoot, ".gossip", "agents", id, "memory", "tasks.jsonl");
+          if ((0, import_fs25.existsSync)(tasksPath)) {
+            const lines = (0, import_fs25.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
             let count = 0;
             let lastTs = "";
             for (const line of lines) {
@@ -12465,9 +12489,9 @@ var init_bootstrap = __esm({
             summary.taskCount = count;
             if (lastTs) summary.lastActive = lastTs.split("T")[0];
           }
-          const memPath = (0, import_path29.join)(this.projectRoot, ".gossip", "agents", id, "memory", "MEMORY.md");
-          if ((0, import_fs24.existsSync)(memPath)) {
-            const content = (0, import_fs24.readFileSync)(memPath, "utf-8").slice(0, 500);
+          const memPath = (0, import_path30.join)(this.projectRoot, ".gossip", "agents", id, "memory", "MEMORY.md");
+          if ((0, import_fs25.existsSync)(memPath)) {
+            const content = (0, import_fs25.readFileSync)(memPath, "utf-8").slice(0, 500);
             const knowledgeLines = content.match(/- \[([^\]]+)\]/g);
             if (knowledgeLines?.length) {
               summary.topics = knowledgeLines.map((l) => l.replace(/- \[([^\]]+)\].*/, "$1")).join(", ");
@@ -12668,13 +12692,13 @@ Skills are auto-injected from agent config. Project-wide skills in .gossip/skill
        * Returns the body content of the top knowledge files, capped at 2500 chars.
        */
       readProjectMemory() {
-        const knowledgeDir = (0, import_path29.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "knowledge");
-        if (!(0, import_fs24.existsSync)(knowledgeDir)) return null;
-        const files = (0, import_fs24.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
+        const knowledgeDir = (0, import_path30.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "knowledge");
+        if (!(0, import_fs25.existsSync)(knowledgeDir)) return null;
+        const files = (0, import_fs25.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
         if (files.length === 0) return null;
         const scored = files.map((f) => {
           try {
-            const content = (0, import_fs24.readFileSync)((0, import_path29.join)(knowledgeDir, f), "utf-8");
+            const content = (0, import_fs25.readFileSync)((0, import_path30.join)(knowledgeDir, f), "utf-8");
             const importance = parseFloat(content.match(/importance:\s*([\d.]+)/)?.[1] ?? "0.5");
             const isPinned = /pinned:\s*true/i.test(content);
             const tsPart = f.slice(0, 19);
@@ -12699,9 +12723,9 @@ Skills are auto-injected from agent config. Project-wide skills in .gossip/skill
        * Annotates TODO/remaining lines where the referenced tool actually exists.
        */
       verifyToolClaims(content) {
-        const mcpPath = (0, import_path29.join)(this.projectRoot, "apps", "cli", "src", "mcp-server-sdk.ts");
-        if (!(0, import_fs24.existsSync)(mcpPath)) return content;
-        const rawSource = (0, import_fs24.readFileSync)(mcpPath, "utf-8");
+        const mcpPath = (0, import_path30.join)(this.projectRoot, "apps", "cli", "src", "mcp-server-sdk.ts");
+        if (!(0, import_fs25.existsSync)(mcpPath)) return content;
+        const rawSource = (0, import_fs25.readFileSync)(mcpPath, "utf-8");
         const source = rawSource.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, "");
         const keywordRe = /TODO|remaining|deferred|needed|pending/i;
         const toolRe = /gossip_\w+/;
@@ -12719,10 +12743,10 @@ Skills are auto-injected from agent config. Project-wide skills in .gossip/skill
       }
       /** Read .gossip/next-session.md if it exists — user/orchestrator notes for the next session */
       readNextSessionNotes() {
-        const notesPath = (0, import_path29.join)(this.projectRoot, ".gossip", "next-session.md");
-        if (!(0, import_fs24.existsSync)(notesPath)) return null;
+        const notesPath = (0, import_path30.join)(this.projectRoot, ".gossip", "next-session.md");
+        if (!(0, import_fs25.existsSync)(notesPath)) return null;
         try {
-          const content = (0, import_fs24.readFileSync)(notesPath, "utf-8").trim();
+          const content = (0, import_fs25.readFileSync)(notesPath, "utf-8").trim();
           if (content.length === 0) return null;
           return this.verifyToolClaims(content.slice(0, 2e3));
         } catch {
@@ -12839,12 +12863,12 @@ Return ONLY the JSON array, no other text.`
 });
 
 // packages/orchestrator/src/skill-generator.ts
-var import_fs25, import_path30, SAFE_NAME, KNOWN_CATEGORIES, REQUIRED_SECTIONS, BUNDLED_TEMPLATE, SkillGenerator;
+var import_fs26, import_path31, SAFE_NAME, KNOWN_CATEGORIES, REQUIRED_SECTIONS, BUNDLED_TEMPLATE, SkillGenerator;
 var init_skill_generator = __esm({
   "packages/orchestrator/src/skill-generator.ts"() {
     "use strict";
-    import_fs25 = require("fs");
-    import_path30 = require("path");
+    import_fs26 = require("fs");
+    import_path31 = require("path");
     init_skill_name();
     SAFE_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
     KNOWN_CATEGORIES = /* @__PURE__ */ new Set([
@@ -12921,9 +12945,9 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST.
           }
         }
         let projectContext = "";
-        const bootstrapPath = (0, import_path30.join)(this.projectRoot, ".gossip", "bootstrap.md");
-        if ((0, import_fs25.existsSync)(bootstrapPath)) {
-          projectContext = (0, import_fs25.readFileSync)(bootstrapPath, "utf-8").slice(0, 2e3);
+        const bootstrapPath = (0, import_path31.join)(this.projectRoot, ".gossip", "bootstrap.md");
+        if ((0, import_fs26.existsSync)(bootstrapPath)) {
+          projectContext = (0, import_fs26.readFileSync)(bootstrapPath, "utf-8").slice(0, 2e3);
         }
         const totalDispatches = agentProfile?.totalTasks ?? 0;
         const categoryConfirmations = findings.filter((f) => f.agentId === agentId).length;
@@ -12982,10 +13006,10 @@ Requirements:
         }
         this.validateSkillContent(cleaned);
         const skillName = normalizeSkillName(category);
-        const skillDir = (0, import_path30.join)(this.projectRoot, ".gossip", "agents", agentId, "skills");
-        (0, import_fs25.mkdirSync)(skillDir, { recursive: true });
-        const skillPath = (0, import_path30.join)(skillDir, `${skillName}.md`);
-        (0, import_fs25.writeFileSync)(skillPath, cleaned);
+        const skillDir = (0, import_path31.join)(this.projectRoot, ".gossip", "agents", agentId, "skills");
+        (0, import_fs26.mkdirSync)(skillDir, { recursive: true });
+        const skillPath = (0, import_path31.join)(skillDir, `${skillName}.md`);
+        (0, import_fs26.writeFileSync)(skillPath, cleaned);
         return { path: skillPath, content: cleaned };
       }
       validateSkillContent(content) {
@@ -13003,24 +13027,24 @@ Requirements:
         }
       }
       loadTemplate() {
-        const userDir = (0, import_path30.join)(this.projectRoot, ".gossip", "skill-templates");
-        if ((0, import_fs25.existsSync)(userDir)) {
-          const files = (0, import_fs25.readdirSync)(userDir).filter((f) => f.endsWith(".md"));
+        const userDir = (0, import_path31.join)(this.projectRoot, ".gossip", "skill-templates");
+        if ((0, import_fs26.existsSync)(userDir)) {
+          const files = (0, import_fs26.readdirSync)(userDir).filter((f) => f.endsWith(".md"));
           if (files.length > 0) {
-            return (0, import_fs25.readFileSync)((0, import_path30.join)(userDir, files[0]), "utf-8");
+            return (0, import_fs26.readFileSync)((0, import_path31.join)(userDir, files[0]), "utf-8");
           }
         }
         const home = process.env.HOME || process.env.USERPROFILE || "";
-        const cacheBase = (0, import_path30.join)(home, ".claude", "plugins", "cache", "claude-plugins-official", "superpowers");
-        if ((0, import_fs25.existsSync)(cacheBase)) {
+        const cacheBase = (0, import_path31.join)(home, ".claude", "plugins", "cache", "claude-plugins-official", "superpowers");
+        if ((0, import_fs26.existsSync)(cacheBase)) {
           try {
-            const versions = (0, import_fs25.readdirSync)(cacheBase).sort().reverse();
+            const versions = (0, import_fs26.readdirSync)(cacheBase).sort().reverse();
             for (const ver of versions) {
-              const skillPath = (0, import_path30.join)(cacheBase, ver, "skills", "systematic-debugging", "SKILL.md");
-              if ((0, import_fs25.existsSync)(skillPath)) {
-                const realPath = (0, import_fs25.realpathSync)(skillPath);
-                if (realPath.startsWith((0, import_path30.resolve)(cacheBase))) {
-                  return (0, import_fs25.readFileSync)(realPath, "utf-8");
+              const skillPath = (0, import_path31.join)(cacheBase, ver, "skills", "systematic-debugging", "SKILL.md");
+              if ((0, import_fs26.existsSync)(skillPath)) {
+                const realPath = (0, import_fs26.realpathSync)(skillPath);
+                if (realPath.startsWith((0, import_path31.resolve)(cacheBase))) {
+                  return (0, import_fs26.readFileSync)(realPath, "utf-8");
                 }
               }
             }
@@ -13030,10 +13054,10 @@ Requirements:
         return BUNDLED_TEMPLATE;
       }
       loadCategoryFindings(category) {
-        const filePath = (0, import_path30.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
-        if (!(0, import_fs25.existsSync)(filePath)) return [];
+        const filePath = (0, import_path31.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
+        if (!(0, import_fs26.existsSync)(filePath)) return [];
         try {
-          return (0, import_fs25.readFileSync)(filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
+          return (0, import_fs26.readFileSync)(filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
             try {
               return JSON.parse(line);
             } catch {
@@ -13051,12 +13075,12 @@ Requirements:
 });
 
 // packages/orchestrator/src/consensus-judge.ts
-var import_fs26, import_path31, log5, ConsensusJudge;
+var import_fs27, import_path32, log5, ConsensusJudge;
 var init_consensus_judge = __esm({
   "packages/orchestrator/src/consensus-judge.ts"() {
     "use strict";
-    import_fs26 = require("fs");
-    import_path31 = require("path");
+    import_fs27 = require("fs");
+    import_path32 = require("path");
     log5 = (msg) => process.stderr.write(`[consensus-judge] ${msg}
 `);
     ConsensusJudge = class {
@@ -13126,12 +13150,12 @@ For each, return: [{"index": 1, "verdict": "VERIFIED|REFUTED|UNVERIFIABLE", "evi
       readCodeSnippet(fileRef, line) {
         const fileName = fileRef.split("/").pop();
         let filePath = null;
-        const direct = (0, import_path31.join)(this.projectRoot, fileRef);
-        if ((0, import_fs26.existsSync)(direct)) {
+        const direct = (0, import_path32.join)(this.projectRoot, fileRef);
+        if ((0, import_fs27.existsSync)(direct)) {
           filePath = direct;
         } else {
           for (const dir of ["packages", "src", "apps"]) {
-            const found = this.findFileSync((0, import_path31.join)(this.projectRoot, dir), fileName);
+            const found = this.findFileSync((0, import_path32.join)(this.projectRoot, dir), fileName);
             if (found) {
               filePath = found;
               break;
@@ -13140,7 +13164,7 @@ For each, return: [{"index": 1, "verdict": "VERIFIED|REFUTED|UNVERIFIABLE", "evi
         }
         if (!filePath) return null;
         try {
-          const content = (0, import_fs26.readFileSync)(filePath, "utf-8");
+          const content = (0, import_fs27.readFileSync)(filePath, "utf-8");
           const lines = content.split("\n");
           if (line > lines.length) return null;
           const start = Math.max(0, line - 4);
@@ -13152,9 +13176,9 @@ For each, return: [{"index": 1, "verdict": "VERIFIED|REFUTED|UNVERIFIABLE", "evi
       }
       findFileSync(dir, fileName) {
         try {
-          const entries = (0, import_fs26.readdirSync)(dir, { withFileTypes: true });
+          const entries = (0, import_fs27.readdirSync)(dir, { withFileTypes: true });
           for (const entry of entries) {
-            const fullPath = (0, import_path31.join)(dir, entry.name);
+            const fullPath = (0, import_path32.join)(dir, entry.name);
             if (entry.isFile() && entry.name === fileName) return fullPath;
             if (entry.isDirectory() && entry.name !== "node_modules" && entry.name !== ".git") {
               const found = this.findFileSync(fullPath, fileName);
@@ -13280,18 +13304,18 @@ __export(config_exports, {
 function findConfigPath(projectRoot) {
   const root = projectRoot || process.cwd();
   const candidates = [
-    (0, import_path32.resolve)(root, ".gossip", "config.json"),
-    (0, import_path32.resolve)(root, "gossip.agents.json"),
-    (0, import_path32.resolve)(root, "gossip.agents.yaml"),
-    (0, import_path32.resolve)(root, "gossip.agents.yml")
+    (0, import_path33.resolve)(root, ".gossip", "config.json"),
+    (0, import_path33.resolve)(root, "gossip.agents.json"),
+    (0, import_path33.resolve)(root, "gossip.agents.yaml"),
+    (0, import_path33.resolve)(root, "gossip.agents.yml")
   ];
   for (const p of candidates) {
-    if ((0, import_fs27.existsSync)(p)) return p;
+    if ((0, import_fs28.existsSync)(p)) return p;
   }
   return null;
 }
 function loadConfig(configPath) {
-  const raw = (0, import_fs27.readFileSync)(configPath, "utf-8");
+  const raw = (0, import_fs28.readFileSync)(configPath, "utf-8");
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -13343,19 +13367,19 @@ function configToAgentConfigs(config2) {
 }
 function loadClaudeSubagents(projectRoot, existingIds) {
   const root = projectRoot || process.cwd();
-  const agentsDir = (0, import_path32.join)(root, ".claude", "agents");
-  if (!(0, import_fs27.existsSync)(agentsDir)) return [];
+  const agentsDir = (0, import_path33.join)(root, ".claude", "agents");
+  if (!(0, import_fs28.existsSync)(agentsDir)) return [];
   let files;
   try {
-    files = (0, import_fs27.readdirSync)(agentsDir).filter((f) => f.endsWith(".md"));
+    files = (0, import_fs28.readdirSync)(agentsDir).filter((f) => f.endsWith(".md"));
   } catch {
     return [];
   }
   const agents = [];
   for (const file2 of files) {
-    const filePath = (0, import_path32.join)(agentsDir, file2);
+    const filePath = (0, import_path33.join)(agentsDir, file2);
     try {
-      const content = (0, import_fs27.readFileSync)(filePath, "utf-8");
+      const content = (0, import_fs28.readFileSync)(filePath, "utf-8");
       const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
       if (!frontmatter) continue;
       const fm = frontmatter[1];
@@ -13417,12 +13441,12 @@ function inferSkills(description, name) {
   if (skills.length === 0) skills.push("general");
   return skills;
 }
-var import_fs27, import_path32, VALID_PROVIDERS, CLAUDE_MODEL_MAP;
+var import_fs28, import_path33, VALID_PROVIDERS, CLAUDE_MODEL_MAP;
 var init_config = __esm({
   "apps/cli/src/config.ts"() {
     "use strict";
-    import_fs27 = require("fs");
-    import_path32 = require("path");
+    import_fs28 = require("fs");
+    import_path33 = require("path");
     VALID_PROVIDERS = ["anthropic", "openai", "google", "local"];
     CLAUDE_MODEL_MAP = {
       opus: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -13572,17 +13596,17 @@ __export(identity_exports, {
   normalizeGitUrl: () => normalizeGitUrl
 });
 function getOrCreateSalt(projectRoot) {
-  const saltPath = (0, import_path33.join)(projectRoot, ".gossip", "local-salt");
+  const saltPath = (0, import_path34.join)(projectRoot, ".gossip", "local-salt");
   try {
-    return (0, import_fs28.readFileSync)(saltPath, "utf-8").trim();
+    return (0, import_fs29.readFileSync)(saltPath, "utf-8").trim();
   } catch {
     const salt = (0, import_crypto10.randomBytes)(16).toString("hex");
-    (0, import_fs28.mkdirSync)((0, import_path33.join)(projectRoot, ".gossip"), { recursive: true });
+    (0, import_fs29.mkdirSync)((0, import_path34.join)(projectRoot, ".gossip"), { recursive: true });
     try {
-      (0, import_fs28.writeFileSync)(saltPath, salt, { flag: "wx" });
+      (0, import_fs29.writeFileSync)(saltPath, salt, { flag: "wx" });
       return salt;
     } catch {
-      return (0, import_fs28.readFileSync)(saltPath, "utf-8").trim();
+      return (0, import_fs29.readFileSync)(saltPath, "utf-8").trim();
     }
   }
 }
@@ -13632,12 +13656,12 @@ function getProjectId(projectRoot) {
   }
   return (0, import_crypto10.createHash)("sha256").update(projectRoot).digest("hex").slice(0, 16);
 }
-var import_fs28, import_path33, import_crypto10, import_child_process5;
+var import_fs29, import_path34, import_crypto10, import_child_process5;
 var init_identity = __esm({
   "apps/cli/src/identity.ts"() {
     "use strict";
-    import_fs28 = require("fs");
-    import_path33 = require("path");
+    import_fs29 = require("fs");
+    import_path34 = require("path");
     import_crypto10 = require("crypto");
     import_child_process5 = require("child_process");
   }
@@ -27521,10 +27545,10 @@ async function doBoot() {
     }
     const key = await keychain.getKey(ac.provider);
     const llm = m.createProvider(ac.provider, ac.model, key ?? void 0);
-    const { existsSync: existsSync25, readFileSync: readFileSync27 } = require("fs");
-    const { join: join29 } = require("path");
-    const instructionsPath = join29(process.cwd(), ".gossip", "agents", ac.id, "instructions.md");
-    const instructions = existsSync25(instructionsPath) ? readFileSync27(instructionsPath, "utf-8") : void 0;
+    const { existsSync: existsSync26, readFileSync: readFileSync27 } = require("fs");
+    const { join: join30 } = require("path");
+    const instructionsPath = join30(process.cwd(), ".gossip", "agents", ac.id, "instructions.md");
+    const instructions = existsSync26(instructionsPath) ? readFileSync27(instructionsPath, "utf-8") : void 0;
     const worker = new m.WorkerAgent(ac.id, llm, relay.url, m.ALL_TOOLS, instructions);
     worker.setOnTaskComplete?.((event) => {
       try {
@@ -28541,9 +28565,9 @@ server.tool(
     const generator = new BootstrapGenerator2(process.cwd());
     const result = generator.generate();
     const { writeFileSync: writeFileSync13, mkdirSync: mkdirSync14 } = require("fs");
-    const { join: join29 } = require("path");
-    mkdirSync14(join29(process.cwd(), ".gossip"), { recursive: true });
-    writeFileSync13(join29(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
+    const { join: join30 } = require("path");
+    mkdirSync14(join30(process.cwd(), ".gossip"), { recursive: true });
+    writeFileSync13(join30(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
     return { content: [{ type: "text", text: result.prompt }] };
   }
 );
@@ -28572,7 +28596,7 @@ server.tool(
   },
   async ({ main_provider, main_model, agents }) => {
     const { writeFileSync: writeFileSync13, mkdirSync: mkdirSync14 } = require("fs");
-    const { join: join29 } = require("path");
+    const { join: join30 } = require("path");
     const root = process.cwd();
     const CLAUDE_MODEL_MAP2 = {
       opus: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -28610,9 +28634,9 @@ server.tool(
           "",
           body
         ].join("\n");
-        const agentsDir = join29(root, ".claude", "agents");
+        const agentsDir = join30(root, ".claude", "agents");
         mkdirSync14(agentsDir, { recursive: true });
-        writeFileSync13(join29(agentsDir, `${agent.id}.md`), md, "utf-8");
+        writeFileSync13(join30(agentsDir, `${agent.id}.md`), md, "utf-8");
         nativeCreated.push(agent.id);
         configAgents[agent.id] = {
           provider: mapped.provider,
@@ -28638,9 +28662,9 @@ server.tool(
         };
         customCreated.push(agent.id);
         if (agent.instructions) {
-          const instrDir = join29(root, ".gossip", "agents", agent.id);
+          const instrDir = join30(root, ".gossip", "agents", agent.id);
           mkdirSync14(instrDir, { recursive: true });
-          writeFileSync13(join29(instrDir, "instructions.md"), agent.instructions, "utf-8");
+          writeFileSync13(join30(instrDir, "instructions.md"), agent.instructions, "utf-8");
         }
       }
     }
@@ -28654,11 +28678,11 @@ server.tool(
     } catch (err) {
       return { content: [{ type: "text", text: `Invalid config: ${err.message}` }] };
     }
-    mkdirSync14(join29(root, ".gossip"), { recursive: true });
-    writeFileSync13(join29(root, ".gossip", "config.json"), JSON.stringify(config2, null, 2));
+    mkdirSync14(join30(root, ".gossip"), { recursive: true });
+    writeFileSync13(join30(root, ".gossip", "config.json"), JSON.stringify(config2, null, 2));
     const agentList = Object.entries(configAgents).map(([id, a]) => `- ${id}: ${a.provider}/${a.model} (${a.preset || "custom"})`).join("\n");
-    const rulesDir = join29(root, env.rulesDir);
-    const rulesFile = join29(root, env.rulesFile);
+    const rulesDir = join30(root, env.rulesDir);
+    const rulesFile = join30(root, env.rulesFile);
     mkdirSync14(rulesDir, { recursive: true });
     writeFileSync13(rulesFile, `# Gossipcat \u2014 Multi-Agent Orchestration
 
@@ -29093,12 +29117,12 @@ server.tool(
     if (findings.length === 0) {
       return { content: [{ type: "text", text: "No findings to log." }] };
     }
-    const { appendFileSync: appendFileSync7, mkdirSync: mkdirSync14, existsSync: existsSync25 } = require("fs");
-    const { join: join29 } = require("path");
+    const { appendFileSync: appendFileSync7, mkdirSync: mkdirSync14, existsSync: existsSync26 } = require("fs");
+    const { join: join30 } = require("path");
     const root = process.cwd();
-    const dir = join29(root, ".gossip");
-    if (!existsSync25(dir)) mkdirSync14(dir, { recursive: true });
-    const filePath = join29(dir, "implementation-findings.jsonl");
+    const dir = join30(root, ".gossip");
+    if (!existsSync26(dir)) mkdirSync14(dir, { recursive: true });
+    const filePath = join30(dir, "implementation-findings.jsonl");
     const timestamp = (/* @__PURE__ */ new Date()).toISOString();
     const data = findings.map((f) => JSON.stringify({
       timestamp,
@@ -29139,10 +29163,10 @@ server.tool(
     agent_id: external_exports.string().optional().describe("Filter by implementer agent ID. Omit to see all.")
   },
   async ({ agent_id }) => {
-    const { existsSync: existsSync25, readFileSync: readFileSync27 } = require("fs");
-    const { join: join29 } = require("path");
-    const filePath = join29(process.cwd(), ".gossip", "implementation-findings.jsonl");
-    if (!existsSync25(filePath)) {
+    const { existsSync: existsSync26, readFileSync: readFileSync27 } = require("fs");
+    const { join: join30 } = require("path");
+    const filePath = join30(process.cwd(), ".gossip", "implementation-findings.jsonl");
+    if (!existsSync26(filePath)) {
       return { content: [{ type: "text", text: "No implementation findings yet. Use gossip_log_finding to record findings after code reviews." }] };
     }
     const entries = [];
@@ -29210,15 +29234,15 @@ server.tool(
     const { SkillGapTracker: SkillGapTracker2, parseSkillFrontmatter: parseSkillFrontmatter2, normalizeSkillName: normalizeSkillName2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
     const tracker = new SkillGapTracker2(process.cwd());
     if (skills && skills.length > 0) {
-      const { writeFileSync: writeFileSync13, mkdirSync: mkdirSync14, existsSync: existsSync25, readFileSync: readFileSync27 } = require("fs");
-      const { join: join29 } = require("path");
-      const dir = join29(process.cwd(), ".gossip", "skills");
+      const { writeFileSync: writeFileSync13, mkdirSync: mkdirSync14, existsSync: existsSync26, readFileSync: readFileSync27 } = require("fs");
+      const { join: join30 } = require("path");
+      const dir = join30(process.cwd(), ".gossip", "skills");
       mkdirSync14(dir, { recursive: true });
       const results = [];
       for (const skill of skills) {
         const name = normalizeSkillName2(skill.name);
-        const filePath = join29(dir, `${name}.md`);
-        if (existsSync25(filePath)) {
+        const filePath = join30(dir, `${name}.md`);
+        if (existsSync26(filePath)) {
           const existing = readFileSync27(filePath, "utf-8");
           const fm = parseSkillFrontmatter2(existing);
           if (fm) {

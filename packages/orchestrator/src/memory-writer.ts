@@ -256,6 +256,13 @@ Rules:
 
     writeFileSync(join(knowledgeDir, filename), content);
 
+    // Write next-session.md so the next session gets prioritized action items
+    // This is the primary source of truth for session continuity — knowledge files
+    // are supplementary context, but next-session.md drives the opening briefing.
+    const nextSessionPath = join(this.projectRoot, '.gossip', 'next-session.md');
+    const nextSessionContent = `# Next Session Plan\n\n${summaryBody}\n`;
+    writeFileSync(nextSessionPath, nextSessionContent);
+
     // Write task entry for session tracking
     await this.writeTaskEntry('_project', {
       taskId: `session-${timestamp}`,
