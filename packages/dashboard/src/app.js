@@ -2,7 +2,7 @@
 
 // ── API Helper ──────────────────────────────────────────────────────────────
 async function api(path) {
-  const res = await fetch(`/dashboard/api/${path}`, { credentials: 'same-origin' });
+  const res = await fetch(`/dashboard/api/${path}`, { credentials: 'include' });
   if (res.status === 401) {
     showAuth();
     throw new Error('Unauthorized');
@@ -35,14 +35,14 @@ authForm.addEventListener('submit', async (e) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key }),
-      credentials: 'same-origin',
+      credentials: 'include',
     });
     if (!res.ok) {
       authError.hidden = false;
       return;
     }
     // Verify the cookie was actually set by making an authenticated call
-    const verify = await fetch('/dashboard/api/overview', { credentials: 'same-origin' });
+    const verify = await fetch('/dashboard/api/overview', { credentials: 'include' });
     if (verify.ok) {
       authError.hidden = true;
       showDashboard();
