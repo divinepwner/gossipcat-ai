@@ -289,7 +289,7 @@ async function doBoot() {
   keychain = new m.Keychain();
 
   relay = new m.RelayServer({
-    port: 0,
+    port: 24420,
     dashboard: {
       projectRoot: process.cwd(),
       agentConfigs: agentConfigs,
