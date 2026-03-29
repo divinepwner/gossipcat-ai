@@ -115,8 +115,18 @@ async function doBoot() {
   const agentConfigs = m.configToAgentConfigs(config);
   keychain = new m.Keychain();
 
-  relay = new m.RelayServer({ port: 0 });
+  relay = new m.RelayServer({
+    port: 0,
+    dashboard: {
+      projectRoot: process.cwd(),
+      agentConfigs: agentConfigs,
+    },
+  });
   await relay.start();
+
+  if (relay.dashboardUrl) {
+    process.stderr.write(`[gossipcat] Dashboard: ${relay.dashboardUrl} (key: ${relay.dashboardKeyPrefix}...)\n`);
+  }
 
   // Create performance writer for ATI signal collection
   const perfWriter = new m.PerformanceWriter(process.cwd());
