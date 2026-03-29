@@ -1,6 +1,7 @@
 import { overviewHandler } from '@gossip/relay/dashboard/api-overview';
 import { agentsHandler } from '@gossip/relay/dashboard/api-agents';
 import { skillsGetHandler, skillsBindHandler } from '@gossip/relay/dashboard/api-skills';
+import { memoryHandler } from '@gossip/relay/dashboard/api-memory';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -126,5 +127,55 @@ describe('Skills API', () => {
     const result = await skillsBindHandler(projectRoot, { agent_id: '../etc', skill: 'x', enabled: true });
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
+  });
+});
+
+describe('Memory API', () => {
+  let projectRoot: string;
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'gossip-dash-'));
+    mkdirSync(join(projectRoot, '.gossip', 'agents', 'agent-a', 'memory'), { recursive: true });
+  });
+
+  it('returns empty data for agent with no memory', async () => {
+    const result = await memoryHandler(projectRoot, 'agent-a');
+    expect(result.index).toBe('');
+    expect(result.knowledge).toEqual([]);
+    expect(result.tasks).toEqual([]);
+  });
+
+  it('reads MEMORY.md index', async () => {
+    const memDir = join(projectRoot, '.gossip', 'agents', 'agent-a', 'memory');
+    writeFileSync(join(memDir, 'MEMORY.md'), '# Agent A Memory\n- [Skill review](skill-review.md)');
+    const result = await memoryHandler(projectRoot, 'agent-a');
+    expect(result.index).toContain('Agent A Memory');
+  });
+
+  it('reads knowledge files with frontmatter', async () => {
+    const memDir = join(projectRoot, '.gossip', 'agents', 'agent-a', 'memory');
+    writeFileSync(join(memDir, 'MEMORY.md'), '');
+    writeFileSync(join(memDir, 'review.md'), '---\nname: review\ndescription: code review notes\nimportance: 3\n---\nSome content');
+    const result = await memoryHandler(projectRoot, 'agent-a');
+    expect(result.knowledge).toHaveLength(1);
+    expect(result.knowledge[0].filename).toBe('review.md');
+    expect(result.knowledge[0].content).toContain('Some content');
+  });
+
+  it('reads tasks.jsonl', async () => {
+    const memDir = join(projectRoot, '.gossip', 'agents', 'agent-a', 'memory');
+    writeFileSync(join(memDir, 'MEMORY.md'), '');
+    const task = { version: 1, taskId: 't1', task: 'review', skills: [], findings: 0, hallucinated: 0, scores: { relevance: 1, accuracy: 1, uniqueness: 0 }, warmth: 1, importance: 3, timestamp: '2026-01-01' };
+    writeFileSync(join(memDir, 'tasks.jsonl'), JSON.stringify(task) + '\n');
+    const result = await memoryHandler(projectRoot, 'agent-a');
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0].taskId).toBe('t1');
+  });
+
+  it('rejects path traversal in agentId', async () => {
+    await expect(memoryHandler(projectRoot, '../../../etc/passwd')).rejects.toThrow('Invalid agent ID');
+  });
+
+  it('rejects prototype-polluting agent IDs', async () => {
+    await expect(memoryHandler(projectRoot, '__proto__')).rejects.toThrow('Invalid agent ID');
   });
 });
