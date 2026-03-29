@@ -4,7 +4,6 @@
 async function api(path) {
   const res = await fetch(`/dashboard/api/${path}`, { credentials: 'include' });
   if (res.status === 401) {
-    showAuth();
     throw new Error('Unauthorized');
   }
   return res.json();
@@ -19,12 +18,15 @@ const authError = document.getElementById('auth-error');
 function showAuth() {
   authGate.hidden = false;
   dashboard.hidden = true;
+  // Close WebSocket if open
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
 }
 
 function showDashboard() {
   authGate.hidden = true;
   dashboard.hidden = false;
-  initDashboard();
+  connectWs();
+  loadTab('overview');
 }
 
 authForm.addEventListener('submit', async (e) => {
@@ -78,6 +80,7 @@ const eventListeners = [];
 function onDashboardEvent(fn) { eventListeners.push(fn); }
 
 function connectWs() {
+  if (ws) return; // already connected
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/dashboard/ws`);
 
@@ -89,7 +92,11 @@ function connectWs() {
   ws.onclose = () => {
     wsStatus.className = 'status-dot offline';
     wsLabel.textContent = 'Disconnected';
-    setTimeout(connectWs, 3000); // Reconnect after 3s
+    ws = null;
+    // Only reconnect if dashboard is visible (not on auth gate)
+    if (!dashboard.hidden) {
+      setTimeout(connectWs, 3000);
+    }
   };
 
   ws.onerror = () => ws.close();
@@ -111,15 +118,7 @@ async function loadTab(name) {
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────
-let initialized = false;
-async function initDashboard() {
-  if (initialized) return;
-  initialized = true;
-  connectWs();
-  loadTab('overview');
-}
-
-// Try loading dashboard directly (cookie may already be valid)
+// Check if already authenticated (valid cookie from previous session)
 api('overview').then(() => showDashboard()).catch(() => showAuth());
 
 // Make helpers available to tab modules
