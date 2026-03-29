@@ -6695,6 +6695,9 @@ function truncateAtWord(text, maxLen) {
   const lastSpace = truncated.lastIndexOf(" ");
   return (lastSpace > maxLen * 0.8 ? truncated.slice(0, lastSpace) : truncated) + "...";
 }
+function sanitizeYamlValue(str) {
+  return str.replace(/[\n\r]/g, " ").replace(/:/g, "-").replace(/"/g, "'").replace(/\s+/g, " ").trim();
+}
 function truncateStartAndEnd(text, maxLen) {
   if (text.length <= maxLen) return text;
   const head = Math.floor(maxLen * 0.25);
@@ -6865,6 +6868,7 @@ ${data.notes}` : ""
         ].filter(Boolean).join("\n\n");
         let summaryBody;
         let pinned = false;
+        let summaryOneLiner = "Session summary";
         if (this.summaryLlm) {
           try {
             const messages = [
@@ -6899,6 +6903,13 @@ Rules:
               pinned = true;
               summaryBody = summaryBody.replace(/^PINNED:true\s*\n?/, "");
             }
+            const firstBullet = summaryBody.match(/[-*]\s+\*\*([^*\n]+)\*\*/);
+            const firstSentence = summaryBody.replace(/^#+\s+.+$/gm, "").trim().split("\n").find((l) => l.trim().length > 10);
+            if (firstBullet) {
+              summaryOneLiner = sanitizeYamlValue(firstBullet[1].replace(/[:(].*/, "").trim().slice(0, 80));
+            } else if (firstSentence) {
+              summaryOneLiner = sanitizeYamlValue(firstSentence.replace(/^[-*]\s+/, "").replace(/\*\*/g, "").trim().slice(0, 80));
+            }
           } catch (err) {
             process.stderr.write(`[gossipcat] Session summary LLM failed: ${err.message}
 `);
@@ -6913,8 +6924,8 @@ ${rawInput.slice(0, 3e3)}`;
         }
         const content = [
           "---",
-          `name: Session ${today}`,
-          `description: Session summary`,
+          `name: Session ${today} \u2014 ${summaryOneLiner}`,
+          `description: ${summaryOneLiner}`,
           `importance: 0.95`,
           pinned ? `pinned: true` : "",
           `lastAccessed: ${today}`,
@@ -6932,7 +6943,7 @@ ${summaryBody}
         (0, import_fs15.writeFileSync)(nextSessionPath, nextSessionContent);
         await this.writeTaskEntry("_project", {
           taskId: `session-${timestamp}`,
-          task: `Session ${today}`,
+          task: `Session ${today}: ${summaryOneLiner}`,
           skills: [],
           scores: { relevance: 5, accuracy: 5, uniqueness: 5 }
         });

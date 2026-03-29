@@ -13,6 +13,11 @@ function truncateAtWord(text: string, maxLen: number): string {
 }
 
 /** Truncate by keeping start + end — tail-biased (25/75) since conclusions are at the end */
+/** Sanitize a string for use as a bare YAML value — strip newlines, colons, quotes */
+function sanitizeYamlValue(str: string): string {
+  return str.replace(/[\n\r]/g, ' ').replace(/:/g, '-').replace(/"/g, "'").replace(/\s+/g, ' ').trim();
+}
+
 function truncateStartAndEnd(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   const head = Math.floor(maxLen * 0.25);
@@ -214,6 +219,7 @@ Rules:
 
     let summaryBody: string;
     let pinned = false;
+    let summaryOneLiner = 'Session summary'; // Will be replaced by LLM extraction
 
     if (this.summaryLlm) {
       try {
@@ -252,6 +258,16 @@ Rules:
           pinned = true;
           summaryBody = summaryBody.replace(/^PINNED:true\s*\n?/, '');
         }
+
+        // Extract a meaningful one-liner from the summary for the description field
+        // Look for the first bullet point after "## What shipped" or first meaningful line
+        const firstBullet = summaryBody.match(/[-*]\s+\*\*([^*\n]+)\*\*/);
+        const firstSentence = summaryBody.replace(/^#+\s+.+$/gm, '').trim().split('\n').find(l => l.trim().length > 10);
+        if (firstBullet) {
+          summaryOneLiner = sanitizeYamlValue(firstBullet[1].replace(/[:(].*/,'').trim().slice(0, 80));
+        } else if (firstSentence) {
+          summaryOneLiner = sanitizeYamlValue(firstSentence.replace(/^[-*]\s+/, '').replace(/\*\*/g, '').trim().slice(0, 80));
+        }
       } catch (err) {
         // Fallback: save raw data with warning header
         process.stderr.write(`[gossipcat] Session summary LLM failed: ${(err as Error).message}\n`);
@@ -264,8 +280,8 @@ Rules:
 
     const content = [
       '---',
-      `name: Session ${today}`,
-      `description: Session summary`,
+      `name: Session ${today} — ${summaryOneLiner}`,
+      `description: ${summaryOneLiner}`,
       `importance: 0.95`,
       pinned ? `pinned: true` : '',
       `lastAccessed: ${today}`,
@@ -287,7 +303,7 @@ Rules:
     // Write task entry for session tracking
     await this.writeTaskEntry('_project', {
       taskId: `session-${timestamp}`,
-      task: `Session ${today}`,
+      task: `Session ${today}: ${summaryOneLiner}`,
       skills: [],
       scores: { relevance: 5, accuracy: 5, uniqueness: 5 },
     });
