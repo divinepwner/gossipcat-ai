@@ -28452,7 +28452,7 @@ Relay workers online: ${workers.size} \u2014 [${Array.from(workers.keys()).join(
 );
 server.tool(
   "gossip_status",
-  "Check Gossip Mesh system status, host environment, and available agents",
+  "Check Gossip Mesh system status, host environment, available agents, and dashboard URL/key",
   {},
   async () => {
     const { loadClaudeSubagents: loadClaudeSubagents2 } = await Promise.resolve().then(() => (init_config(), config_exports));
@@ -29472,7 +29472,7 @@ server.tool(
       { name: "gossip_collect_consensus", desc: "Collect + cross-review. Returns tagged CONFIRMED/DISPUTED/UNIQUE/NEW report." },
       { name: "gossip_orchestrate", desc: "Submit task for multi-agent execution via MainAgent" },
       { name: "gossip_agents", desc: "List configured agents with provider, model, role, skills" },
-      { name: "gossip_status", desc: "Check relay, tool-server, workers status" },
+      { name: "gossip_status", desc: "Check relay, tool-server, workers, and dashboard URL/key" },
       { name: "gossip_update_instructions", desc: "Update agent instructions (single or batch). Modes: append/replace" },
       { name: "gossip_run", desc: "Single-call dispatch \u2014 run a task on one agent and get the result (1 call for relay, 2 for native)" },
       { name: "gossip_run_complete", desc: "Complete a native agent gossip_run \u2014 relays result + signals in one call" },
