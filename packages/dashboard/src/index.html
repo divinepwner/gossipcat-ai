@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gossipcat Dashboard</title>
+  <title>gossipcat</title>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/dashboard/assets/style.css">
 </head>
 <body>
@@ -22,30 +23,21 @@
 
   <!-- Dashboard (hidden until authenticated) -->
   <div id="dashboard" class="dashboard" hidden>
-    <nav class="nav">
-      <div class="nav-brand">gossipcat</div>
-      <div class="nav-tabs">
-        <button class="nav-tab active" data-tab="overview">Overview</button>
-        <button class="nav-tab" data-tab="agents">Agents</button>
-        <button class="nav-tab" data-tab="tasks">Tasks</button>
-        <button class="nav-tab" data-tab="consensus">Consensus</button>
-        <button class="nav-tab" data-tab="skills">Skills</button>
-        <button class="nav-tab" data-tab="memory">Memory</button>
+    <nav class="topbar" role="navigation">
+      <div class="nav-left">
+        <a href="#/" class="logo">gossipcat</a>
+        <span class="sep">/</span>
+        <span id="breadcrumb-page" class="crumb">Overview</span>
       </div>
-      <div class="nav-status">
-        <span id="ws-status" class="status-dot offline"></span>
-        <span id="ws-label">Disconnected</span>
+      <div class="nav-right">
+        <div class="ws-badge" role="status" aria-label="WebSocket connection status">
+          <span id="ws-status" class="ws-dot offline"></span>
+          <span id="ws-label">Disconnected</span>
+        </div>
       </div>
     </nav>
 
-    <main class="main">
-      <div id="tab-overview" class="tab-content active"></div>
-      <div id="tab-agents" class="tab-content"></div>
-      <div id="tab-tasks" class="tab-content"></div>
-      <div id="tab-consensus" class="tab-content"></div>
-      <div id="tab-skills" class="tab-content"></div>
-      <div id="tab-memory" class="tab-content"></div>
-    </main>
+    <main id="app" class="page" role="main"></main>
   </div>
 
   <script src="/dashboard/assets/app.js"></script>
