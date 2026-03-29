@@ -46,17 +46,16 @@ export class DashboardRouter {
    * Caller should only call this for URLs starting with /dashboard.
    */
   async handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-    const url = req.url ?? '';
-    if (!url.startsWith('/dashboard')) return false;
+    const rawUrl = req.url ?? '';
+    if (!rawUrl.startsWith('/dashboard')) return false;
+
+    const qIdx = rawUrl.indexOf('?');
+    const url = qIdx >= 0 ? rawUrl.slice(0, qIdx) : rawUrl;
+    const query = qIdx >= 0 ? new URLSearchParams(rawUrl.slice(qIdx + 1)) : null;
 
     // Auth endpoint — no session required
     if (url === '/dashboard/api/auth' && req.method === 'POST') {
       return this.handleAuth(req, res);
-    }
-
-    // Serve static dashboard (SPA)
-    if (url === '/dashboard' || url === '/dashboard/') {
-      return this.serveDashboard(res);
     }
 
     // All other /dashboard/api/* routes require session
@@ -66,12 +65,17 @@ export class DashboardRouter {
         this.json(res, 401, { error: 'Unauthorized' });
         return true;
       }
-      return this.handleApi(req, res, url);
+      return this.handleApi(req, res, url, query);
     }
 
     // Static assets
     if (url.startsWith('/dashboard/assets/')) {
       return this.serveAsset(res, url);
+    }
+
+    // Serve static dashboard (SPA) — catch-all for client-side routing
+    if (url === '/dashboard' || url === '/dashboard/' || (url.startsWith('/dashboard') && !url.startsWith('/dashboard/api/') && !url.startsWith('/dashboard/assets/'))) {
+      return this.serveDashboard(res);
     }
 
     this.json(res, 404, { error: 'Not found' });
@@ -121,7 +125,7 @@ export class DashboardRouter {
     return true;
   }
 
-  private async handleApi(req: IncomingMessage, res: ServerResponse, url: string): Promise<boolean> {
+  private async handleApi(req: IncomingMessage, res: ServerResponse, url: string, query: URLSearchParams | null): Promise<boolean> {
     try {
       if (url === '/dashboard/api/overview' && req.method === 'GET') {
         const data = await overviewHandler(this.projectRoot, this.ctx);
@@ -144,6 +148,12 @@ export class DashboardRouter {
       if (url === '/dashboard/api/consensus' && req.method === 'GET') {
         const data = await consensusHandler(this.projectRoot);
         this.json(res, 200, data);
+        return true;
+      }
+
+      if (url === '/dashboard/api/signals' && req.method === 'GET') {
+        const agentFilter = query?.get('agent') ?? null;
+        this.json(res, 200, { signals: [], total: 0, agentFilter });
         return true;
       }
 

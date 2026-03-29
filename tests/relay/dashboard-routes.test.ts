@@ -152,6 +152,110 @@ describe('DashboardRouter', () => {
   });
 });
 
+describe('URL query string handling', () => {
+  let projectRoot: string;
+  let auth: DashboardAuth;
+  let router: DashboardRouter;
+  let validCookie: Record<string, string>;
+
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'gossip-dash-'));
+    mkdirSync(join(projectRoot, '.gossip'), { recursive: true });
+    auth = new DashboardAuth(projectRoot);
+    auth.init();
+    router = new DashboardRouter(auth, projectRoot, { agentConfigs: [], relayConnections: 0 });
+    const token = auth.createSession(auth.getKey())!;
+    validCookie = { cookie: `dashboard_session=${token}` };
+  });
+
+  it('routes /dashboard/api/overview?t=123 to overview handler', async () => {
+    const req = mockReq('GET', '/dashboard/api/overview?t=123', validCookie);
+    const res = mockRes();
+    await router.handle(req, res);
+    expect(res._status).toBe(200);
+    const body = JSON.parse(res._body);
+    expect(body.agentsOnline).toBeDefined();
+  });
+
+  it('routes /dashboard/api/signals?agent=sonnet-reviewer to signals handler', async () => {
+    const req = mockReq('GET', '/dashboard/api/signals?agent=sonnet-reviewer', validCookie);
+    const res = mockRes();
+    await router.handle(req, res);
+    expect(res._status).toBe(200);
+  });
+
+  it('routes /dashboard/api/tasks?limit=5 to tasks handler', async () => {
+    const req = mockReq('GET', '/dashboard/api/tasks?limit=5', validCookie);
+    const res = mockRes();
+    await router.handle(req, res);
+    expect(res._status).toBe(200);
+  });
+});
+
+describe('SPA catch-all routing', () => {
+  let projectRoot: string;
+  let auth: DashboardAuth;
+  let router: DashboardRouter;
+
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'gossip-dash-'));
+    mkdirSync(join(projectRoot, '.gossip'), { recursive: true });
+    auth = new DashboardAuth(projectRoot);
+    auth.init();
+    router = new DashboardRouter(auth, projectRoot, { agentConfigs: [], relayConnections: 0 });
+  });
+
+  it('serves /dashboard (no trailing slash) as SPA', async () => {
+    const req = mockReq('GET', '/dashboard');
+    const res = mockRes();
+    const handled = await router.handle(req, res);
+    expect(handled).toBe(true);
+    // Will be 503 (no built dist) or 200 — not 404
+    expect(res._status).not.toBe(404);
+  });
+
+  it('serves /dashboard/ as SPA', async () => {
+    const req = mockReq('GET', '/dashboard/');
+    const res = mockRes();
+    const handled = await router.handle(req, res);
+    expect(handled).toBe(true);
+    expect(res._status).not.toBe(404);
+  });
+
+  it('serves /dashboard/team/agent-a as SPA (hash route path not in API)', async () => {
+    const req = mockReq('GET', '/dashboard/team/agent-a');
+    const res = mockRes();
+    const handled = await router.handle(req, res);
+    expect(handled).toBe(true);
+    // Should serve dashboard HTML (SPA), not 404
+    expect(res._status).not.toBe(404);
+  });
+
+  it('serves /dashboard/signals as SPA', async () => {
+    const req = mockReq('GET', '/dashboard/signals');
+    const res = mockRes();
+    const handled = await router.handle(req, res);
+    expect(handled).toBe(true);
+    expect(res._status).not.toBe(404);
+  });
+
+  it('does NOT catch /dashboard/api/* as SPA (goes to API handler)', async () => {
+    // Without auth, API routes return 401 not SPA
+    const req = mockReq('GET', '/dashboard/api/overview');
+    const res = mockRes();
+    await router.handle(req, res);
+    expect(res._status).toBe(401);
+  });
+
+  it('does NOT catch /dashboard/assets/* as SPA', async () => {
+    const req = mockReq('GET', '/dashboard/assets/app.js');
+    const res = mockRes();
+    await router.handle(req, res);
+    // Asset handler returns 404 (no assets in Phase 1), but it's handled (not SPA)
+    expect(res._status).toBe(404);
+  });
+});
+
 describe('RelayServer dashboard integration', () => {
   let server: RelayServer;
   let projectRoot: string;
