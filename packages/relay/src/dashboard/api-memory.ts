@@ -5,7 +5,7 @@ const AGENT_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 const DANGEROUS_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 
 interface KnowledgeFile { filename: string; frontmatter: Record<string, string>; content: string; }
-export interface MemoryResponse { index: string; knowledge: KnowledgeFile[]; tasks: Record<string, unknown>[]; }
+export interface MemoryResponse { index: string; knowledge: KnowledgeFile[]; tasks: Record<string, unknown>[]; fileCount: number; cognitiveCount: number; }
 
 export async function memoryHandler(projectRoot: string, agentId: string): Promise<MemoryResponse> {
   if (!agentId || !AGENT_ID_RE.test(agentId) || DANGEROUS_IDS.has(agentId)) throw new Error('Invalid agent ID');
@@ -42,7 +42,14 @@ export async function memoryHandler(projectRoot: string, agentId: string): Promi
     } catch {}
   }
 
-  return { index, knowledge, tasks };
+  const fileCount = knowledge.length;
+  const cognitiveCount = knowledge.filter(k =>
+    k.frontmatter.type === 'cognitive' ||
+    k.content.includes('You reviewed') ||
+    k.content.includes('## What I Learned')
+  ).length;
+
+  return { index, knowledge, tasks, fileCount, cognitiveCount };
 }
 
 function parseFrontmatter(raw: string): { frontmatter: Record<string, string>; content: string } {

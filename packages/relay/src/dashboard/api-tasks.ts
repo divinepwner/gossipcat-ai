@@ -8,6 +8,8 @@ interface TaskEntry {
   status: 'completed' | 'failed' | 'cancelled' | 'running';
   duration?: number;
   timestamp: string;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export interface TasksResponse {
@@ -20,7 +22,7 @@ export async function tasksHandler(projectRoot: string): Promise<TasksResponse> 
   if (!existsSync(graphPath)) return { tasks: [], total: 0 };
 
   const created = new Map<string, { agentId: string; task: string; timestamp: string }>();
-  const completed = new Map<string, { duration?: number; timestamp: string; failed: boolean; cancelled?: boolean }>();
+  const completed = new Map<string, { duration?: number; timestamp: string; failed: boolean; cancelled?: boolean; inputTokens?: number; outputTokens?: number }>();
 
   try {
     const lines = readFileSync(graphPath, 'utf-8').trim().split('\n').filter(Boolean);
@@ -38,6 +40,8 @@ export async function tasksHandler(projectRoot: string): Promise<TasksResponse> 
             duration: entry.duration,
             timestamp: entry.timestamp,
             failed: false,
+            inputTokens: entry.inputTokens,
+            outputTokens: entry.outputTokens,
           });
         } else if (entry.type === 'task.failed') {
           completed.set(entry.taskId, {
@@ -65,6 +69,8 @@ export async function tasksHandler(projectRoot: string): Promise<TasksResponse> 
       status: result ? (result.cancelled ? 'cancelled' : result.failed ? 'failed' : 'completed') : 'running',
       duration: result?.duration,
       timestamp: result?.timestamp || info.timestamp,
+      inputTokens: result?.inputTokens,
+      outputTokens: result?.outputTokens,
     });
   }
 
