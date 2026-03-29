@@ -195,7 +195,9 @@ To auto-allow writes, add to \`.claude/settings.local.json\`:
     }).join('\n\n');
 
     const sessionContext = this.readProjectMemory();
-    const sessionSection = sessionContext ? `\n## Session Context\n\n${sessionContext}\n` : '';
+    const nextSessionNotes = this.readNextSessionNotes();
+    const sessionParts = [sessionContext, nextSessionNotes].filter(Boolean);
+    const sessionSection = sessionParts.length > 0 ? `\n## Session Context\n\n${sessionParts.join('\n\n---\n\n')}\n` : '';
 
     return `# Gossipcat — Multi-Agent Orchestration
 
@@ -330,5 +332,15 @@ Skills are auto-injected from agent config. Project-wide skills in .gossip/skill
     const top = scored.slice(0, 3);
     const combined = top.map(s => s.body).join('\n\n---\n\n');
     return combined.slice(0, 2500) || null;
+  }
+
+  /** Read .gossip/next-session.md if it exists — user/orchestrator notes for the next session */
+  private readNextSessionNotes(): string | null {
+    const notesPath = join(this.projectRoot, '.gossip', 'next-session.md');
+    if (!existsSync(notesPath)) return null;
+    try {
+      const content = readFileSync(notesPath, 'utf-8').trim();
+      return content.length > 0 ? content.slice(0, 2000) : null;
+    } catch { return null; }
   }
 }
