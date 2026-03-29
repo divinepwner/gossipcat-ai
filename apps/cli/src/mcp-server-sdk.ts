@@ -1624,11 +1624,16 @@ server.tool(
       };
       const presetPrompt = presetPrompts[preset] || `You are a ${preset} agent.`;
 
+      // Inject scope restriction for scoped write mode
+      const scopePrefix = (write_mode === 'scoped' && scope)
+        ? `SCOPE RESTRICTION: Only modify files within ${scope}. Do not edit files outside this directory.\\n\\n`
+        : '';
+
       return {
         content: [{ type: 'text' as const, text:
           `Dispatched to ${agent_id} (native). Task ID: ${taskId}\n\n` +
           `NATIVE_DISPATCH:\n\n` +
-          `Agent(model: "${config.model}", prompt: "${presetPrompt}\\n\\n---\\n\\nTask: ${task.slice(0, 200)}...")\n` +
+          `Agent(model: "${config.model}", prompt: "${scopePrefix}${presetPrompt}\\n\\n---\\n\\nTask: ${task.slice(0, 200)}...")\n` +
           `  → then: gossip_run_complete(task_id: "${taskId}", result: "<output>")\n`
         }],
       };
