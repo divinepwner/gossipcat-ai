@@ -27144,6 +27144,22 @@ async function doBoot() {
     process.stderr.write(`[gossipcat] Gossip publisher failed: ${err.message}
 `);
   }
+  try {
+    const { BootstrapGenerator: BootstrapGenerator2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
+    const generator = new BootstrapGenerator2(process.cwd());
+    const result = generator.generate();
+    const { writeFileSync: wf, mkdirSync: md } = require("fs");
+    const { join: j } = require("path");
+    md(j(process.cwd(), ".gossip"), { recursive: true });
+    wf(j(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
+    if (result.tier === "full") {
+      process.stderr.write(`[gossipcat] Bootstrap refreshed (${result.agentCount} agents, session context loaded)
+`);
+    }
+  } catch (err) {
+    process.stderr.write(`[gossipcat] Bootstrap refresh failed: ${err.message}
+`);
+  }
   booted = true;
   process.stderr.write(`[gossipcat] Booted: relay :${relay.port}, ${workers.size} workers
 `);
@@ -27647,6 +27663,16 @@ ${t.skillWarnings.map((w) => `  - ${w}`).join("\n")}`;
 
 \u{1F4CA} Skill gap detected:
 ${suggestions.map((s) => `  - ${s}`).join("\n")}`;
+      }
+    } catch {
+    }
+    try {
+      const gossipCount = mainAgent.getSessionGossip().length;
+      const consensusCount = mainAgent.getSessionConsensusHistory().length;
+      if (gossipCount >= 5 || consensusCount >= 1) {
+        output += `
+
+\u{1F4A1} Active session (${gossipCount} tasks, ${consensusCount} consensus runs). Call gossip_session_save() before ending to preserve what you've learned.`;
       }
     } catch {
     }
