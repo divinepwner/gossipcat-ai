@@ -16,7 +16,7 @@ export type {
 
 const SUMMARY_HEADER = '## Consensus Summary';
 const FALLBACK_MAX_LENGTH = 2000;
-const MAX_SUMMARY_LENGTH = 3000;
+const MAX_SUMMARY_LENGTH = 5000; // raised from 3000 — citations were being truncated before snippet extraction
 const MAX_CROSS_REVIEW_ENTRIES = 50; // DoS prevention
 const VALID_ACTIONS = new Set(['agree', 'disagree', 'unverified', 'new']);
 
@@ -108,23 +108,23 @@ export class ConsensusEngine {
   ): Promise<CrossReviewEntry[]> {
     const ownSummary = summaries.get(agent.agentId) ?? '';
 
-    // Build peer findings section
+    // Build peer findings section with per-agent code context
     const peerLines: string[] = [];
     for (const [peerId, peerSummary] of summaries) {
       if (peerId === agent.agentId) continue;
       const peerConfig = this.config.registryGet(peerId);
       const preset = peerConfig?.preset ?? 'unknown';
       // SECURITY: Wrap external LLM output in <data> tags to prevent prompt injection.
-      peerLines.push(`Agent "${peerId}" (${preset}):\n<data>${peerSummary}</data>`);
-    }
+      let peerBlock = `Agent "${peerId}" (${preset}):\n<data>${peerSummary}</data>`;
 
-    // Extract and include code snippets for file:line references in peer findings
-    let codeContext = '';
-    if (this.config.projectRoot) {
-      const snippets = await this.extractCodeSnippets(peerLines.join('\n'));
-      if (snippets) {
-        codeContext = `\nREFERENCED CODE (verify claims against this):\n${snippets}\n`;
+      // Extract code snippets cited by THIS agent's findings (cap 5 per agent)
+      if (this.config.projectRoot) {
+        const snippets = await this.extractCodeSnippets(peerSummary, 5);
+        if (snippets) {
+          peerBlock += `\n<code cited by ${peerId}>\n${snippets}\n</code>`;
+        }
       }
+      peerLines.push(peerBlock);
     }
 
     const userContent = `You previously reviewed code and produced findings. Now review your peers' findings.
@@ -132,11 +132,11 @@ export class ConsensusEngine {
 YOUR FINDINGS (Phase 1):
 <data>${ownSummary}</data>
 
-PEER FINDINGS:
+PEER FINDINGS (each agent's findings are followed by the code they cited):
 ${peerLines.join('\n\n')}
-${codeContext}
+
 For each peer finding, you MUST:
-1. If the finding cites a file:line, check the REFERENCED CODE section above to verify the claim
+1. If the finding cites a file:line, check the <code> block right after that agent's findings to verify the claim
 2. Only AGREE if the claim is factually accurate based on the actual code
 3. DISAGREE if the code contradicts the claim (e.g., finding says "no validation" but code has validation)
 
@@ -465,7 +465,7 @@ Return only valid JSON.` },
    * Extract code snippets for file:line references found in text.
    * Returns formatted snippets for inclusion in cross-review prompts.
    */
-  private async extractCodeSnippets(text: string): Promise<string | null> {
+  private async extractCodeSnippets(text: string, maxSnippets = 15): Promise<string | null> {
     if (!this.config.projectRoot) return null;
 
     const citationPattern = /(?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,4}):(\d+)/g;
@@ -495,7 +495,7 @@ Return only valid JSON.` },
         snippets.push(`${file}:${line}:\n${snippet}`);
       } catch { continue; }
 
-      if (snippets.length >= 5) break; // Limit to avoid bloating the prompt
+      if (snippets.length >= maxSnippets) break;
     }
 
     return snippets.length > 0 ? snippets.join('\n\n') : null;

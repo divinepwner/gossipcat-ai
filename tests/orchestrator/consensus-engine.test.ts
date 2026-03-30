@@ -479,7 +479,7 @@ describe('ConsensusEngine', () => {
       const longFindings = Array.from({ length: 500 }, (_, i) => `- Finding ${i}: vulnerability at file${i}.ts:${i}`).join('\n');
       const result = `Analysis...\n\n## Consensus Summary\n${longFindings}`;
       const summary = engine.extractSummary(result);
-      expect(summary.length).toBeLessThanOrEqual(3000);
+      expect(summary.length).toBeLessThanOrEqual(5000);
     });
 
     it('does not emit signals for unmatched agree entries', async () => {

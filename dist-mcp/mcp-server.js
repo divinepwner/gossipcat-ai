@@ -8375,7 +8375,7 @@ var init_consensus_engine = __esm({
     import_path27 = require("path");
     SUMMARY_HEADER = "## Consensus Summary";
     FALLBACK_MAX_LENGTH = 2e3;
-    MAX_SUMMARY_LENGTH = 3e3;
+    MAX_SUMMARY_LENGTH = 5e3;
     MAX_CROSS_REVIEW_ENTRIES = 50;
     VALID_ACTIONS = /* @__PURE__ */ new Set(["agree", "disagree", "unverified", "new"]);
     ConsensusEngine = class {
@@ -8452,29 +8452,29 @@ var init_consensus_engine = __esm({
           if (peerId === agent.agentId) continue;
           const peerConfig = this.config.registryGet(peerId);
           const preset = peerConfig?.preset ?? "unknown";
-          peerLines.push(`Agent "${peerId}" (${preset}):
-<data>${peerSummary}</data>`);
-        }
-        let codeContext = "";
-        if (this.config.projectRoot) {
-          const snippets = await this.extractCodeSnippets(peerLines.join("\n"));
-          if (snippets) {
-            codeContext = `
-REFERENCED CODE (verify claims against this):
+          let peerBlock = `Agent "${peerId}" (${preset}):
+<data>${peerSummary}</data>`;
+          if (this.config.projectRoot) {
+            const snippets = await this.extractCodeSnippets(peerSummary, 5);
+            if (snippets) {
+              peerBlock += `
+<code cited by ${peerId}>
 ${snippets}
-`;
+</code>`;
+            }
           }
+          peerLines.push(peerBlock);
         }
         const userContent = `You previously reviewed code and produced findings. Now review your peers' findings.
 
 YOUR FINDINGS (Phase 1):
 <data>${ownSummary}</data>
 
-PEER FINDINGS:
+PEER FINDINGS (each agent's findings are followed by the code they cited):
 ${peerLines.join("\n\n")}
-${codeContext}
+
 For each peer finding, you MUST:
-1. If the finding cites a file:line, check the REFERENCED CODE section above to verify the claim
+1. If the finding cites a file:line, check the <code> block right after that agent's findings to verify the claim
 2. Only AGREE if the claim is factually accurate based on the actual code
 3. DISAGREE if the code contradicts the claim (e.g., finding says "no validation" but code has validation)
 
@@ -8751,7 +8751,7 @@ Return only valid JSON.` },
        * Extract code snippets for file:line references found in text.
        * Returns formatted snippets for inclusion in cross-review prompts.
        */
-      async extractCodeSnippets(text) {
+      async extractCodeSnippets(text, maxSnippets = 15) {
         if (!this.config.projectRoot) return null;
         const citationPattern = /(?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,4}):(\d+)/g;
         const seen = /* @__PURE__ */ new Set();
@@ -8777,7 +8777,7 @@ ${snippet}`);
           } catch {
             continue;
           }
-          if (snippets.length >= 5) break;
+          if (snippets.length >= maxSnippets) break;
         }
         return snippets.length > 0 ? snippets.join("\n\n") : null;
       }
