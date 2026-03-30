@@ -1425,7 +1425,7 @@ async function renderAgentDetail(app, agentId) {
       panel.innerHTML = '<div class="panel-head"><span class="panel-title">Knowledge Files</span></div>';
       const body = document.createElement('div');
       body.className = 'panel-body';
-      for (const k of memData.knowledge.slice(0, 20)) {
+      for (const k of [...memData.knowledge].reverse().slice(0, 20)) {
         const isCognitive = (k.frontmatter && k.frontmatter.type === 'cognitive') || (k.content || '').includes('You reviewed');
         const desc = e((k.frontmatter && (k.frontmatter.description || k.frontmatter.name)) || k.filename);
         const row = document.createElement('div');
