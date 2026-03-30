@@ -59,6 +59,7 @@ export interface CollectResult {
 export interface ConsensusSignal {
   type: 'consensus';
   taskId: string;
+  consensusId?: string;
   signal:
     | 'agreement'
     | 'disagreement'
@@ -68,7 +69,8 @@ export interface ConsensusSignal {
     | 'new_finding'
     | 'hallucination_caught'
     | 'category_confirmed'
-    | 'consensus_verified';
+    | 'consensus_verified'
+    | 'signal_retracted';
   agentId: string;
   counterpartId?: string;
   skill?: string;
@@ -81,6 +83,7 @@ export interface ConsensusSignal {
     | 'judge_refuted'
     | 'confirmed_hallucination';
   category?: string;
+  retractedSignal?: string;
   evidence: string;
   timestamp: string;
 }

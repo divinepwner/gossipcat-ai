@@ -3,6 +3,7 @@ import { join } from 'path';
 import { TaskMemoryEntry } from './types';
 import type { ILLMProvider } from './llm-client';
 import type { LLMMessage } from '@gossip/types';
+import { discoverProjectStructure } from './project-structure';
 
 /** Truncate text at a word boundary, appending "..." if truncated */
 function truncateAtWord(text: string, maxLen: number): string {
@@ -217,6 +218,12 @@ Rules:
       data.notes ? `## User Notes\n${data.notes}` : '',
     ].filter(Boolean).join('\n\n');
 
+    // Discover project structure for LLM grounding (prevents path hallucination)
+    const discovered = discoverProjectStructure(this.projectRoot).map(p => `- ${p}`);
+    const projectContext = discovered.length > 0
+      ? `PROJECT CONTEXT:\n${discovered.join('\n')}\n- Only cite file paths that conform to the directory structure above. If no paths are available, describe features by name without paths.`
+      : '';
+
     let summaryBody: string;
     let pinned = false;
     let summaryOneLiner = 'Session summary'; // Will be replaced by LLM extraction
@@ -227,6 +234,8 @@ Rules:
           {
             role: 'system',
             content: `You are writing a project memory entry that will be loaded into the orchestrator's context at the start of the next session. This helps the orchestrator make better decisions about agent dispatch, task planning, and avoiding past mistakes.
+
+${projectContext}
 
 Write as a briefing for a new team lead taking over. Focus on:
 
@@ -245,7 +254,7 @@ Rules:
 - Cite file paths when referencing code or specs
 - Include specific numbers (commit count, finding count, test count)
 - Warnings > accomplishments — what NOT to do is more useful
-- NEVER fabricate file paths — only cite paths that appear in the Git Log or Task Summaries data. If no paths are available, describe features by name without paths.
+- NEVER fabricate file paths. Only cite paths that appear in the Git Log or Task Summaries. All paths must conform to the PROJECT CONTEXT above. If no paths are available, describe features by name without paths.
 - If ANY section has a "never do this again" lesson, respond with PINNED:true on the first line, then the summary`,
           },
           {

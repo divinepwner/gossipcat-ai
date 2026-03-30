@@ -99,11 +99,18 @@ export class PerformanceReader {
         s !== null && s.type === 'consensus' && typeof s.agentId === 'string' && s.agentId.length > 0
       );
 
-      // Collect retraction keys: agentId + taskId combos that have been retracted
+      // Collect retraction keys: agentId + taskId + signalType combos that have been retracted
       const retracted = new Set<string>();
       for (const s of all) {
         if (s.signal === 'signal_retracted') {
-          retracted.add(s.agentId + ':' + (s.taskId || s.timestamp));
+          const taskKey = s.taskId || s.timestamp;
+          if (s.retractedSignal) {
+            // Scoped retraction: only retract the specific signal type
+            retracted.add(s.agentId + ':' + taskKey + ':' + s.retractedSignal);
+          } else {
+            // Legacy/unscoped retraction: retract all signals for this agent+task
+            retracted.add(s.agentId + ':' + taskKey + ':*');
+          }
         }
       }
 
@@ -113,9 +120,10 @@ export class PerformanceReader {
         // Expire old signals — missing/bad timestamps are treated as expired
         const ts = s.timestamp ? new Date(s.timestamp).getTime() : 0;
         if (!isFinite(ts) || ts === 0 || ts < expiryMs) return false;
-        // Skip retracted signals
-        const key = s.agentId + ':' + (s.taskId || s.timestamp);
-        if (retracted.has(key)) return false;
+        // Skip retracted signals (check both scoped and wildcard keys)
+        const taskKey = s.taskId || s.timestamp;
+        if (retracted.has(s.agentId + ':' + taskKey + ':' + s.signal)) return false;
+        if (retracted.has(s.agentId + ':' + taskKey + ':*')) return false;
         return true;
       });
     } catch {

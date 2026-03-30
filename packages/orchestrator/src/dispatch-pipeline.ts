@@ -8,6 +8,7 @@ import { loadSkills } from './skill-loader';
 import { assemblePrompt, extractSpecReferences, buildSpecReviewEnrichment } from './prompt-assembler';
 import { AgentMemoryReader } from './agent-memory';
 import { MemoryWriter } from './memory-writer';
+import { discoverProjectStructure } from './project-structure';
 import { MemoryCompactor } from './memory-compactor';
 import { TaskGraph } from './task-graph';
 import { SkillCatalog } from './skill-catalog';
@@ -89,6 +90,14 @@ export class DispatchPipeline {
   private sessionConsensusHistory: Array<{ timestamp: string; confirmed: number; disputed: number; unverified: number; unique: number; summary: string }> = [];
 
   private taskProgressCallback: ((taskId: string, event: { toolCalls: number; inputTokens: number; outputTokens: number; currentTool: string; turn: number }) => void) | null = null;
+  private projectStructureCache: string | null = null;
+
+  private getProjectStructure(): string | undefined {
+    if (this.projectStructureCache !== null) return this.projectStructureCache || undefined;
+    const parts = discoverProjectStructure(this.projectRoot);
+    this.projectStructureCache = parts.length > 0 ? parts.join('\n') : '';
+    return this.projectStructureCache || undefined;
+  }
 
   setTaskProgressCallback(cb: typeof this.taskProgressCallback): void {
     this.taskProgressCallback = cb;
@@ -236,6 +245,7 @@ export class DispatchPipeline {
       chainContext: chainContext || undefined,
       consensusSummary: options?.consensus,
       specReviewContext,
+      projectStructure: this.getProjectStructure(),
     });
 
     // 6. Record TaskGraph created
@@ -910,6 +920,7 @@ export class DispatchPipeline {
       // Consensus Judge Integration
       const agentTaskIdMap = new Map<string, string>();
       for (const r of results) agentTaskIdMap.set(r.agentId, r.id);
+      const consensusId = consensusReport.signals[0]?.consensusId ?? randomUUID().slice(0, 12);
 
       if (consensusReport.confirmed.length > 0 && this.consensusJudge) {
         try {
@@ -929,13 +940,13 @@ export class DispatchPipeline {
               consensusReport.disputed.push(finding);
 
               consensusReport.signals.push({
-                type: 'consensus', signal: 'hallucination_caught',
+                type: 'consensus', signal: 'hallucination_caught', consensusId,
                 agentId: finding.originalAgentId, outcome: 'judge_refuted',
                 evidence: v.evidence, timestamp: now, taskId: agentTaskIdMap.get(finding.originalAgentId) || finding.id || '',
               });
               for (const confirmerId of finding.confirmedBy) {
                 consensusReport.signals.push({
-                  type: 'consensus', signal: 'hallucination_caught',
+                  type: 'consensus', signal: 'hallucination_caught', consensusId,
                   agentId: confirmerId, outcome: 'confirmed_hallucination',
                   evidence: `Confirmed refuted finding: ${v.evidence}`,
                   timestamp: now, taskId: agentTaskIdMap.get(confirmerId) || finding.id || '',
@@ -943,7 +954,7 @@ export class DispatchPipeline {
               }
             } else if (v.verdict === 'VERIFIED') {
               consensusReport.signals.push({
-                type: 'consensus', signal: 'consensus_verified',
+                type: 'consensus', signal: 'consensus_verified', consensusId,
                 agentId: finding.originalAgentId,
                 evidence: v.evidence, timestamp: now, taskId: agentTaskIdMap.get(finding.originalAgentId) || finding.id || '',
               });
@@ -974,6 +985,7 @@ export class DispatchPipeline {
             perfWriter.appendSignal({
               type: 'consensus',
               signal: 'category_confirmed',
+              consensusId,
               agentId: finding.originalAgentId,
               taskId: finding.id || '',
               category,
