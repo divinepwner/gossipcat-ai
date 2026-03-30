@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PresenceTracker = exports.SubscriptionManager = exports.ChannelManager = exports.MessageRouter = exports.AgentConnection = exports.ConnectionManager = exports.RelayServer = void 0;
+exports.DashboardWs = exports.DashboardRouter = exports.DashboardAuth = exports.PresenceTracker = exports.SubscriptionManager = exports.ChannelManager = exports.MessageRouter = exports.AgentConnection = exports.ConnectionManager = exports.RelayServer = void 0;
 var server_1 = require("./server");
 Object.defineProperty(exports, "RelayServer", { enumerable: true, get: function () { return server_1.RelayServer; } });
 var connection_manager_1 = require("./connection-manager");
@@ -15,4 +15,8 @@ var subscription_manager_1 = require("./subscription-manager");
 Object.defineProperty(exports, "SubscriptionManager", { enumerable: true, get: function () { return subscription_manager_1.SubscriptionManager; } });
 var presence_1 = require("./presence");
 Object.defineProperty(exports, "PresenceTracker", { enumerable: true, get: function () { return presence_1.PresenceTracker; } });
+var dashboard_1 = require("./dashboard");
+Object.defineProperty(exports, "DashboardAuth", { enumerable: true, get: function () { return dashboard_1.DashboardAuth; } });
+Object.defineProperty(exports, "DashboardRouter", { enumerable: true, get: function () { return dashboard_1.DashboardRouter; } });
+Object.defineProperty(exports, "DashboardWs", { enumerable: true, get: function () { return dashboard_1.DashboardWs; } });
 //# sourceMappingURL=index.js.map
