@@ -67,4 +67,83 @@ describe('PerformanceWriter', () => {
     const lines = fs.readFileSync(filePath, 'utf-8').trim().split('\n');
     expect(lines).toHaveLength(2);
   });
+
+  describe('validateSignal — rejects invalid signals', () => {
+    it('rejects signal with empty taskId', () => {
+      expect(() => writer.appendSignal({
+        type: 'consensus', taskId: '', signal: 'agreement',
+        agentId: 'a', evidence: 'e', timestamp: '2026-03-30T10:00:00Z',
+      })).toThrow('taskId');
+    });
+
+    it('rejects signal with missing agentId', () => {
+      expect(() => writer.appendSignal({
+        type: 'consensus', taskId: 't1', signal: 'agreement',
+        agentId: '', evidence: 'e', timestamp: '2026-03-30T10:00:00Z',
+      })).toThrow('agentId');
+    });
+
+    it('rejects signal with invalid timestamp', () => {
+      expect(() => writer.appendSignal({
+        type: 'consensus', taskId: 't1', signal: 'agreement',
+        agentId: 'a', evidence: 'e', timestamp: 'not-a-date',
+      })).toThrow('timestamp');
+    });
+
+    it('rejects signal with unknown consensus signal type', () => {
+      expect(() => writer.appendSignal({
+        type: 'consensus', taskId: 't1', signal: 'made_up' as any,
+        agentId: 'a', evidence: 'e', timestamp: '2026-03-30T10:00:00Z',
+      })).toThrow('signal');
+    });
+
+    it('rejects signal with unknown type field', () => {
+      expect(() => writer.appendSignal({
+        type: 'unknown' as any, taskId: 't1', signal: 'agreement',
+        agentId: 'a', evidence: 'e', timestamp: '2026-03-30T10:00:00Z',
+      })).toThrow('type');
+    });
+
+    it('accepts valid consensus signal', () => {
+      expect(() => writer.appendSignal({
+        type: 'consensus', taskId: 't1', signal: 'agreement',
+        agentId: 'a', evidence: 'e', timestamp: '2026-03-30T10:00:00Z',
+      })).not.toThrow();
+    });
+
+    it('accepts valid impl signal', () => {
+      expect(() => writer.appendSignal({
+        type: 'impl', signal: 'impl_test_pass',
+        agentId: 'a', taskId: 't1', timestamp: '2026-03-30T10:00:00Z',
+      })).not.toThrow();
+    });
+
+    it('accepts valid meta signal', () => {
+      expect(() => writer.appendSignal({
+        type: 'meta', signal: 'task_completed',
+        agentId: 'a', taskId: 't1', timestamp: '2026-03-30T10:00:00Z',
+      })).not.toThrow();
+    });
+
+    it('rejects unknown impl signal enum', () => {
+      expect(() => writer.appendSignal({
+        type: 'impl', signal: 'fake_impl' as any,
+        agentId: 'a', taskId: 't1', timestamp: '2026-03-30T10:00:00Z',
+      })).toThrow('signal');
+    });
+
+    it('rejects unknown meta signal enum', () => {
+      expect(() => writer.appendSignal({
+        type: 'meta', signal: 'fake_meta' as any,
+        agentId: 'a', taskId: 't1', timestamp: '2026-03-30T10:00:00Z',
+      })).toThrow('signal');
+    });
+
+    it('appendSignals rejects batch with any invalid signal', () => {
+      expect(() => writer.appendSignals([
+        { type: 'consensus', taskId: 't1', signal: 'agreement', agentId: 'a', evidence: 'e', timestamp: '2026-03-30T10:00:00Z' },
+        { type: 'consensus', taskId: '', signal: 'agreement', agentId: 'a', evidence: 'e', timestamp: '2026-03-30T10:00:00Z' },
+      ])).toThrow('taskId');
+    });
+  });
 });
