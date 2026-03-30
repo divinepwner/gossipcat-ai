@@ -2852,13 +2852,15 @@ var init_auth = __esm({
 // packages/relay/src/dashboard/api-overview.ts
 async function overviewHandler(projectRoot, ctx) {
   const nativeCount = ctx.agentConfigs.filter((a) => a.native).length;
-  const relayConnected = ctx.relayConnections;
+  const relayConnected = ctx.connectedAgentIds.length;
   const relayCount = ctx.agentConfigs.filter((a) => !a.native).length;
-  const agentsOnline = ctx.agentConfigs.length;
+  const agentsOnline = relayConnected + nativeCount;
   let totalSignals = 0;
   let consensusRuns = 0;
   let totalFindings = 0;
   let confirmedFindings = 0;
+  let lastConsensusTimestamp = "";
+  let unverifiedFindings = 0;
   const consensusTaskIds = /* @__PURE__ */ new Set();
   const perfPath = (0, import_path2.join)(projectRoot, ".gossip", "agent-performance.jsonl");
   if ((0, import_fs2.existsSync)(perfPath)) {
@@ -2868,8 +2870,11 @@ async function overviewHandler(projectRoot, ctx) {
         try {
           const entry = JSON.parse(line);
           totalSignals++;
-          if (entry.type === "consensus" && entry.taskId) {
-            consensusTaskIds.add(entry.taskId);
+          if (entry.type === "consensus" && (entry.consensusId || entry.taskId)) {
+            consensusTaskIds.add(entry.consensusId ?? entry.taskId);
+          }
+          if (entry.consensusId && entry.timestamp > lastConsensusTimestamp) {
+            lastConsensusTimestamp = entry.timestamp;
           }
           if (entry.signal === "agreement" || entry.signal === "unique_confirmed" || entry.signal === "consensus_verified") {
             totalFindings++;
@@ -2878,6 +2883,7 @@ async function overviewHandler(projectRoot, ctx) {
             totalFindings++;
           } else if (entry.signal === "unverified" || entry.signal === "unique_unconfirmed") {
             totalFindings++;
+            unverifiedFindings++;
           }
         } catch {
         }
@@ -2913,7 +2919,7 @@ async function overviewHandler(projectRoot, ctx) {
     }
   }
   const avgDurationMs = durationCount > 0 ? Math.round(totalDuration / durationCount) : 0;
-  return { agentsOnline, relayCount, relayConnected, nativeCount, consensusRuns, totalFindings, confirmedFindings, totalSignals, tasksCompleted, tasksFailed, avgDurationMs };
+  return { agentsOnline, relayCount, relayConnected, nativeCount, consensusRuns, totalFindings, confirmedFindings, totalSignals, tasksCompleted, tasksFailed, avgDurationMs, lastConsensusTimestamp, unverifiedFindings };
 }
 var import_fs2, import_path2;
 var init_api_overview = __esm({
@@ -2932,25 +2938,25 @@ __export(performance_reader_exports, {
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
-var import_fs3, import_path3, SIGNAL_WEIGHTS, PerformanceReader;
+var import_fs3, import_path3, CIRCUIT_BREAKER_THRESHOLD, NEGATIVE_SIGNALS, KNOWN_SIGNALS, PerformanceReader;
 var init_performance_reader = __esm({
   "packages/orchestrator/src/performance-reader.ts"() {
     "use strict";
     import_fs3 = require("fs");
     import_path3 = require("path");
-    SIGNAL_WEIGHTS = {
-      agreement: { accuracy: 0.1 },
-      disagreement: { accuracy: -0.15 },
-      // losing side; winning side gets bonus via counterpart
-      unverified: { accuracy: -0.03 },
-      // tiny penalty — couldn't verify, less useful than agree/disagree
-      unique_confirmed: { uniqueness: 0.2 },
-      unique_unconfirmed: { uniqueness: 0.05 },
-      new_finding: { uniqueness: 0.15 },
-      hallucination_caught: { accuracy: -0.3 },
-      category_confirmed: { accuracy: 0.1 },
-      consensus_verified: { accuracy: 0.15 }
-      // Judge confirmed a finding
+    CIRCUIT_BREAKER_THRESHOLD = 3;
+    NEGATIVE_SIGNALS = /* @__PURE__ */ new Set(["hallucination_caught", "disagreement"]);
+    KNOWN_SIGNALS = {
+      agreement: true,
+      disagreement: true,
+      unverified: true,
+      unique_confirmed: true,
+      unique_unconfirmed: true,
+      new_finding: true,
+      hallucination_caught: true,
+      category_confirmed: true,
+      consensus_verified: true,
+      signal_retracted: true
     };
     PerformanceReader = class {
       filePath;
@@ -2979,87 +2985,191 @@ var init_performance_reader = __esm({
       getAgentScore(agentId) {
         return this.getScores().get(agentId) ?? null;
       }
-      /** Get a reliability multiplier for dispatch weighting (0.5 to 1.5) */
+      /** Get a reliability multiplier for dispatch weighting (0.3 to 2.0) */
       getDispatchWeight(agentId) {
         const score = this.getAgentScore(agentId);
         if (!score || score.totalSignals < 3) return 1;
-        return 0.5 + score.reliability;
+        if (score.circuitOpen) return 0.3;
+        return clamp(0.3 + score.reliability * 1.7, 0.3, 2);
+      }
+      /** Check if an agent's circuit breaker is open (3+ consecutive failures) */
+      isCircuitOpen(agentId) {
+        const score = this.getAgentScore(agentId);
+        return score?.circuitOpen ?? false;
       }
       readSignals() {
         if (!(0, import_fs3.existsSync)(this.filePath)) return [];
         try {
+          const SIGNAL_EXPIRY_DAYS = 30;
+          const expiryMs = Date.now() - SIGNAL_EXPIRY_DAYS * 864e5;
           const lines = (0, import_fs3.readFileSync)(this.filePath, "utf-8").trim().split("\n").filter(Boolean);
-          return lines.map((line) => {
+          const all = lines.map((line) => {
             try {
               return JSON.parse(line);
             } catch {
               return null;
             }
           }).filter(
-            (s) => s !== null && typeof s.agentId === "string" && s.agentId.length > 0
+            (s) => s !== null && s.type === "consensus" && typeof s.agentId === "string" && s.agentId.length > 0
           );
+          const retracted = /* @__PURE__ */ new Set();
+          for (const s of all) {
+            if (s.signal === "signal_retracted") {
+              retracted.add(s.agentId + ":" + (s.taskId || s.timestamp));
+            }
+          }
+          return all.filter((s) => {
+            if (s.signal === "signal_retracted") return false;
+            const ts = s.timestamp ? new Date(s.timestamp).getTime() : 0;
+            if (!isFinite(ts) || ts > 0 && ts < expiryMs) return false;
+            const key = s.agentId + ":" + (s.taskId || s.timestamp);
+            if (retracted.has(key)) return false;
+            return true;
+          });
         } catch {
           return [];
         }
       }
       computeScores(signals) {
-        const scores = /* @__PURE__ */ new Map();
+        const DECAY_HALF_LIFE2 = 50;
+        const TIME_DECAY_HALF_LIFE_DAYS = 7;
+        const now = Date.now();
+        const acc = /* @__PURE__ */ new Map();
         const ensure = (id) => {
-          if (!scores.has(id)) {
-            scores.set(id, {
-              agentId: id,
-              accuracy: 0.5,
-              uniqueness: 0.5,
-              reliability: 0.5,
-              totalSignals: 0,
-              agreements: 0,
-              disagreements: 0,
-              uniqueFindings: 0,
-              hallucinations: 0
-            });
-          }
-          return scores.get(id);
+          if (!acc.has(id)) acc.set(id, {
+            weightedCorrect: 0,
+            weightedTotal: 0,
+            weightedUnique: 0,
+            weightedHallucinations: 0,
+            tasksSeen: /* @__PURE__ */ new Map(),
+            taskCounter: 0,
+            agreements: 0,
+            disagreements: 0,
+            uniqueFindings: 0,
+            hallucinations: 0,
+            totalSignals: 0,
+            lastSignalMs: 0
+          });
+          return acc.get(id);
         };
         for (const signal of signals) {
-          const agent = ensure(signal.agentId);
-          const weights = SIGNAL_WEIGHTS[signal.signal];
-          if (!weights) continue;
-          agent.totalSignals++;
-          if ("accuracy" in weights && weights.accuracy) {
-            agent.accuracy = clamp(agent.accuracy + weights.accuracy, 0, 1);
+          const taskKey = signal.taskId || signal.timestamp;
+          const a = ensure(signal.agentId);
+          if (!a.tasksSeen.has(taskKey)) {
+            a.tasksSeen.set(taskKey, a.taskCounter++);
           }
-          if ("uniqueness" in weights && weights.uniqueness) {
-            agent.uniqueness = clamp(agent.uniqueness + weights.uniqueness, 0, 1);
-          }
-          switch (signal.signal) {
-            case "agreement":
-              agent.agreements++;
-              break;
-            case "disagreement":
-              agent.disagreements++;
-              break;
-            case "unique_confirmed":
-            case "unique_unconfirmed":
-            case "new_finding":
-              agent.uniqueFindings++;
-              break;
-            case "hallucination_caught":
-              agent.hallucinations++;
-              break;
-            case "consensus_verified":
-              break;
-            // just a score change
-            case "category_confirmed":
-              break;
-          }
-          if (signal.counterpartId && typeof signal.counterpartId === "string" && signal.counterpartId.length > 0 && signal.signal === "disagreement") {
-            const winner = ensure(signal.counterpartId);
-            winner.accuracy = clamp(winner.accuracy + 0.1, 0, 1);
-            winner.totalSignals++;
+          if (signal.counterpartId && signal.counterpartId.length > 0) {
+            const c = ensure(signal.counterpartId);
+            if (!c.tasksSeen.has(taskKey)) {
+              c.tasksSeen.set(taskKey, c.taskCounter++);
+            }
           }
         }
-        for (const score of scores.values()) {
-          score.reliability = clamp(score.accuracy * 0.7 + score.uniqueness * 0.3, 0, 1);
+        for (const signal of signals) {
+          const isKnown = KNOWN_SIGNALS[signal.signal];
+          if (!isKnown) continue;
+          const a = ensure(signal.agentId);
+          a.totalSignals++;
+          const signalMs = signal.timestamp ? new Date(signal.timestamp).getTime() : 0;
+          if (signalMs > a.lastSignalMs) a.lastSignalMs = signalMs;
+          const taskKey = signal.taskId || signal.timestamp;
+          const taskIndex = a.tasksSeen.get(taskKey) ?? a.taskCounter - 1;
+          const tasksSince = a.taskCounter - taskIndex - 1;
+          const decay = Math.pow(0.5, tasksSince / DECAY_HALF_LIFE2);
+          switch (signal.signal) {
+            case "agreement":
+            case "category_confirmed":
+            case "consensus_verified": {
+              a.weightedCorrect += decay;
+              a.weightedTotal += decay;
+              a.agreements++;
+              break;
+            }
+            case "disagreement": {
+              a.weightedTotal += decay;
+              a.disagreements++;
+              if (signal.counterpartId && signal.counterpartId.length > 0) {
+                const winner = ensure(signal.counterpartId);
+                const wi = winner.tasksSeen.get(taskKey) ?? winner.taskCounter - 1;
+                const wd = Math.pow(0.5, Math.max(0, winner.taskCounter - wi - 1) / DECAY_HALF_LIFE2);
+                winner.weightedCorrect += wd;
+                winner.weightedTotal += wd;
+                winner.totalSignals++;
+              }
+              break;
+            }
+            case "unverified": {
+              a.weightedTotal += decay * 0.1;
+              break;
+            }
+            case "unique_confirmed": {
+              a.weightedUnique += 0.2 * decay;
+              a.uniqueFindings++;
+              break;
+            }
+            case "unique_unconfirmed": {
+              a.weightedUnique += 0.05 * decay;
+              a.uniqueFindings++;
+              break;
+            }
+            case "new_finding": {
+              a.weightedUnique += 0.15 * decay;
+              a.uniqueFindings++;
+              break;
+            }
+            case "hallucination_caught": {
+              const severity = signal.outcome === "fabricated_citation" || signal.outcome === "confirmed_hallucination" ? 3 : 1;
+              a.weightedHallucinations += severity * decay;
+              a.weightedTotal += decay;
+              a.hallucinations++;
+              break;
+            }
+          }
+        }
+        const consecutiveFailures = /* @__PURE__ */ new Map();
+        const signalsByAgent = /* @__PURE__ */ new Map();
+        for (const signal of signals) {
+          if (!KNOWN_SIGNALS[signal.signal]) continue;
+          if (signal.type !== "consensus") continue;
+          const list = signalsByAgent.get(signal.agentId) || [];
+          list.push(signal);
+          signalsByAgent.set(signal.agentId, list);
+        }
+        for (const [agentId, agentSignals] of signalsByAgent) {
+          agentSignals.sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""));
+          let streak = 0;
+          for (let i = agentSignals.length - 1; i >= 0; i--) {
+            if (NEGATIVE_SIGNALS.has(agentSignals[i].signal)) streak++;
+            else break;
+          }
+          consecutiveFailures.set(agentId, streak);
+        }
+        const scores = /* @__PURE__ */ new Map();
+        for (const [id, a] of acc) {
+          const rawAccuracy = a.weightedTotal > 0 ? clamp(a.weightedCorrect / a.weightedTotal, 0, 1) : 0.5;
+          const hallucinationMultiplier = Math.pow(0.75, a.weightedHallucinations);
+          const accuracy = clamp(rawAccuracy * hallucinationMultiplier, 0, 1);
+          const uniqueness = clamp(0.5 + a.weightedUnique, 0, 1);
+          let reliability = clamp(accuracy * 0.8 + uniqueness * 0.2, 0, 1);
+          if (a.lastSignalMs > 0) {
+            const daysSinceLastSignal = (now - a.lastSignalMs) / 864e5;
+            const timeFreshness = Math.pow(0.5, daysSinceLastSignal / TIME_DECAY_HALF_LIFE_DAYS);
+            reliability = 0.5 + (reliability - 0.5) * timeFreshness;
+          }
+          const consec = consecutiveFailures.get(id) || 0;
+          scores.set(id, {
+            agentId: id,
+            accuracy,
+            uniqueness,
+            reliability,
+            totalSignals: a.totalSignals,
+            agreements: a.agreements,
+            disagreements: a.disagreements,
+            uniqueFindings: a.uniqueFindings,
+            hallucinations: a.hallucinations,
+            consecutiveFailures: consec,
+            circuitOpen: consec >= CIRCUIT_BREAKER_THRESHOLD
+          });
         }
         return scores;
       }
@@ -3164,7 +3274,9 @@ var init_api_agents = __esm({
       agreements: 0,
       disagreements: 0,
       uniqueFindings: 0,
-      hallucinations: 0
+      hallucinations: 0,
+      consecutiveFailures: 0,
+      circuitOpen: false
     };
   }
 });
@@ -3488,13 +3600,14 @@ async function consensusHandler(projectRoot) {
   } catch {
     return { runs: [], totalSignals: 0 };
   }
-  const byTask = /* @__PURE__ */ new Map();
+  const byRun = /* @__PURE__ */ new Map();
   for (const sig of signals) {
-    if (!byTask.has(sig.taskId)) byTask.set(sig.taskId, []);
-    byTask.get(sig.taskId).push(sig);
+    const runId = sig.consensusId ?? sig.taskId;
+    if (!byRun.has(runId)) byRun.set(runId, []);
+    byRun.get(runId).push(sig);
   }
   const runs = [];
-  for (const [taskId, taskSignals] of byTask) {
+  for (const [taskId, taskSignals] of byRun) {
     const agents = /* @__PURE__ */ new Set();
     const counts = { agreement: 0, disagreement: 0, unverified: 0, unique: 0, hallucination: 0, new: 0 };
     for (const s of taskSignals) {
@@ -3532,14 +3645,107 @@ var init_api_consensus = __esm({
   }
 });
 
+// packages/relay/src/dashboard/api-signals.ts
+async function signalsHandler(projectRoot, agentFilter) {
+  const perfPath = (0, import_path9.join)(projectRoot, ".gossip", "agent-performance.jsonl");
+  if (!(0, import_fs9.existsSync)(perfPath)) return { signals: [], total: 0 };
+  const all = [];
+  try {
+    const lines = (0, import_fs9.readFileSync)(perfPath, "utf-8").trim().split("\n").filter(Boolean);
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type !== "consensus") continue;
+        if (agentFilter && entry.agentId !== agentFilter) continue;
+        all.push(entry);
+      } catch {
+      }
+    }
+  } catch {
+    return { signals: [], total: 0 };
+  }
+  all.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  return { signals: all.slice(0, MAX_SIGNALS), total: all.length };
+}
+var import_fs9, import_path9, MAX_SIGNALS;
+var init_api_signals = __esm({
+  "packages/relay/src/dashboard/api-signals.ts"() {
+    "use strict";
+    import_fs9 = require("fs");
+    import_path9 = require("path");
+    MAX_SIGNALS = 100;
+  }
+});
+
+// packages/relay/src/dashboard/api-learnings.ts
+async function learningsHandler(projectRoot) {
+  const agentsDir = (0, import_path10.join)(projectRoot, ".gossip", "agents");
+  if (!(0, import_fs10.existsSync)(agentsDir)) return { learnings: [] };
+  const all = [];
+  let agentIds;
+  try {
+    agentIds = (0, import_fs10.readdirSync)(agentsDir).filter((f) => !f.startsWith("."));
+  } catch {
+    return { learnings: [] };
+  }
+  for (const agentId of agentIds) {
+    const knowledgeDir = (0, import_path10.join)(agentsDir, agentId, "memory", "knowledge");
+    if (!(0, import_fs10.existsSync)(knowledgeDir)) continue;
+    let files;
+    try {
+      files = (0, import_fs10.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
+    } catch {
+      continue;
+    }
+    for (const filename of files) {
+      const filepath = (0, import_path10.join)(knowledgeDir, filename);
+      try {
+        const stat3 = (0, import_fs10.statSync)(filepath);
+        const raw = (0, import_fs10.readFileSync)(filepath, "utf-8");
+        const fm = parseFrontmatter2(raw);
+        all.push({
+          agentId,
+          filename,
+          description: fm.description || fm.name || filename.replace(".md", ""),
+          type: fm.type || "knowledge",
+          mtime: stat3.mtimeMs
+        });
+      } catch {
+      }
+    }
+  }
+  all.sort((a, b) => b.mtime - a.mtime);
+  return { learnings: all.slice(0, MAX_LEARNINGS) };
+}
+function parseFrontmatter2(raw) {
+  if (!raw.startsWith("---")) return {};
+  const end = raw.indexOf("---", 3);
+  if (end === -1) return {};
+  const fm = {};
+  for (const line of raw.slice(3, end).trim().split("\n")) {
+    const colon = line.indexOf(":");
+    if (colon > 0) fm[line.slice(0, colon).trim()] = line.slice(colon + 1).trim();
+  }
+  return fm;
+}
+var import_fs10, import_path10, MAX_LEARNINGS;
+var init_api_learnings = __esm({
+  "packages/relay/src/dashboard/api-learnings.ts"() {
+    "use strict";
+    import_fs10 = require("fs");
+    import_path10 = require("path");
+    MAX_LEARNINGS = 10;
+  }
+});
+
 // packages/relay/src/dashboard/api-tasks.ts
 async function tasksHandler(projectRoot) {
-  const graphPath = (0, import_path9.join)(projectRoot, ".gossip", "task-graph.jsonl");
-  if (!(0, import_fs9.existsSync)(graphPath)) return { tasks: [], total: 0 };
+  const graphPath = (0, import_path11.join)(projectRoot, ".gossip", "task-graph.jsonl");
+  if (!(0, import_fs11.existsSync)(graphPath)) return { tasks: [], total: 0 };
   const created = /* @__PURE__ */ new Map();
   const completed = /* @__PURE__ */ new Map();
   try {
-    const lines = (0, import_fs9.readFileSync)(graphPath, "utf-8").trim().split("\n").filter(Boolean);
+    const lines = (0, import_fs11.readFileSync)(graphPath, "utf-8").trim().split("\n").filter(Boolean);
     for (const line of lines) {
       try {
         const entry = JSON.parse(line);
@@ -3592,12 +3798,51 @@ async function tasksHandler(projectRoot) {
   tasks.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   return { tasks: tasks.slice(0, 100), total: tasks.length };
 }
-var import_fs9, import_path9;
+var import_fs11, import_path11;
 var init_api_tasks = __esm({
   "packages/relay/src/dashboard/api-tasks.ts"() {
     "use strict";
-    import_fs9 = require("fs");
-    import_path9 = require("path");
+    import_fs11 = require("fs");
+    import_path11 = require("path");
+  }
+});
+
+// packages/relay/src/dashboard/api-active-tasks.ts
+async function activeTasksHandler(projectRoot) {
+  const taskGraphPath = (0, import_path12.join)(projectRoot, ".gossip", "task-graph.jsonl");
+  if (!(0, import_fs12.existsSync)(taskGraphPath)) return { tasks: [] };
+  const created = /* @__PURE__ */ new Map();
+  const finished = /* @__PURE__ */ new Set();
+  try {
+    const lines = (0, import_fs12.readFileSync)(taskGraphPath, "utf-8").trim().split("\n").filter(Boolean);
+    for (const line of lines) {
+      try {
+        const ev = JSON.parse(line);
+        if (ev.type === "task.created" && ev.taskId) {
+          created.set(ev.taskId, { agentId: ev.agentId || "", task: ev.task || "", timestamp: ev.timestamp || "" });
+        } else if (ev.type === "task.completed" || ev.type === "task.failed" || ev.type === "task.cancelled") {
+          finished.add(ev.taskId);
+        }
+      } catch {
+      }
+    }
+  } catch {
+    return { tasks: [] };
+  }
+  const active = [];
+  for (const [taskId, info] of created) {
+    if (finished.has(taskId)) continue;
+    active.push({ taskId, agentId: info.agentId, task: info.task, startedAt: info.timestamp });
+  }
+  active.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  return { tasks: active.slice(0, 10) };
+}
+var import_fs12, import_path12;
+var init_api_active_tasks = __esm({
+  "packages/relay/src/dashboard/api-active-tasks.ts"() {
+    "use strict";
+    import_fs12 = require("fs");
+    import_path12 = require("path");
   }
 });
 
@@ -3625,7 +3870,7 @@ function readBody(req) {
     });
   });
 }
-var import_fs10, import_path10, AUTH_MAX_ATTEMPTS, AUTH_LOCKOUT_MS, DashboardRouter, MAX_BODY_SIZE;
+var import_fs13, import_path13, AUTH_MAX_ATTEMPTS, AUTH_LOCKOUT_MS, DashboardRouter, MAX_BODY_SIZE;
 var init_routes = __esm({
   "packages/relay/src/dashboard/routes.ts"() {
     "use strict";
@@ -3634,9 +3879,12 @@ var init_routes = __esm({
     init_api_skills();
     init_api_memory();
     init_api_consensus();
+    init_api_signals();
+    init_api_learnings();
     init_api_tasks();
-    import_fs10 = require("fs");
-    import_path10 = require("path");
+    init_api_active_tasks();
+    import_fs13 = require("fs");
+    import_path13 = require("path");
     AUTH_MAX_ATTEMPTS = 10;
     AUTH_LOCKOUT_MS = 6e4;
     DashboardRouter = class {
@@ -3650,6 +3898,7 @@ var init_routes = __esm({
       updateContext(ctx) {
         if (ctx.agentConfigs !== void 0) this.ctx.agentConfigs = ctx.agentConfigs;
         if (ctx.relayConnections !== void 0) this.ctx.relayConnections = ctx.relayConnections;
+        if (ctx.connectedAgentIds !== void 0) this.ctx.connectedAgentIds = ctx.connectedAgentIds;
       }
       /**
        * Handle an HTTP request. Returns true if the route was handled, false otherwise.
@@ -3728,12 +3977,17 @@ var init_routes = __esm({
             return true;
           }
           if (url2 === "/dashboard/api/agents" && req.method === "GET") {
-            const data = await agentsHandler(this.projectRoot, this.ctx.agentConfigs);
+            const data = await agentsHandler(this.projectRoot, this.ctx.agentConfigs, this.ctx.connectedAgentIds);
             this.json(res, 200, data);
             return true;
           }
           if (url2 === "/dashboard/api/tasks" && req.method === "GET") {
             const data = await tasksHandler(this.projectRoot);
+            this.json(res, 200, data);
+            return true;
+          }
+          if (url2 === "/dashboard/api/active-tasks" && req.method === "GET") {
+            const data = await activeTasksHandler(this.projectRoot);
             this.json(res, 200, data);
             return true;
           }
@@ -3744,7 +3998,13 @@ var init_routes = __esm({
           }
           if (url2 === "/dashboard/api/signals" && req.method === "GET") {
             const agentFilter = query?.get("agent") ?? null;
-            this.json(res, 200, { signals: [], total: 0, agentFilter });
+            const data = await signalsHandler(this.projectRoot, agentFilter);
+            this.json(res, 200, data);
+            return true;
+          }
+          if (url2 === "/dashboard/api/learnings" && req.method === "GET") {
+            const data = await learningsHandler(this.projectRoot);
+            this.json(res, 200, data);
             return true;
           }
           if (url2 === "/dashboard/api/skills" && req.method === "GET") {
@@ -3781,13 +4041,13 @@ var init_routes = __esm({
         return true;
       }
       serveDashboard(res) {
-        const htmlPath = (0, import_path10.join)(this.projectRoot, "dist-dashboard", "index.html");
-        if (!(0, import_fs10.existsSync)(htmlPath)) {
+        const htmlPath = (0, import_path13.join)(this.projectRoot, "dist-dashboard", "index.html");
+        if (!(0, import_fs13.existsSync)(htmlPath)) {
           res.writeHead(503, { "Content-Type": "text/plain" });
           res.end("Dashboard not built. Run: npm run build:dashboard");
           return true;
         }
-        const html = (0, import_fs10.readFileSync)(htmlPath, "utf-8");
+        const html = (0, import_fs13.readFileSync)(htmlPath, "utf-8");
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(html);
         return true;
@@ -3903,7 +4163,8 @@ var init_server = __esm({
               this.config.dashboard.projectRoot,
               {
                 agentConfigs: this.config.dashboard.agentConfigs,
-                relayConnections: this.connectionManager.count
+                relayConnections: this.connectionManager.count,
+                connectedAgentIds: this.connectionManager.getAll().map((c) => c.agentId)
               }
             );
           }
@@ -4086,7 +4347,10 @@ var init_server = __esm({
       }
       /** Call from handleConnection cleanup to keep relay count current */
       updateDashboardConnectionCount() {
-        this.dashboardRouter?.updateContext({ relayConnections: this.connectionManager.count });
+        this.dashboardRouter?.updateContext({
+          relayConnections: this.connectionManager.count,
+          connectedAgentIds: this.connectionManager.getAll().map((c) => c.agentId)
+        });
       }
     };
   }
@@ -4399,12 +4663,12 @@ var init_src3 = __esm({
 });
 
 // packages/tools/src/file-tools.ts
-var import_promises, import_path11, FileTools;
+var import_promises, import_path14, FileTools;
 var init_file_tools = __esm({
   "packages/tools/src/file-tools.ts"() {
     "use strict";
     import_promises = require("fs/promises");
-    import_path11 = require("path");
+    import_path14 = require("path");
     FileTools = class {
       constructor(sandbox) {
         this.sandbox = sandbox;
@@ -4429,7 +4693,7 @@ var init_file_tools = __esm({
       }
       async fileWrite(args) {
         const absPath = this.sandbox.validatePath(args.path);
-        const dir = (0, import_path11.resolve)(absPath, "..");
+        const dir = (0, import_path14.resolve)(absPath, "..");
         await (0, import_promises.mkdir)(dir, { recursive: true });
         await (0, import_promises.writeFile)(absPath, args.content, "utf-8");
         return `Written ${args.content.length} bytes to ${args.path}`;
@@ -4474,7 +4738,7 @@ var init_file_tools = __esm({
         }
         for (const entry of entries) {
           if (entry === "node_modules" || entry === ".git") continue;
-          const fullPath = (0, import_path11.join)(dir, entry);
+          const fullPath = (0, import_path14.join)(dir, entry);
           let info;
           try {
             info = await (0, import_promises.stat)(fullPath);
@@ -4486,7 +4750,7 @@ var init_file_tools = __esm({
           } else {
             const regexStr = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
             const regex = new RegExp(regexStr);
-            const relPath = (0, import_path11.relative)(this.sandbox.projectRoot, fullPath);
+            const relPath = (0, import_path14.relative)(this.sandbox.projectRoot, fullPath);
             if (regex.test(entry) || regex.test(relPath)) {
               results.push(relPath);
             }
@@ -4503,7 +4767,7 @@ var init_file_tools = __esm({
         }
         for (const entry of entries) {
           if (entry === "node_modules" || entry === ".git") continue;
-          const fullPath = (0, import_path11.join)(dir, entry);
+          const fullPath = (0, import_path14.join)(dir, entry);
           let info;
           try {
             info = await (0, import_promises.stat)(fullPath);
@@ -4516,7 +4780,7 @@ var init_file_tools = __esm({
             try {
               const content = await (0, import_promises.readFile)(fullPath, "utf-8");
               const lines = content.split("\n");
-              const relPath = (0, import_path11.relative)(this.sandbox.projectRoot, fullPath);
+              const relPath = (0, import_path14.relative)(this.sandbox.projectRoot, fullPath);
               lines.forEach((line, idx) => {
                 if (regex.test(line)) {
                   results.push(`${relPath}:${idx + 1}: ${line}`);
@@ -4540,7 +4804,7 @@ var init_file_tools = __esm({
           const entry = filtered[i];
           const isLast = i === filtered.length - 1;
           const connector = isLast ? "\u2514\u2500\u2500 " : "\u251C\u2500\u2500 ";
-          const fullPath = (0, import_path11.join)(dir, entry);
+          const fullPath = (0, import_path14.join)(dir, entry);
           let info;
           try {
             info = await (0, import_promises.stat)(fullPath);
@@ -4745,20 +5009,20 @@ var init_git_tools = __esm({
 });
 
 // packages/tools/src/skill-tools.ts
-var import_fs11, import_path12, SkillTools;
+var import_fs14, import_path15, SkillTools;
 var init_skill_tools = __esm({
   "packages/tools/src/skill-tools.ts"() {
     "use strict";
-    import_fs11 = require("fs");
-    import_path12 = require("path");
+    import_fs14 = require("fs");
+    import_path15 = require("path");
     SkillTools = class {
       gapLogPath;
       constructor(projectRoot) {
-        const gossipDir = (0, import_path12.join)(projectRoot, ".gossip");
-        if (!(0, import_fs11.existsSync)(gossipDir)) {
-          (0, import_fs11.mkdirSync)(gossipDir, { recursive: true });
+        const gossipDir = (0, import_path15.join)(projectRoot, ".gossip");
+        if (!(0, import_fs14.existsSync)(gossipDir)) {
+          (0, import_fs14.mkdirSync)(gossipDir, { recursive: true });
         }
-        this.gapLogPath = (0, import_path12.join)(gossipDir, "skill-gaps.jsonl");
+        this.gapLogPath = (0, import_path15.join)(gossipDir, "skill-gaps.jsonl");
       }
       async suggestSkill(args, callerId) {
         const entry = {
@@ -4769,16 +5033,16 @@ var init_skill_tools = __esm({
           task_context: args.task_context,
           timestamp: (/* @__PURE__ */ new Date()).toISOString()
         };
-        (0, import_fs11.appendFileSync)(this.gapLogPath, JSON.stringify(entry) + "\n");
+        (0, import_fs14.appendFileSync)(this.gapLogPath, JSON.stringify(entry) + "\n");
         this.truncateIfNeeded();
         return `Suggestion noted: '${args.skill_name}'. Continue with your current skills.`;
       }
       truncateIfNeeded() {
         try {
-          const content = (0, import_fs11.readFileSync)(this.gapLogPath, "utf-8");
+          const content = (0, import_fs14.readFileSync)(this.gapLogPath, "utf-8");
           const lines = content.trim().split("\n").filter(Boolean);
           if (lines.length > 5e3) {
-            (0, import_fs11.writeFileSync)(this.gapLogPath, lines.slice(-1e3).join("\n") + "\n");
+            (0, import_fs14.writeFileSync)(this.gapLogPath, lines.slice(-1e3).join("\n") + "\n");
           }
         } catch {
         }
@@ -4788,16 +5052,16 @@ var init_skill_tools = __esm({
 });
 
 // packages/tools/src/sandbox.ts
-var import_path13, import_fs12, Sandbox;
+var import_path16, import_fs15, Sandbox;
 var init_sandbox = __esm({
   "packages/tools/src/sandbox.ts"() {
     "use strict";
-    import_path13 = require("path");
-    import_fs12 = require("fs");
+    import_path16 = require("path");
+    import_fs15 = require("fs");
     Sandbox = class {
       root;
       constructor(projectRoot) {
-        this.root = (0, import_fs12.realpathSync)((0, import_path13.resolve)(projectRoot));
+        this.root = (0, import_fs15.realpathSync)((0, import_path16.resolve)(projectRoot));
       }
       get projectRoot() {
         return this.root;
@@ -4809,14 +5073,14 @@ var init_sandbox = __esm({
        * Resolves symlinks to prevent symlink escape attacks.
        */
       validatePath(filePath) {
-        const resolved = (0, import_path13.resolve)(this.root, filePath);
+        const resolved = (0, import_path16.resolve)(this.root, filePath);
         let checkPath = resolved;
-        while (!(0, import_fs12.existsSync)(checkPath)) {
-          const parent = (0, import_path13.dirname)(checkPath);
+        while (!(0, import_fs15.existsSync)(checkPath)) {
+          const parent = (0, import_path16.dirname)(checkPath);
           if (parent === checkPath) break;
           checkPath = parent;
         }
-        const real = (0, import_fs12.existsSync)(checkPath) ? (0, import_fs12.realpathSync)(checkPath) : checkPath;
+        const real = (0, import_fs15.existsSync)(checkPath) ? (0, import_fs15.realpathSync)(checkPath) : checkPath;
         const remainder = resolved.slice(checkPath.length);
         const fullReal = real + remainder;
         if (!fullReal.startsWith(this.root + "/") && fullReal !== this.root) {
@@ -4834,7 +5098,7 @@ function truncateAtLine(text, maxLength) {
   const cut = text.lastIndexOf("\n", maxLength);
   return text.slice(0, cut !== -1 ? cut : maxLength);
 }
-var import_msgpack3, import_crypto5, import_path14, ToolServer;
+var import_msgpack3, import_crypto5, import_path17, ToolServer;
 var init_tool_server = __esm({
   "packages/tools/src/tool-server.ts"() {
     "use strict";
@@ -4847,7 +5111,7 @@ var init_tool_server = __esm({
     init_git_tools();
     init_skill_tools();
     init_sandbox();
-    import_path14 = require("path");
+    import_path17 = require("path");
     ToolServer = class _ToolServer {
       agent;
       fileTools;
@@ -4960,8 +5224,8 @@ var init_tool_server = __esm({
         if (toolName === "file_write") {
           const filePath = args.path;
           if (scope) {
-            const resolved = (0, import_path14.resolve)(this.sandbox.projectRoot, filePath);
-            const rel = (0, import_path14.relative)(this.sandbox.projectRoot, resolved);
+            const resolved = (0, import_path17.resolve)(this.sandbox.projectRoot, filePath);
+            const rel = (0, import_path17.relative)(this.sandbox.projectRoot, resolved);
             if (rel.startsWith("..")) {
               throw new Error(`Write blocked: "${filePath}" resolves outside project root`);
             }
@@ -4971,7 +5235,7 @@ var init_tool_server = __esm({
             }
           }
           if (root) {
-            const resolved = (0, import_path14.resolve)(root, filePath);
+            const resolved = (0, import_path17.resolve)(root, filePath);
             if (!resolved.startsWith(root)) {
               throw new Error(`Write blocked: "${filePath}" is outside worktree root "${root}"`);
             }
@@ -5791,7 +6055,9 @@ var init_agent_registry = __esm({
             }
           }
           let perfWeight = 1;
-          if (this.competencyProfiler) {
+          if (this.perfReader?.isCircuitOpen(agent.id)) {
+            perfWeight = 0.3;
+          } else if (this.competencyProfiler) {
             perfWeight = this.competencyProfiler.getProfileMultiplier(agent.id, "review");
           } else if (this.perfReader) {
             perfWeight = this.perfReader.getDispatchWeight(agent.id);
@@ -6404,25 +6670,25 @@ function resolveSkill(agentId, skill, projectRoot) {
   const filename = `${sanitized}.md`;
   const hyphenFilename = `${sanitized.replace(/_/g, "-")}.md`;
   const bases = [
-    (0, import_path15.resolve)(projectRoot, ".gossip", "agents", agentId, "skills"),
-    (0, import_path15.resolve)(projectRoot, ".gossip", "skills"),
-    (0, import_path15.resolve)(__dirname, "default-skills")
+    (0, import_path18.resolve)(projectRoot, ".gossip", "agents", agentId, "skills"),
+    (0, import_path18.resolve)(projectRoot, ".gossip", "skills"),
+    (0, import_path18.resolve)(__dirname, "default-skills")
   ];
   for (const base of bases) {
     for (const fname of [filename, hyphenFilename]) {
-      const candidate = (0, import_path15.resolve)(base, fname);
-      if (!candidate.startsWith(base + import_path15.sep)) continue;
-      if ((0, import_fs13.existsSync)(candidate)) return (0, import_fs13.readFileSync)(candidate, "utf-8");
+      const candidate = (0, import_path18.resolve)(base, fname);
+      if (!candidate.startsWith(base + import_path18.sep)) continue;
+      if ((0, import_fs16.existsSync)(candidate)) return (0, import_fs16.readFileSync)(candidate, "utf-8");
     }
   }
   return null;
 }
-var import_fs13, import_path15;
+var import_fs16, import_path18;
 var init_skill_loader = __esm({
   "packages/orchestrator/src/skill-loader.ts"() {
     "use strict";
-    import_fs13 = require("fs");
-    import_path15 = require("path");
+    import_fs16 = require("fs");
+    import_path18 = require("path");
   }
 });
 
@@ -6468,6 +6734,13 @@ ${fileList}`;
 }
 function assemblePrompt(parts) {
   const blocks = [];
+  if (parts.projectStructure) {
+    blocks.push(`
+
+--- PROJECT ---
+${parts.projectStructure}
+--- END PROJECT ---`);
+  }
   if (parts.chainContext) {
     blocks.push(`
 
@@ -6552,29 +6825,29 @@ var init_prompt_assembler = __esm({
 });
 
 // packages/orchestrator/src/agent-memory.ts
-var import_fs14, import_path16, AgentMemoryReader;
+var import_fs17, import_path19, AgentMemoryReader;
 var init_agent_memory = __esm({
   "packages/orchestrator/src/agent-memory.ts"() {
     "use strict";
-    import_fs14 = require("fs");
-    import_path16 = require("path");
+    import_fs17 = require("fs");
+    import_path19 = require("path");
     AgentMemoryReader = class {
       constructor(projectRoot) {
         this.projectRoot = projectRoot;
       }
       loadMemory(agentId, taskText) {
-        const memDir = (0, import_path16.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
-        const indexPath = (0, import_path16.join)(memDir, "MEMORY.md");
-        if (!(0, import_fs14.existsSync)(indexPath)) return null;
+        const memDir = (0, import_path19.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
+        const indexPath = (0, import_path19.join)(memDir, "MEMORY.md");
+        if (!(0, import_fs17.existsSync)(indexPath)) return null;
         const parts = [];
-        const indexContent = (0, import_fs14.readFileSync)(indexPath, "utf-8");
+        const indexContent = (0, import_fs17.readFileSync)(indexPath, "utf-8");
         const indexLines = indexContent.split("\n");
         parts.push(indexLines.length > 200 ? indexLines.slice(0, 200).join("\n") + "\n[Truncated]" : indexContent);
-        const knowledgeDir = (0, import_path16.join)(memDir, "knowledge");
-        if ((0, import_fs14.existsSync)(knowledgeDir)) {
+        const knowledgeDir = (0, import_path19.join)(memDir, "knowledge");
+        if ((0, import_fs17.existsSync)(knowledgeDir)) {
           const files = this.selectKnowledgeFiles(knowledgeDir, taskText);
           for (const file2 of files) {
-            let content = (0, import_fs14.readFileSync)(file2.path, "utf-8");
+            let content = (0, import_fs17.readFileSync)(file2.path, "utf-8");
             content = content.replace(/<\/?(?:agent-memory|system|instructions)>/gi, "");
             parts.push(`<agent-memory>
 ${content}
@@ -6584,11 +6857,11 @@ ${content}
             }
           }
         }
-        const projectKnowledgeDir = (0, import_path16.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "knowledge");
-        if ((0, import_fs14.existsSync)(projectKnowledgeDir)) {
+        const projectKnowledgeDir = (0, import_path19.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "knowledge");
+        if ((0, import_fs17.existsSync)(projectKnowledgeDir)) {
           const projectFiles = this.selectKnowledgeFiles(projectKnowledgeDir, taskText, 3);
           for (const file2 of projectFiles) {
-            let content = (0, import_fs14.readFileSync)(file2.path, "utf-8");
+            let content = (0, import_fs17.readFileSync)(file2.path, "utf-8");
             content = content.replace(/<\/?(?:agent-memory|system|instructions)>/gi, "");
             parts.push(`<project-context>
 ${content}
@@ -6598,19 +6871,19 @@ ${content}
             }
           }
         }
-        const calPath = (0, import_path16.join)(memDir, "calibration", "accuracy.md");
-        if ((0, import_fs14.existsSync)(calPath)) {
-          parts.push((0, import_fs14.readFileSync)(calPath, "utf-8"));
+        const calPath = (0, import_path19.join)(memDir, "calibration", "accuracy.md");
+        if ((0, import_fs17.existsSync)(calPath)) {
+          parts.push((0, import_fs17.readFileSync)(calPath, "utf-8"));
         }
         return parts.join("\n\n");
       }
       selectKnowledgeFiles(knowledgeDir, taskText, maxFiles = 5) {
-        const files = (0, import_fs14.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
+        const files = (0, import_fs17.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
         const scored = [];
         const lower = taskText.toLowerCase();
         for (const file2 of files) {
-          const filePath = (0, import_path16.join)(knowledgeDir, file2);
-          const content = (0, import_fs14.readFileSync)(filePath, "utf-8");
+          const filePath = (0, import_path19.join)(knowledgeDir, file2);
+          const content = (0, import_fs17.readFileSync)(filePath, "utf-8");
           const frontmatter = this.parseFrontmatter(content);
           if (frontmatter) {
             const warmth = this.calculateWarmth(frontmatter.importance, frontmatter.lastAccessed);
@@ -6624,7 +6897,7 @@ ${content}
           } else {
             const relevance = this.calculateRelevance(content.slice(0, 500), lower);
             try {
-              const mtime = (0, import_fs14.statSync)(filePath).mtimeMs;
+              const mtime = (0, import_fs17.statSync)(filePath).mtimeMs;
               const ageDays = (Date.now() - mtime) / 864e5;
               const ageFactor = 1 / (1 + ageDays / 30);
               scored.push({ path: filePath, score: Math.max(relevance * ageFactor, 0.05) });
@@ -6682,7 +6955,7 @@ ${content}
           const newCount = parseInt(countMatch[1]) + 1;
           updated = updated.replace(/accessCount:\s*\d+/, `accessCount: ${newCount}`);
         }
-        (0, import_fs14.writeFileSync)(filePath, updated);
+        (0, import_fs17.writeFileSync)(filePath, updated);
       }
     };
   }
@@ -6708,12 +6981,12 @@ function truncateStartAndEnd(text, maxLen) {
 
 ${text.slice(-tail)}`;
 }
-var import_fs15, import_path17, MemoryWriter;
+var import_fs18, import_path20, MemoryWriter;
 var init_memory_writer = __esm({
   "packages/orchestrator/src/memory-writer.ts"() {
     "use strict";
-    import_fs15 = require("fs");
-    import_path17 = require("path");
+    import_fs18 = require("fs");
+    import_path20 = require("path");
     MemoryWriter = class {
       constructor(projectRoot) {
         this.projectRoot = projectRoot;
@@ -6724,12 +6997,12 @@ var init_memory_writer = __esm({
         this.summaryLlm = llm;
       }
       getMemDir(agentId) {
-        return (0, import_path17.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
+        return (0, import_path20.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
       }
       ensureDirs(agentId) {
         const memDir = this.getMemDir(agentId);
-        (0, import_fs15.mkdirSync)((0, import_path17.join)(memDir, "knowledge"), { recursive: true });
-        (0, import_fs15.mkdirSync)((0, import_path17.join)(memDir, "calibration"), { recursive: true });
+        (0, import_fs18.mkdirSync)((0, import_path20.join)(memDir, "knowledge"), { recursive: true });
+        (0, import_fs18.mkdirSync)((0, import_path20.join)(memDir, "calibration"), { recursive: true });
         return memDir;
       }
       async writeTaskEntry(agentId, data) {
@@ -6747,7 +7020,7 @@ var init_memory_writer = __esm({
           importance: this.deriveImportance(data.scores),
           timestamp: (/* @__PURE__ */ new Date()).toISOString()
         };
-        (0, import_fs15.appendFileSync)((0, import_path17.join)(memDir, "tasks.jsonl"), JSON.stringify(entry) + "\n");
+        (0, import_fs18.appendFileSync)((0, import_path20.join)(memDir, "tasks.jsonl"), JSON.stringify(entry) + "\n");
       }
       /**
        * Extract key facts from a task result and write as a knowledge entry.
@@ -6756,7 +7029,7 @@ var init_memory_writer = __esm({
        */
       async writeKnowledgeFromResult(agentId, data) {
         const memDir = this.ensureDirs(agentId);
-        const knowledgeDir = (0, import_path17.join)(memDir, "knowledge");
+        const knowledgeDir = (0, import_path20.join)(memDir, "knowledge");
         const safeResult = data.result.length > 5e4 ? data.result.slice(0, 5e4) : data.result;
         let cognitiveSummary = null;
         if (this.summaryLlm) {
@@ -6803,7 +7076,7 @@ ${cleanSummary}` : cleanSummary;
           "",
           body
         ].join("\n");
-        (0, import_fs15.writeFileSync)((0, import_path17.join)(knowledgeDir, filename), content);
+        (0, import_fs18.writeFileSync)((0, import_path20.join)(knowledgeDir, filename), content);
       }
       /**
        * Generate a cognitive summary — what the agent learned, not just what it saw.
@@ -6848,7 +7121,7 @@ ${truncateStartAndEnd(result, 4e3)}`
        */
       async writeSessionSummary(data) {
         const memDir = this.ensureDirs("_project");
-        const knowledgeDir = (0, import_path17.join)(memDir, "knowledge");
+        const knowledgeDir = (0, import_path20.join)(memDir, "knowledge");
         const now = /* @__PURE__ */ new Date();
         const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
         const filename = `${timestamp}-session.md`;
@@ -6866,6 +7139,28 @@ ${data.gitLog}` : "",
           data.notes ? `## User Notes
 ${data.notes}` : ""
         ].filter(Boolean).join("\n\n");
+        const SKIP = /* @__PURE__ */ new Set(["node_modules", "build", "out", ".git", ".gossip", "coverage", "__pycache__", ".next", ".nuxt", "vendor", "target", "tmp", "cache", "logs"]);
+        const isSkipped = (name) => SKIP.has(name) || name.startsWith(".") || name.startsWith("dist");
+        const MAX_CHILDREN = 15;
+        const discovered = [];
+        try {
+          const entries = (0, import_fs18.readdirSync)((0, import_path20.join)(this.projectRoot), { withFileTypes: true });
+          for (const entry of entries) {
+            if (!entry.isDirectory() || isSkipped(entry.name)) continue;
+            try {
+              const allChildren = (0, import_fs18.readdirSync)((0, import_path20.join)(this.projectRoot, entry.name)).filter((f) => !f.startsWith("."));
+              if (allChildren.length === 0) continue;
+              const shown = allChildren.slice(0, MAX_CHILDREN);
+              const suffix = allChildren.length > MAX_CHILDREN ? `, ...${allChildren.length - MAX_CHILDREN} more` : "";
+              discovered.push(`- ${entry.name}/: ${shown.join(", ")}${suffix}`);
+            } catch {
+            }
+          }
+        } catch {
+        }
+        const projectContext = discovered.length > 0 ? `PROJECT CONTEXT:
+${discovered.join("\n")}
+- Only cite file paths that conform to the directory structure above. If no paths are available, describe features by name without paths.` : "";
         let summaryBody;
         let pinned = false;
         let summaryOneLiner = "Session summary";
@@ -6875,6 +7170,8 @@ ${data.notes}` : ""
               {
                 role: "system",
                 content: `You are writing a project memory entry that will be loaded into the orchestrator's context at the start of the next session. This helps the orchestrator make better decisions about agent dispatch, task planning, and avoiding past mistakes.
+
+${projectContext}
 
 Write as a briefing for a new team lead taking over. Focus on:
 
@@ -6893,7 +7190,7 @@ Rules:
 - Cite file paths when referencing code or specs
 - Include specific numbers (commit count, finding count, test count)
 - Warnings > accomplishments \u2014 what NOT to do is more useful
-- NEVER fabricate file paths \u2014 only cite paths that appear in the Git Log or Task Summaries data. If no paths are available, describe features by name without paths.
+- NEVER fabricate file paths. Only cite paths that appear in the Git Log or Task Summaries. All paths must conform to the PROJECT CONTEXT above. If no paths are available, describe features by name without paths.
 - If ANY section has a "never do this again" lesson, respond with PINNED:true on the first line, then the summary`
               },
               {
@@ -6944,13 +7241,13 @@ ${rawInput.slice(0, 3e3)}`;
           "",
           summaryBody
         ].filter((l) => l !== "").join("\n");
-        (0, import_fs15.writeFileSync)((0, import_path17.join)(knowledgeDir, filename), content);
-        const nextSessionPath = (0, import_path17.join)(this.projectRoot, ".gossip", "next-session.md");
+        (0, import_fs18.writeFileSync)((0, import_path20.join)(knowledgeDir, filename), content);
+        const nextSessionPath = (0, import_path20.join)(this.projectRoot, ".gossip", "next-session.md");
         const nextSessionContent = `# Next Session Plan
 
 ${summaryBody}
 `;
-        (0, import_fs15.writeFileSync)(nextSessionPath, nextSessionContent);
+        (0, import_fs18.writeFileSync)(nextSessionPath, nextSessionContent);
         await this.writeTaskEntry("_project", {
           taskId: `session-${timestamp}`,
           task: `Session ${today}: ${summaryOneLiner}`,
@@ -6967,10 +7264,10 @@ ${summaryBody}
       /** Shared warmth-aware pruning — evicts lowest-warmth files, respects pinned */
       pruneKnowledgeDir(knowledgeDir, maxFiles) {
         try {
-          const existing = (0, import_fs15.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
+          const existing = (0, import_fs18.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort();
           if (existing.length < maxFiles) return;
           const scored = existing.map((f) => {
-            const content = (0, import_fs15.readFileSync)((0, import_path17.join)(knowledgeDir, f), "utf-8");
+            const content = (0, import_fs18.readFileSync)((0, import_path20.join)(knowledgeDir, f), "utf-8");
             const importance = parseFloat(content.match(/importance:\s*([\d.]+)/)?.[1] ?? "0.5");
             const isPinned = /pinned:\s*true/i.test(content);
             const ts = f.slice(0, 19).replace(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/, "$1T$2:$3:$4");
@@ -6982,7 +7279,7 @@ ${summaryBody}
           const toRemove = scored.slice(0, existing.length - maxFiles + 1);
           for (const item of toRemove) {
             if (item.isPinned) continue;
-            (0, import_fs15.unlinkSync)((0, import_path17.join)(knowledgeDir, item.file));
+            (0, import_fs18.unlinkSync)((0, import_path20.join)(knowledgeDir, item.file));
           }
         } catch {
         }
@@ -7161,7 +7458,7 @@ ${result}`;
       writeConsensusKnowledge(agentId, findings) {
         if (findings.length === 0) return;
         const memDir = this.ensureDirs(agentId);
-        const knowledgeDir = (0, import_path17.join)(memDir, "knowledge");
+        const knowledgeDir = (0, import_path20.join)(memDir, "knowledge");
         const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
         const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
         const filename = `${timestamp}-consensus.md`;
@@ -7181,7 +7478,7 @@ ${result}`;
           ...peerFindings.map((f) => `- [${f.originalAgentId}] ${f.finding}`)
         ].join("\n");
         this.pruneKnowledgeDir(knowledgeDir, 25);
-        (0, import_fs15.writeFileSync)((0, import_path17.join)(knowledgeDir, filename), content);
+        (0, import_fs18.writeFileSync)((0, import_path20.join)(knowledgeDir, filename), content);
       }
       /**
        * Update task memory importance based on consensus signals.
@@ -7204,14 +7501,14 @@ ${result}`;
           taskAdj.set(s.taskId, (taskAdj.get(s.taskId) ?? 0) + weight);
         }
         for (const [agentId, taskAdjustments] of adjustments) {
-          const memDir = (0, import_path17.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
-          const tasksPath = (0, import_path17.join)(memDir, "tasks.jsonl");
-          const lockPath = (0, import_path17.join)(memDir, "tasks.jsonl.lock");
-          if (!(0, import_fs15.existsSync)(tasksPath)) continue;
-          if ((0, import_fs15.existsSync)(lockPath)) continue;
+          const memDir = (0, import_path20.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
+          const tasksPath = (0, import_path20.join)(memDir, "tasks.jsonl");
+          const lockPath = (0, import_path20.join)(memDir, "tasks.jsonl.lock");
+          if (!(0, import_fs18.existsSync)(tasksPath)) continue;
+          if ((0, import_fs18.existsSync)(lockPath)) continue;
           try {
-            (0, import_fs15.writeFileSync)(lockPath, `${Date.now()}`);
-            const lines = (0, import_fs15.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+            (0, import_fs18.writeFileSync)(lockPath, `${Date.now()}`);
+            const lines = (0, import_fs18.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
             let modified = false;
             const updated = lines.map((line) => {
               try {
@@ -7228,12 +7525,12 @@ ${result}`;
               }
             });
             if (modified) {
-              (0, import_fs15.writeFileSync)(tasksPath, updated.join("\n") + "\n");
+              (0, import_fs18.writeFileSync)(tasksPath, updated.join("\n") + "\n");
             }
           } catch {
           } finally {
             try {
-              (0, import_fs15.unlinkSync)(lockPath);
+              (0, import_fs18.unlinkSync)(lockPath);
             } catch {
             }
           }
@@ -7243,13 +7540,13 @@ ${result}`;
         const memDir = this.getMemDir(agentId);
         const parts = [`# Agent Memory \u2014 ${agentId}
 `];
-        const knowledgeDir = (0, import_path17.join)(memDir, "knowledge");
-        if ((0, import_fs15.existsSync)(knowledgeDir)) {
-          const files = (0, import_fs15.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort().reverse();
+        const knowledgeDir = (0, import_path20.join)(memDir, "knowledge");
+        if ((0, import_fs18.existsSync)(knowledgeDir)) {
+          const files = (0, import_fs18.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md")).sort().reverse();
           if (files.length > 0) {
             parts.push("## Knowledge (most recent first)");
             for (const file2 of files) {
-              const content = (0, import_fs15.readFileSync)((0, import_path17.join)(knowledgeDir, file2), "utf-8");
+              const content = (0, import_fs18.readFileSync)((0, import_path20.join)(knowledgeDir, file2), "utf-8");
               const descMatch = content.match(/description:\s*(.+)/);
               const desc = descMatch ? descMatch[1].trim() : file2.replace(".md", "");
               parts.push(`- [${file2.replace(".md", "")}](knowledge/${file2}) \u2014 ${desc}`);
@@ -7257,17 +7554,17 @@ ${result}`;
             parts.push("");
           }
         }
-        const calPath = (0, import_path17.join)(memDir, "calibration", "accuracy.md");
-        if ((0, import_fs15.existsSync)(calPath)) {
-          const content = (0, import_fs15.readFileSync)(calPath, "utf-8");
+        const calPath = (0, import_path20.join)(memDir, "calibration", "accuracy.md");
+        if ((0, import_fs18.existsSync)(calPath)) {
+          const content = (0, import_fs18.readFileSync)(calPath, "utf-8");
           const descMatch = content.match(/description:\s*(.+)/);
           parts.push("## Calibration");
           parts.push(`- [accuracy](calibration/accuracy.md) \u2014 ${descMatch ? descMatch[1].trim() : "accuracy data"}`);
           parts.push("");
         }
-        const tasksPath = (0, import_path17.join)(memDir, "tasks.jsonl");
-        if ((0, import_fs15.existsSync)(tasksPath)) {
-          const lines = (0, import_fs15.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+        const tasksPath = (0, import_path20.join)(memDir, "tasks.jsonl");
+        if ((0, import_fs18.existsSync)(tasksPath)) {
+          const lines = (0, import_fs18.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
           const recent = lines.slice(-5).reverse();
           if (recent.length > 0) {
             parts.push("## Recent Tasks");
@@ -7284,12 +7581,12 @@ ${result}`;
           }
         }
         try {
-          const knowledgeDir2 = (0, import_path17.join)(memDir, "knowledge");
-          if ((0, import_fs15.existsSync)(knowledgeDir2)) {
-            const knowledgeFiles = (0, import_fs15.readdirSync)(knowledgeDir2).filter((f) => f.endsWith(".md")).sort().reverse().slice(0, 5);
+          const knowledgeDir2 = (0, import_path20.join)(memDir, "knowledge");
+          if ((0, import_fs18.existsSync)(knowledgeDir2)) {
+            const knowledgeFiles = (0, import_fs18.readdirSync)(knowledgeDir2).filter((f) => f.endsWith(".md")).sort().reverse().slice(0, 5);
             const patterns = [];
             for (const kf of knowledgeFiles) {
-              const kContent = (0, import_fs15.readFileSync)((0, import_path17.join)(knowledgeDir2, kf), "utf-8");
+              const kContent = (0, import_fs18.readFileSync)((0, import_path20.join)(knowledgeDir2, kf), "utf-8");
               const decisionsMatch = kContent.match(/Decisions: (.+)/);
               if (decisionsMatch) patterns.push(decisionsMatch[1].trim());
               const failuresMatch = kContent.match(/Failures: (.+)/);
@@ -7301,19 +7598,19 @@ ${result}`;
           }
         } catch {
         }
-        (0, import_fs15.writeFileSync)((0, import_path17.join)(memDir, "MEMORY.md"), parts.join("\n"));
+        (0, import_fs18.writeFileSync)((0, import_path20.join)(memDir, "MEMORY.md"), parts.join("\n"));
       }
     };
   }
 });
 
 // packages/orchestrator/src/memory-compactor.ts
-var import_fs16, import_path18, MAX_ARCHIVE_LINES, MemoryCompactor;
+var import_fs19, import_path21, MAX_ARCHIVE_LINES, MemoryCompactor;
 var init_memory_compactor = __esm({
   "packages/orchestrator/src/memory-compactor.ts"() {
     "use strict";
-    import_fs16 = require("fs");
-    import_path18 = require("path");
+    import_fs19 = require("fs");
+    import_path21 = require("path");
     MAX_ARCHIVE_LINES = 5e3;
     MemoryCompactor = class {
       constructor(projectRoot) {
@@ -7325,30 +7622,30 @@ var init_memory_compactor = __esm({
         return (importance || 0.5) * (1 / (1 + days / 30));
       }
       compactIfNeeded(agentId, maxEntries = 20) {
-        const memDir = (0, import_path18.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
-        const tasksPath = (0, import_path18.join)(memDir, "tasks.jsonl");
-        const lockPath = (0, import_path18.join)(memDir, "tasks.jsonl.lock");
-        if (!(0, import_fs16.existsSync)(tasksPath)) return { archived: 0 };
-        if ((0, import_fs16.existsSync)(lockPath)) {
+        const memDir = (0, import_path21.join)(this.projectRoot, ".gossip", "agents", agentId, "memory");
+        const tasksPath = (0, import_path21.join)(memDir, "tasks.jsonl");
+        const lockPath = (0, import_path21.join)(memDir, "tasks.jsonl.lock");
+        if (!(0, import_fs19.existsSync)(tasksPath)) return { archived: 0 };
+        if ((0, import_fs19.existsSync)(lockPath)) {
           try {
-            const lockAge = Date.now() - parseInt((0, import_fs16.readFileSync)(lockPath, "utf-8"), 10);
+            const lockAge = Date.now() - parseInt((0, import_fs19.readFileSync)(lockPath, "utf-8"), 10);
             if (lockAge < 6e4) return { archived: 0 };
-            (0, import_fs16.unlinkSync)(lockPath);
+            (0, import_fs19.unlinkSync)(lockPath);
           } catch {
             try {
-              (0, import_fs16.unlinkSync)(lockPath);
+              (0, import_fs19.unlinkSync)(lockPath);
             } catch {
               return { archived: 0 };
             }
           }
         }
         try {
-          (0, import_fs16.writeFileSync)(lockPath, `${Date.now()}`);
+          (0, import_fs19.writeFileSync)(lockPath, `${Date.now()}`);
         } catch {
           return { archived: 0 };
         }
         try {
-          const lines = (0, import_fs16.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+          const lines = (0, import_fs19.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
           if (lines.length <= maxEntries) return { archived: 0 };
           const entries = [];
           for (let i = 0; i < lines.length; i++) {
@@ -7363,7 +7660,7 @@ var init_memory_compactor = __esm({
           const toArchive = entries.slice(0, entries.length - maxEntries);
           const toKeep = entries.slice(entries.length - maxEntries);
           toKeep.sort((a, b) => a.idx - b.idx);
-          const archivePath = (0, import_path18.join)(memDir, "archive.jsonl");
+          const archivePath = (0, import_path21.join)(memDir, "archive.jsonl");
           for (const item of toArchive) {
             const archived = {
               archivedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -7371,22 +7668,22 @@ var init_memory_compactor = __esm({
               warmth: item.warmth,
               entry: item.entry
             };
-            (0, import_fs16.appendFileSync)(archivePath, JSON.stringify(archived) + "\n");
+            (0, import_fs19.appendFileSync)(archivePath, JSON.stringify(archived) + "\n");
           }
           try {
-            if ((0, import_fs16.existsSync)(archivePath)) {
-              const archiveLines = (0, import_fs16.readFileSync)(archivePath, "utf-8").trim().split("\n");
+            if ((0, import_fs19.existsSync)(archivePath)) {
+              const archiveLines = (0, import_fs19.readFileSync)(archivePath, "utf-8").trim().split("\n");
               if (archiveLines.length > MAX_ARCHIVE_LINES) {
-                (0, import_fs16.writeFileSync)(archivePath, archiveLines.slice(-MAX_ARCHIVE_LINES).join("\n") + "\n");
+                (0, import_fs19.writeFileSync)(archivePath, archiveLines.slice(-MAX_ARCHIVE_LINES).join("\n") + "\n");
               }
             }
           } catch {
           }
-          (0, import_fs16.writeFileSync)(tasksPath, toKeep.map((e) => e.line).join("\n") + "\n");
+          (0, import_fs19.writeFileSync)(tasksPath, toKeep.map((e) => e.line).join("\n") + "\n");
           return { archived: toArchive.length, message: `Compacted ${toArchive.length} memories for ${agentId}` };
         } finally {
           try {
-            (0, import_fs16.unlinkSync)(lockPath);
+            (0, import_fs19.unlinkSync)(lockPath);
           } catch {
           }
         }
@@ -7396,12 +7693,12 @@ var init_memory_compactor = __esm({
 });
 
 // packages/orchestrator/src/task-graph.ts
-var import_fs17, import_path19, MAX_SCAN_LINES, TaskGraph;
+var import_fs20, import_path22, MAX_SCAN_LINES, TaskGraph;
 var init_task_graph = __esm({
   "packages/orchestrator/src/task-graph.ts"() {
     "use strict";
-    import_fs17 = require("fs");
-    import_path19 = require("path");
+    import_fs20 = require("fs");
+    import_path22 = require("path");
     MAX_SCAN_LINES = 1e3;
     TaskGraph = class {
       graphPath;
@@ -7411,14 +7708,14 @@ var init_task_graph = __esm({
       // taskId → last event line number
       eventCount = 0;
       constructor(projectRoot) {
-        const gossipDir = (0, import_path19.join)(projectRoot, ".gossip");
-        (0, import_fs17.mkdirSync)(gossipDir, { recursive: true });
-        this.graphPath = (0, import_path19.join)(gossipDir, "task-graph.jsonl");
-        this.syncMetaPath = (0, import_path19.join)(gossipDir, "task-graph-sync.json");
-        this.indexPath = (0, import_path19.join)(gossipDir, "task-graph-index.json");
+        const gossipDir = (0, import_path22.join)(projectRoot, ".gossip");
+        (0, import_fs20.mkdirSync)(gossipDir, { recursive: true });
+        this.graphPath = (0, import_path22.join)(gossipDir, "task-graph.jsonl");
+        this.syncMetaPath = (0, import_path22.join)(gossipDir, "task-graph-sync.json");
+        this.indexPath = (0, import_path22.join)(gossipDir, "task-graph-index.json");
         this.loadIndex();
-        if ((0, import_fs17.existsSync)(this.graphPath)) {
-          const buf = (0, import_fs17.readFileSync)(this.graphPath);
+        if ((0, import_fs20.existsSync)(this.graphPath)) {
+          const buf = (0, import_fs20.readFileSync)(this.graphPath);
           let count = 0;
           for (let i = 0; i < buf.length; i++) {
             if (buf[i] === 10) count++;
@@ -7427,9 +7724,9 @@ var init_task_graph = __esm({
         }
       }
       loadIndex() {
-        if ((0, import_fs17.existsSync)(this.indexPath)) {
+        if ((0, import_fs20.existsSync)(this.indexPath)) {
           try {
-            const data = JSON.parse((0, import_fs17.readFileSync)(this.indexPath, "utf-8"));
+            const data = JSON.parse((0, import_fs20.readFileSync)(this.indexPath, "utf-8"));
             this.index = new Map(Object.entries(data).map(([k, v]) => [k, Number(v)]));
           } catch {
           }
@@ -7437,10 +7734,10 @@ var init_task_graph = __esm({
       }
       /** Save index to disk (call explicitly, not on every append) */
       flushIndex() {
-        (0, import_fs17.writeFileSync)(this.indexPath, JSON.stringify(Object.fromEntries(this.index)));
+        (0, import_fs20.writeFileSync)(this.indexPath, JSON.stringify(Object.fromEntries(this.index)));
       }
       appendEvent(event) {
-        (0, import_fs17.appendFileSync)(this.graphPath, JSON.stringify(event) + "\n");
+        (0, import_fs20.appendFileSync)(this.graphPath, JSON.stringify(event) + "\n");
         if ("taskId" in event) {
           this.index.set(event.taskId, this.eventCount);
         }
@@ -7522,8 +7819,8 @@ var init_task_graph = __esm({
       }
       // ── Read methods ─────────────────────────────────────────────────────
       readEvents() {
-        if (!(0, import_fs17.existsSync)(this.graphPath)) return [];
-        const content = (0, import_fs17.readFileSync)(this.graphPath, "utf-8");
+        if (!(0, import_fs20.existsSync)(this.graphPath)) return [];
+        const content = (0, import_fs20.readFileSync)(this.graphPath, "utf-8");
         const lines = content.trim().split("\n").filter(Boolean);
         const tail = lines.slice(-MAX_SCAN_LINES);
         return tail.map((line) => {
@@ -7605,14 +7902,14 @@ var init_task_graph = __esm({
         return this.eventCount;
       }
       getSyncMeta() {
-        if (!(0, import_fs17.existsSync)(this.syncMetaPath)) {
+        if (!(0, import_fs20.existsSync)(this.syncMetaPath)) {
           return { lastSync: "", lastSyncEventCount: 0 };
         }
-        return JSON.parse((0, import_fs17.readFileSync)(this.syncMetaPath, "utf-8"));
+        return JSON.parse((0, import_fs20.readFileSync)(this.syncMetaPath, "utf-8"));
       }
       updateSyncMeta(meta3) {
         const current = this.getSyncMeta();
-        (0, import_fs17.writeFileSync)(this.syncMetaPath, JSON.stringify({ ...current, ...meta3 }, null, 2));
+        (0, import_fs20.writeFileSync)(this.syncMetaPath, JSON.stringify({ ...current, ...meta3 }, null, 2));
       }
       getUnsynced(lastSyncTimestamp) {
         if (!lastSyncTimestamp) return this.readEvents();
@@ -7662,12 +7959,12 @@ var init_skill_parser = __esm({
 });
 
 // packages/orchestrator/src/skill-catalog.ts
-var import_fs18, import_path20, SkillCatalog;
+var import_fs21, import_path23, SkillCatalog;
 var init_skill_catalog = __esm({
   "packages/orchestrator/src/skill-catalog.ts"() {
     "use strict";
-    import_fs18 = require("fs");
-    import_path20 = require("path");
+    import_fs21 = require("fs");
+    import_path23 = require("path");
     init_skill_name();
     init_skill_parser();
     SkillCatalog = class {
@@ -7676,11 +7973,11 @@ var init_skill_catalog = __esm({
       projectSkillsDir;
       projectFileMtimes = /* @__PURE__ */ new Map();
       constructor(projectRoot, catalogPath) {
-        const defaultPath = catalogPath || (0, import_path20.resolve)(__dirname, "default-skills", "catalog.json");
-        this.defaultSkillsDir = (0, import_path20.resolve)(__dirname, "default-skills");
-        this.projectSkillsDir = projectRoot ? (0, import_path20.join)(projectRoot, ".gossip", "skills") : null;
+        const defaultPath = catalogPath || (0, import_path23.resolve)(__dirname, "default-skills", "catalog.json");
+        this.defaultSkillsDir = (0, import_path23.resolve)(__dirname, "default-skills");
+        this.projectSkillsDir = projectRoot ? (0, import_path23.join)(projectRoot, ".gossip", "skills") : null;
         try {
-          const raw = (0, import_fs18.readFileSync)(defaultPath, "utf-8");
+          const raw = (0, import_fs21.readFileSync)(defaultPath, "utf-8");
           const data = JSON.parse(raw);
           this.entries = data.skills.map((s) => ({
             ...s,
@@ -7718,7 +8015,7 @@ var init_skill_catalog = __esm({
       }
       validate() {
         const issues = [];
-        const mdFiles = (0, import_fs18.readdirSync)(this.defaultSkillsDir).filter((f) => f.endsWith(".md")).map((f) => normalizeSkillName(f.replace(".md", "")));
+        const mdFiles = (0, import_fs21.readdirSync)(this.defaultSkillsDir).filter((f) => f.endsWith(".md")).map((f) => normalizeSkillName(f.replace(".md", "")));
         for (const file2 of mdFiles) {
           if (!this.entries.find((e) => e.name === file2)) {
             issues.push(`Skill file '${file2}' has no catalog entry`);
@@ -7727,15 +8024,15 @@ var init_skill_catalog = __esm({
         return issues;
       }
       loadProjectSkills() {
-        if (!this.projectSkillsDir || !(0, import_fs18.existsSync)(this.projectSkillsDir)) return;
-        const files = (0, import_fs18.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
+        if (!this.projectSkillsDir || !(0, import_fs21.existsSync)(this.projectSkillsDir)) return;
+        const files = (0, import_fs21.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
         const newMtimes = /* @__PURE__ */ new Map();
         for (const file2 of files) {
-          const filePath = (0, import_path20.join)(this.projectSkillsDir, file2);
+          const filePath = (0, import_path23.join)(this.projectSkillsDir, file2);
           try {
-            const mtime = (0, import_fs18.statSync)(filePath).mtimeMs;
+            const mtime = (0, import_fs21.statSync)(filePath).mtimeMs;
             newMtimes.set(file2, mtime);
-            const content = (0, import_fs18.readFileSync)(filePath, "utf-8");
+            const content = (0, import_fs21.readFileSync)(filePath, "utf-8");
             const fm = parseSkillFrontmatter(content);
             if (!fm) continue;
             const entry = {
@@ -7757,14 +8054,14 @@ var init_skill_catalog = __esm({
         this.projectFileMtimes = newMtimes;
       }
       reloadIfChanged() {
-        if (!this.projectSkillsDir || !(0, import_fs18.existsSync)(this.projectSkillsDir)) return;
-        const files = (0, import_fs18.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
+        if (!this.projectSkillsDir || !(0, import_fs21.existsSync)(this.projectSkillsDir)) return;
+        const files = (0, import_fs21.readdirSync)(this.projectSkillsDir).filter((f) => f.endsWith(".md"));
         let changed = files.length !== this.projectFileMtimes.size;
         if (!changed) {
           for (const file2 of files) {
-            const filePath = (0, import_path20.join)(this.projectSkillsDir, file2);
+            const filePath = (0, import_path23.join)(this.projectSkillsDir, file2);
             try {
-              const mtime = (0, import_fs18.statSync)(filePath).mtimeMs;
+              const mtime = (0, import_fs21.statSync)(filePath).mtimeMs;
               if (mtime !== this.projectFileMtimes.get(file2)) {
                 changed = true;
                 break;
@@ -7785,12 +8082,12 @@ var init_skill_catalog = __esm({
 });
 
 // packages/orchestrator/src/skill-gap-tracker.ts
-var import_fs19, import_path21, MAX_LOG_LINES, TRUNCATE_TO, SkillGapTracker;
+var import_fs22, import_path24, MAX_LOG_LINES, TRUNCATE_TO, SkillGapTracker;
 var init_skill_gap_tracker = __esm({
   "packages/orchestrator/src/skill-gap-tracker.ts"() {
     "use strict";
-    import_fs19 = require("fs");
-    import_path21 = require("path");
+    import_fs22 = require("fs");
+    import_path24 = require("path");
     init_skill_name();
     MAX_LOG_LINES = 5e3;
     TRUNCATE_TO = 1e3;
@@ -7799,8 +8096,8 @@ var init_skill_gap_tracker = __esm({
       resolutionsPath;
       resolutionsCache = null;
       constructor(projectRoot) {
-        this.gapLogPath = (0, import_path21.join)(projectRoot, ".gossip", "skill-gaps.jsonl");
-        this.resolutionsPath = (0, import_path21.join)(projectRoot, ".gossip", "skill-resolutions.json");
+        this.gapLogPath = (0, import_path24.join)(projectRoot, ".gossip", "skill-gaps.jsonl");
+        this.resolutionsPath = (0, import_path24.join)(projectRoot, ".gossip", "skill-resolutions.json");
         this.migrateResolutions();
       }
       checkThresholds() {
@@ -7828,9 +8125,9 @@ var init_skill_gap_tracker = __esm({
         const normalized = normalizeSkillName(skillName);
         const resolutions = this.loadResolutions();
         resolutions[normalized] = (/* @__PURE__ */ new Date()).toISOString();
-        const dir = (0, import_path21.join)(this.resolutionsPath, "..");
-        if (!(0, import_fs19.existsSync)(dir)) (0, import_fs19.mkdirSync)(dir, { recursive: true });
-        (0, import_fs19.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
+        const dir = (0, import_path24.join)(this.resolutionsPath, "..");
+        if (!(0, import_fs22.existsSync)(dir)) (0, import_fs22.mkdirSync)(dir, { recursive: true });
+        (0, import_fs22.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
         this.resolutionsCache = resolutions;
       }
       getSuggestionsSince(agentId, sinceMs) {
@@ -7863,9 +8160,9 @@ var init_skill_gap_tracker = __esm({
         );
       }
       readSuggestions() {
-        if (!(0, import_fs19.existsSync)(this.gapLogPath)) return [];
+        if (!(0, import_fs22.existsSync)(this.gapLogPath)) return [];
         try {
-          const lines = (0, import_fs19.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
+          const lines = (0, import_fs22.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
           return lines.map((line) => {
             try {
               return JSON.parse(line);
@@ -7879,12 +8176,12 @@ var init_skill_gap_tracker = __esm({
       }
       loadResolutions() {
         if (this.resolutionsCache) return this.resolutionsCache;
-        if (!(0, import_fs19.existsSync)(this.resolutionsPath)) {
+        if (!(0, import_fs22.existsSync)(this.resolutionsPath)) {
           this.resolutionsCache = {};
           return this.resolutionsCache;
         }
         try {
-          this.resolutionsCache = JSON.parse((0, import_fs19.readFileSync)(this.resolutionsPath, "utf-8"));
+          this.resolutionsCache = JSON.parse((0, import_fs22.readFileSync)(this.resolutionsPath, "utf-8"));
           return this.resolutionsCache;
         } catch {
           this.resolutionsCache = {};
@@ -7892,10 +8189,10 @@ var init_skill_gap_tracker = __esm({
         }
       }
       migrateResolutions() {
-        if ((0, import_fs19.existsSync)(this.resolutionsPath)) return;
-        if (!(0, import_fs19.existsSync)(this.gapLogPath)) return;
+        if ((0, import_fs22.existsSync)(this.resolutionsPath)) return;
+        if (!(0, import_fs22.existsSync)(this.gapLogPath)) return;
         try {
-          const lines = (0, import_fs19.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
+          const lines = (0, import_fs22.readFileSync)(this.gapLogPath, "utf-8").trim().split("\n").filter(Boolean);
           const resolutions = {};
           for (const line of lines) {
             try {
@@ -7907,21 +8204,21 @@ var init_skill_gap_tracker = __esm({
             }
           }
           if (Object.keys(resolutions).length > 0) {
-            const dir = (0, import_path21.join)(this.resolutionsPath, "..");
-            if (!(0, import_fs19.existsSync)(dir)) (0, import_fs19.mkdirSync)(dir, { recursive: true });
-            (0, import_fs19.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
+            const dir = (0, import_path24.join)(this.resolutionsPath, "..");
+            if (!(0, import_fs22.existsSync)(dir)) (0, import_fs22.mkdirSync)(dir, { recursive: true });
+            (0, import_fs22.writeFileSync)(this.resolutionsPath, JSON.stringify(resolutions, null, 2));
             this.resolutionsCache = resolutions;
           }
         } catch {
         }
       }
       truncateIfNeeded() {
-        if (!(0, import_fs19.existsSync)(this.gapLogPath)) return;
+        if (!(0, import_fs22.existsSync)(this.gapLogPath)) return;
         try {
-          const content = (0, import_fs19.readFileSync)(this.gapLogPath, "utf-8");
+          const content = (0, import_fs22.readFileSync)(this.gapLogPath, "utf-8");
           const lines = content.trim().split("\n").filter(Boolean);
           if (lines.length > MAX_LOG_LINES) {
-            (0, import_fs19.writeFileSync)(this.gapLogPath, lines.slice(-TRUNCATE_TO).join("\n") + "\n");
+            (0, import_fs22.writeFileSync)(this.gapLogPath, lines.slice(-TRUNCATE_TO).join("\n") + "\n");
           }
         } catch {
         }
@@ -7931,11 +8228,11 @@ var init_skill_gap_tracker = __esm({
 });
 
 // packages/orchestrator/src/scope-tracker.ts
-var import_path22, ScopeTracker;
+var import_path25, ScopeTracker;
 var init_scope_tracker = __esm({
   "packages/orchestrator/src/scope-tracker.ts"() {
     "use strict";
-    import_path22 = require("path");
+    import_path25 = require("path");
     ScopeTracker = class {
       // taskId → scope (for release)
       constructor(projectRoot) {
@@ -7946,8 +8243,8 @@ var init_scope_tracker = __esm({
       taskToScope = /* @__PURE__ */ new Map();
       normalize(scope) {
         if (!scope || !scope.trim()) throw new Error("Scope must not be empty");
-        const abs = (0, import_path22.resolve)(this.projectRoot, scope);
-        const rel = (0, import_path22.relative)(this.projectRoot, abs);
+        const abs = (0, import_path25.resolve)(this.projectRoot, scope);
+        const rel = (0, import_path25.relative)(this.projectRoot, abs);
         if (rel.startsWith("..")) throw new Error(`Scope "${scope}" resolves outside project root`);
         if (rel === "") throw new Error(`Scope "${scope}" resolves to project root \u2014 too broad`);
         return rel.endsWith("/") ? rel : rel + "/";
@@ -7985,14 +8282,14 @@ var init_scope_tracker = __esm({
 });
 
 // packages/orchestrator/src/worktree-manager.ts
-var import_child_process3, import_util5, import_promises2, import_path23, import_os, execFileAsync3, WorktreeManager;
+var import_child_process3, import_util5, import_promises2, import_path26, import_os, execFileAsync3, WorktreeManager;
 var init_worktree_manager = __esm({
   "packages/orchestrator/src/worktree-manager.ts"() {
     "use strict";
     import_child_process3 = require("child_process");
     import_util5 = require("util");
     import_promises2 = require("fs/promises");
-    import_path23 = require("path");
+    import_path26 = require("path");
     import_os = require("os");
     execFileAsync3 = (0, import_util5.promisify)(import_child_process3.execFile);
     WorktreeManager = class {
@@ -8001,7 +8298,7 @@ var init_worktree_manager = __esm({
       }
       async create(taskId) {
         const branch = `gossip-${taskId}`;
-        const wtPath = await (0, import_promises2.mkdtemp)((0, import_path23.join)((0, import_os.tmpdir)(), "gossip-wt-"));
+        const wtPath = await (0, import_promises2.mkdtemp)((0, import_path26.join)((0, import_os.tmpdir)(), "gossip-wt-"));
         await execFileAsync3("git", ["branch", branch, "HEAD"], { cwd: this.projectRoot });
         try {
           await execFileAsync3("git", ["worktree", "add", wtPath, branch], { cwd: this.projectRoot });
@@ -8066,12 +8363,13 @@ var init_worktree_manager = __esm({
 });
 
 // packages/orchestrator/src/consensus-engine.ts
-var import_promises3, import_path24, SUMMARY_HEADER, FALLBACK_MAX_LENGTH, MAX_SUMMARY_LENGTH, MAX_CROSS_REVIEW_ENTRIES, VALID_ACTIONS, ConsensusEngine;
+var import_promises3, import_crypto9, import_path27, SUMMARY_HEADER, FALLBACK_MAX_LENGTH, MAX_SUMMARY_LENGTH, MAX_CROSS_REVIEW_ENTRIES, VALID_ACTIONS, ConsensusEngine;
 var init_consensus_engine = __esm({
   "packages/orchestrator/src/consensus-engine.ts"() {
     "use strict";
     import_promises3 = require("fs/promises");
-    import_path24 = require("path");
+    import_crypto9 = require("crypto");
+    import_path27 = require("path");
     SUMMARY_HEADER = "## Consensus Summary";
     FALLBACK_MAX_LENGTH = 2e3;
     MAX_SUMMARY_LENGTH = 3e3;
@@ -8216,6 +8514,7 @@ Return only valid JSON.` },
        * Phase 3: Synthesize Phase 1 results and Phase 2 cross-review entries into a consensus report.
        */
       async synthesize(results, crossReviewEntries) {
+        const consensusId = (0, import_crypto9.randomUUID)().slice(0, 12);
         const signals = [];
         const newFindings = [];
         const successful = results.filter((r) => r.status === "completed" && r.result);
@@ -8240,6 +8539,15 @@ Return only valid JSON.` },
         this.deduplicateFindings(findingMap);
         const agentTaskIds = /* @__PURE__ */ new Map();
         for (const r of successful) agentTaskIds.set(r.agentId, r.id);
+        const getTaskId = (agentId) => {
+          const id = agentTaskIds.get(agentId);
+          if (id && id.length > 0) return id;
+          process.stderr.write(`[consensus] WARNING: no taskId for agent "${agentId}", using fallback
+`);
+          return `unknown-${consensusId}-${agentId}`;
+        };
+        const MAX_EVIDENCE_LENGTH = 2e3;
+        const capEvidence = (e) => e.length > MAX_EVIDENCE_LENGTH ? e.slice(0, MAX_EVIDENCE_LENGTH) : e;
         const crossReviewTimestamp = (/* @__PURE__ */ new Date()).toISOString();
         for (const entry of crossReviewEntries) {
           const now = crossReviewTimestamp;
@@ -8252,10 +8560,11 @@ Return only valid JSON.` },
             });
             signals.push({
               type: "consensus",
-              taskId: agentTaskIds.get(entry.agentId) ?? "",
+              taskId: getTaskId(entry.agentId),
+              consensusId,
               signal: "new_finding",
               agentId: entry.agentId,
-              evidence: entry.evidence,
+              evidence: capEvidence(entry.evidence),
               timestamp: now
             });
             continue;
@@ -8268,11 +8577,12 @@ Return only valid JSON.` },
               f.confidences.push(entry.confidence);
               signals.push({
                 type: "consensus",
-                taskId: agentTaskIds.get(entry.agentId) ?? "",
+                taskId: getTaskId(entry.agentId),
+                consensusId,
                 signal: "agreement",
                 agentId: entry.agentId,
                 counterpartId: entry.peerAgentId,
-                evidence: entry.evidence,
+                evidence: capEvidence(entry.evidence),
                 timestamp: now
               });
             }
@@ -8289,12 +8599,13 @@ Return only valid JSON.` },
               if (isHallucination) {
                 signals.push({
                   type: "consensus",
-                  taskId: agentTaskIds.get(entry.peerAgentId) ?? "",
+                  taskId: getTaskId(entry.peerAgentId),
+                  consensusId,
                   signal: "hallucination_caught",
                   agentId: entry.peerAgentId,
                   counterpartId: entry.agentId,
                   outcome: isCitationFabricated ? "fabricated_citation" : "incorrect",
-                  evidence: entry.evidence,
+                  evidence: capEvidence(entry.evidence),
                   timestamp: now
                 });
               } else {
@@ -8305,11 +8616,12 @@ Return only valid JSON.` },
                 });
                 signals.push({
                   type: "consensus",
-                  taskId: agentTaskIds.get(entry.agentId) ?? "",
+                  taskId: getTaskId(entry.agentId),
+                  consensusId,
                   signal: "disagreement",
                   agentId: entry.agentId,
                   counterpartId: entry.peerAgentId,
-                  evidence: entry.evidence,
+                  evidence: capEvidence(entry.evidence),
                   timestamp: now
                 });
               }
@@ -8326,11 +8638,12 @@ Return only valid JSON.` },
               f.confidences.push(entry.confidence);
               signals.push({
                 type: "consensus",
-                taskId: agentTaskIds.get(entry.agentId) ?? "",
+                taskId: getTaskId(entry.agentId),
+                consensusId,
                 signal: "unverified",
                 agentId: entry.agentId,
                 counterpartId: entry.peerAgentId,
-                evidence: entry.evidence,
+                evidence: capEvidence(entry.evidence),
                 timestamp: now
               });
             }
@@ -8366,11 +8679,12 @@ Return only valid JSON.` },
               unique.push(finding);
               signals.push({
                 type: "consensus",
-                taskId: agentTaskIds.get(entry.originalAgentId) ?? "",
+                taskId: getTaskId(entry.originalAgentId),
+                consensusId,
                 signal: "hallucination_caught",
                 agentId: entry.originalAgentId,
                 outcome: "fabricated_citation",
-                evidence: `Confirmed finding cites non-existent code: "${entry.finding.slice(0, 200)}"`,
+                evidence: capEvidence(`Confirmed finding cites non-existent code: "${entry.finding.slice(0, 200)}"`),
                 timestamp: now
               });
               continue;
@@ -8383,10 +8697,11 @@ Return only valid JSON.` },
             if (isUniquelyDiscovered) {
               signals.push({
                 type: "consensus",
-                taskId: agentTaskIds.get(entry.originalAgentId) ?? "",
+                taskId: getTaskId(entry.originalAgentId),
+                consensusId,
                 signal: "unique_confirmed",
                 agentId: entry.originalAgentId,
-                evidence: entry.finding,
+                evidence: capEvidence(entry.finding),
                 timestamp: now
               });
             }
@@ -8395,10 +8710,11 @@ Return only valid JSON.` },
             unverified.push(finding);
             signals.push({
               type: "consensus",
-              taskId: agentTaskIds.get(entry.originalAgentId) ?? "",
+              taskId: getTaskId(entry.originalAgentId),
+              consensusId,
               signal: "unique_unconfirmed",
               agentId: entry.originalAgentId,
-              evidence: entry.finding,
+              evidence: capEvidence(entry.finding),
               timestamp: now
             });
           } else {
@@ -8406,10 +8722,11 @@ Return only valid JSON.` },
             unique.push(finding);
             signals.push({
               type: "consensus",
-              taskId: agentTaskIds.get(entry.originalAgentId) ?? "",
+              taskId: getTaskId(entry.originalAgentId),
+              consensusId,
               signal: "unique_unconfirmed",
               agentId: entry.originalAgentId,
-              evidence: entry.finding,
+              evidence: capEvidence(entry.finding),
               timestamp: now
             });
           }
@@ -8467,6 +8784,11 @@ ${snippet}`);
        */
       async verifyCitations(evidence) {
         if (!this.config.projectRoot) return false;
+        try {
+          await (0, import_promises3.stat)(this.config.projectRoot);
+        } catch {
+          return false;
+        }
         const citationPattern = /(?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,4}):(\d+)/g;
         const citations = [];
         let match;
@@ -8482,7 +8804,7 @@ ${snippet}`);
             const lines = content.split("\n");
             if (citation.line > lines.length) return true;
           } catch {
-            return true;
+            return false;
           }
         }
         return false;
@@ -8494,20 +8816,20 @@ ${snippet}`);
         const root = this.config.projectRoot;
         const fileName = fileRef.split("/").pop();
         try {
-          await (0, import_promises3.stat)((0, import_path24.join)(root, fileRef));
-          return (0, import_path24.join)(root, fileRef);
+          await (0, import_promises3.stat)((0, import_path27.join)(root, fileRef));
+          return (0, import_path27.join)(root, fileRef);
         } catch {
         }
         if (fileName !== fileRef) {
           try {
-            await (0, import_promises3.stat)((0, import_path24.join)(root, fileName));
-            return (0, import_path24.join)(root, fileName);
+            await (0, import_promises3.stat)((0, import_path27.join)(root, fileName));
+            return (0, import_path27.join)(root, fileName);
           } catch {
           }
         }
         const searchDirs = ["packages", "src", "apps", "tests", "test", "tools", "scripts", "lib"];
         for (const dir of searchDirs) {
-          const found = await this.findFile((0, import_path24.join)(root, dir), fileName);
+          const found = await this.findFile((0, import_path27.join)(root, dir), fileName);
           if (found) return found;
         }
         return null;
@@ -8516,7 +8838,7 @@ ${snippet}`);
         try {
           const entries = await (0, import_promises3.readdir)(dir, { withFileTypes: true });
           for (const entry of entries) {
-            const fullPath = (0, import_path24.join)(dir, entry.name);
+            const fullPath = (0, import_path27.join)(dir, entry.name);
             if (entry.isFile() && entry.name === fileName) return fullPath;
             if (entry.isDirectory() && entry.name !== "node_modules" && entry.name !== ".git") {
               const found = await this.findFile(fullPath, fileName);
@@ -8758,26 +9080,83 @@ ${snippet}`);
 });
 
 // packages/orchestrator/src/performance-writer.ts
-var import_fs20, import_path25, PerformanceWriter;
+function validateSignal(signal) {
+  if (!signal || typeof signal !== "object") {
+    throw new Error("Signal validation failed: signal must be an object");
+  }
+  if (typeof signal.agentId !== "string" || signal.agentId.length === 0) {
+    throw new Error("Signal validation failed: agentId must be a non-empty string");
+  }
+  if (typeof signal.taskId !== "string" || signal.taskId.length === 0) {
+    throw new Error("Signal validation failed: taskId must be a non-empty string");
+  }
+  if (typeof signal.timestamp !== "string" || !isFinite(new Date(signal.timestamp).getTime())) {
+    throw new Error("Signal validation failed: timestamp must be a valid ISO-8601 string");
+  }
+  switch (signal.type) {
+    case "consensus":
+      if (!VALID_CONSENSUS_SIGNALS.has(signal.signal)) {
+        throw new Error(`Signal validation failed: unknown consensus signal "${signal.signal}"`);
+      }
+      break;
+    case "impl":
+      if (!VALID_IMPL_SIGNALS.has(signal.signal)) {
+        throw new Error(`Signal validation failed: unknown impl signal "${signal.signal}"`);
+      }
+      break;
+    case "meta":
+      if (!VALID_META_SIGNALS.has(signal.signal)) {
+        throw new Error(`Signal validation failed: unknown meta signal "${signal.signal}"`);
+      }
+      break;
+    default:
+      throw new Error(`Signal validation failed: unknown type "${signal.type}"`);
+  }
+}
+var import_fs23, import_path28, VALID_CONSENSUS_SIGNALS, VALID_IMPL_SIGNALS, VALID_META_SIGNALS, PerformanceWriter;
 var init_performance_writer = __esm({
   "packages/orchestrator/src/performance-writer.ts"() {
     "use strict";
-    import_fs20 = require("fs");
-    import_path25 = require("path");
+    import_fs23 = require("fs");
+    import_path28 = require("path");
+    VALID_CONSENSUS_SIGNALS = /* @__PURE__ */ new Set([
+      "agreement",
+      "disagreement",
+      "unverified",
+      "unique_confirmed",
+      "unique_unconfirmed",
+      "new_finding",
+      "hallucination_caught",
+      "category_confirmed",
+      "consensus_verified",
+      "signal_retracted"
+    ]);
+    VALID_IMPL_SIGNALS = /* @__PURE__ */ new Set([
+      "impl_test_pass",
+      "impl_test_fail",
+      "impl_peer_approved",
+      "impl_peer_rejected"
+    ]);
+    VALID_META_SIGNALS = /* @__PURE__ */ new Set([
+      "task_completed",
+      "task_tool_turns"
+    ]);
     PerformanceWriter = class {
       filePath;
       constructor(projectRoot) {
-        const dir = (0, import_path25.join)(projectRoot, ".gossip");
-        if (!(0, import_fs20.existsSync)(dir)) (0, import_fs20.mkdirSync)(dir, { recursive: true });
-        this.filePath = (0, import_path25.join)(dir, "agent-performance.jsonl");
+        const dir = (0, import_path28.join)(projectRoot, ".gossip");
+        if (!(0, import_fs23.existsSync)(dir)) (0, import_fs23.mkdirSync)(dir, { recursive: true });
+        this.filePath = (0, import_path28.join)(dir, "agent-performance.jsonl");
       }
       appendSignal(signal) {
-        (0, import_fs20.appendFileSync)(this.filePath, JSON.stringify(signal) + "\n");
+        validateSignal(signal);
+        (0, import_fs23.appendFileSync)(this.filePath, JSON.stringify(signal) + "\n");
       }
       appendSignals(signals) {
         if (signals.length === 0) return;
+        for (const s of signals) validateSignal(s);
         const data = signals.map((s) => JSON.stringify(s)).join("\n") + "\n";
-        (0, import_fs20.appendFileSync)(this.filePath, data);
+        (0, import_fs23.appendFileSync)(this.filePath, data);
       }
     };
   }
@@ -8823,13 +9202,13 @@ function shouldSkipConsensus(task, agents, costMode, agreementHistory) {
   const firstWord = task.trim().split(/\s+/)[0] || "";
   return OBSERVATION_VERBS.test(firstWord);
 }
-var import_crypto9, import_fs21, import_path26, log2, DispatchPipeline, SECURITY_KEYWORDS, OBSERVATION_VERBS;
+var import_crypto10, import_fs24, import_path29, log2, DispatchPipeline, SECURITY_KEYWORDS, OBSERVATION_VERBS;
 var init_dispatch_pipeline = __esm({
   "packages/orchestrator/src/dispatch-pipeline.ts"() {
     "use strict";
-    import_crypto9 = require("crypto");
-    import_fs21 = require("fs");
-    import_path26 = require("path");
+    import_crypto10 = require("crypto");
+    import_fs24 = require("fs");
+    import_path29 = require("path");
     init_skill_loader();
     init_prompt_assembler();
     init_agent_memory();
@@ -8879,6 +9258,37 @@ var init_dispatch_pipeline = __esm({
       sessionStartTime = /* @__PURE__ */ new Date();
       sessionConsensusHistory = [];
       taskProgressCallback = null;
+      projectStructureCache = null;
+      getProjectStructure() {
+        if (this.projectStructureCache !== null) return this.projectStructureCache || void 0;
+        try {
+          const parts = [];
+          const SKIP = /* @__PURE__ */ new Set(["node_modules", "build", "out", ".git", ".gossip", "coverage", "__pycache__", ".next", ".nuxt", "vendor", "target", "tmp", "cache", "logs"]);
+          const isSkipped = (name) => SKIP.has(name) || name.startsWith(".") || name.startsWith("dist");
+          const MAX_CHILDREN = 15;
+          const entries = (0, import_fs24.readdirSync)(this.projectRoot, { withFileTypes: true });
+          for (const entry of entries) {
+            if (!entry.isDirectory() || isSkipped(entry.name)) continue;
+            try {
+              const allChildren = (0, import_fs24.readdirSync)((0, import_path29.join)(this.projectRoot, entry.name)).filter((f) => !f.startsWith("."));
+              if (allChildren.length === 0) continue;
+              const shown = allChildren.slice(0, MAX_CHILDREN);
+              const suffix = allChildren.length > MAX_CHILDREN ? `, ...${allChildren.length - MAX_CHILDREN} more` : "";
+              parts.push(`${entry.name}/: ${shown.join(", ")}${suffix}`);
+            } catch {
+            }
+          }
+          if (parts.length === 0) {
+            this.projectStructureCache = "";
+            return void 0;
+          }
+          this.projectStructureCache = parts.join("\n");
+          return this.projectStructureCache;
+        } catch {
+          this.projectStructureCache = "";
+          return void 0;
+        }
+      }
       setTaskProgressCallback(cb) {
         this.taskProgressCallback = cb;
       }
@@ -8905,12 +9315,12 @@ var init_dispatch_pipeline = __esm({
         }
         this.worktreeManager.pruneOrphans().catch((err) => log2(`Orphan cleanup failed: ${err.message}`));
         try {
-          const projectMemDir = (0, import_path26.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory");
-          (0, import_fs21.mkdirSync)(projectMemDir, { recursive: true });
+          const projectMemDir = (0, import_path29.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory");
+          (0, import_fs24.mkdirSync)(projectMemDir, { recursive: true });
         } catch {
         }
         try {
-          const gossipPath = (0, import_path26.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
+          const gossipPath = (0, import_path29.join)(config2.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
           const { existsSync: ex, readFileSync: rf } = require("fs");
           if (ex(gossipPath)) {
             const lines = rf(gossipPath, "utf-8").trim().split("\n").filter(Boolean);
@@ -8947,7 +9357,7 @@ var init_dispatch_pipeline = __esm({
           throw new Error(`Agent "${agentId}" not found`);
         }
         log2(`dispatch \u2192 ${agentId}: "${task.slice(0, 80)}..." writeMode=${options?.writeMode || "default"}`);
-        const taskId = (0, import_crypto9.randomUUID)().slice(0, 8);
+        const taskId = (0, import_crypto10.randomUUID)().slice(0, 8);
         const agentSkills = this.registryGet(agentId)?.skills || [];
         const skills = loadSkills(agentId, agentSkills, this.projectRoot, this.skillIndex ?? void 0);
         const memory = this.memReader.loadMemory(agentId, task);
@@ -8975,9 +9385,9 @@ var init_dispatch_pipeline = __esm({
         const specRefs = extractSpecReferences(task);
         if (specRefs.length > 0) {
           try {
-            const specPath = (0, import_path26.resolve)(this.projectRoot, specRefs[0]);
+            const specPath = (0, import_path29.resolve)(this.projectRoot, specRefs[0]);
             if (specPath.startsWith(this.projectRoot + "/") || specPath === this.projectRoot) {
-              const specContent = (0, import_fs21.readFileSync)(specPath, "utf-8");
+              const specContent = (0, import_fs24.readFileSync)(specPath, "utf-8");
               const implFiles = extractSpecReferences(task, specContent);
               const enrichment = buildSpecReviewEnrichment(implFiles);
               if (enrichment) specReviewContext = enrichment;
@@ -8985,7 +9395,7 @@ var init_dispatch_pipeline = __esm({
           } catch {
           }
         }
-        const memoryDir = (0, import_path26.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "knowledge");
+        const memoryDir = (0, import_path29.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "knowledge");
         const promptContent = assemblePrompt({
           memory: memory || void 0,
           memoryDir,
@@ -8994,7 +9404,8 @@ var init_dispatch_pipeline = __esm({
           sessionContext: sessionContext || void 0,
           chainContext: chainContext || void 0,
           consensusSummary: options?.consensus,
-          specReviewContext
+          specReviewContext,
+          projectStructure: this.getProjectStructure()
         });
         this.taskGraph.recordCreated(taskId, agentId, task, agentSkills);
         const entry = {
@@ -9413,7 +9824,7 @@ Worktree merge: CONFLICT
         log2(`dispatchParallel: ${taskDefs.length} tasks \u2014 agents: [${taskDefs.map((d) => d.agentId).join(", ")}]`);
         const taskIds = [];
         const errors = [];
-        const batchId = (0, import_crypto9.randomUUID)().slice(0, 8);
+        const batchId = (0, import_crypto10.randomUUID)().slice(0, 8);
         const batchTaskIds = /* @__PURE__ */ new Set();
         for (const def of taskDefs) {
           if (!this.workers.has(def.agentId)) {
@@ -9623,6 +10034,7 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
           const perfWriter = new PerformanceWriter(this.projectRoot);
           const agentTaskIdMap = /* @__PURE__ */ new Map();
           for (const r of results) agentTaskIdMap.set(r.agentId, r.id);
+          const consensusId = consensusReport.signals[0]?.consensusId;
           if (consensusReport.confirmed.length > 0 && this.consensusJudge) {
             try {
               const verdicts = await this.consensusJudge.verify(consensusReport.confirmed);
@@ -9639,6 +10051,7 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
                   consensusReport.signals.push({
                     type: "consensus",
                     signal: "hallucination_caught",
+                    consensusId,
                     agentId: finding.originalAgentId,
                     outcome: "judge_refuted",
                     evidence: v.evidence,
@@ -9649,6 +10062,7 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
                     consensusReport.signals.push({
                       type: "consensus",
                       signal: "hallucination_caught",
+                      consensusId,
                       agentId: confirmerId,
                       outcome: "confirmed_hallucination",
                       evidence: `Confirmed refuted finding: ${v.evidence}`,
@@ -9660,6 +10074,7 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
                   consensusReport.signals.push({
                     type: "consensus",
                     signal: "consensus_verified",
+                    consensusId,
                     agentId: finding.originalAgentId,
                     evidence: v.evidence,
                     timestamp: now,
@@ -9688,6 +10103,7 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
                 perfWriter.appendSignal({
                   type: "consensus",
                   signal: "category_confirmed",
+                  consensusId,
                   agentId: finding.originalAgentId,
                   taskId: finding.id || "",
                   category,
@@ -9728,9 +10144,9 @@ ${lenses.map((l) => `  ${l.agentId} \u2192 ${l.focus.slice(0, 80)}`).join("\n")}
           };
           this.sessionConsensusHistory.push(historyEntry);
           try {
-            const historyPath = (0, import_path26.join)(this.projectRoot, ".gossip", "consensus-history.jsonl");
-            (0, import_fs21.mkdirSync)((0, import_path26.join)(this.projectRoot, ".gossip"), { recursive: true });
-            (0, import_fs21.appendFileSync)(historyPath, JSON.stringify(historyEntry) + "\n");
+            const historyPath = (0, import_path29.join)(this.projectRoot, ".gossip", "consensus-history.jsonl");
+            (0, import_fs24.mkdirSync)((0, import_path29.join)(this.projectRoot, ".gossip"), { recursive: true });
+            (0, import_fs24.appendFileSync)(historyPath, JSON.stringify(historyEntry) + "\n");
           } catch {
           }
           if (this.memWriter && consensusReport.confirmed.length + consensusReport.disputed.length > 0) {
@@ -9841,9 +10257,9 @@ ${topFindings}`;
               this.sessionGossip.shift();
             }
             try {
-              const gossipPath = (0, import_path26.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
-              (0, import_fs21.mkdirSync)((0, import_path26.dirname)(gossipPath), { recursive: true });
-              (0, import_fs21.appendFileSync)(gossipPath, JSON.stringify({ agentId, taskSummary: summary, timestamp: Date.now() }) + "\n");
+              const gossipPath = (0, import_path29.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "session-gossip.jsonl");
+              (0, import_fs24.mkdirSync)((0, import_path29.dirname)(gossipPath), { recursive: true });
+              (0, import_fs24.appendFileSync)(gossipPath, JSON.stringify({ agentId, taskSummary: summary, timestamp: Date.now() }) + "\n");
             } catch {
             }
           }
@@ -10106,13 +10522,13 @@ function parseYamlLikeToolCall(content) {
   const args = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   return { tool, args };
 }
-var import_fs22, import_path27, log3, AGENT_ID_RE3, TAG_PATTERN, BLOCK_RE, BLOCK_IN_FENCE_RE, ToolRouter, ToolExecutor;
+var import_fs25, import_path30, log3, AGENT_ID_RE3, TAG_PATTERN, BLOCK_RE, BLOCK_IN_FENCE_RE, ToolRouter, ToolExecutor;
 var init_tool_router = __esm({
   "packages/orchestrator/src/tool-router.ts"() {
     "use strict";
     init_tool_definitions();
-    import_fs22 = require("fs");
-    import_path27 = require("path");
+    import_fs25 = require("fs");
+    import_path30 = require("path");
     log3 = (msg) => process.stderr.write(`[tool-router] ${msg}
 `);
     AGENT_ID_RE3 = /^[a-zA-Z0-9_-]+$/;
@@ -10518,12 +10934,12 @@ ${agentOutputs}` }
           const fsp = await import("fs/promises");
           const updatedIds = [];
           for (const id of pending.agentIds) {
-            const agentDir = (0, import_path27.join)(this.projectRoot, ".gossip", "agents", id);
-            const filePath = (0, import_path27.join)(agentDir, "instructions.md");
-            if (!(0, import_fs22.existsSync)(agentDir)) {
+            const agentDir = (0, import_path30.join)(this.projectRoot, ".gossip", "agents", id);
+            const filePath = (0, import_path30.join)(agentDir, "instructions.md");
+            if (!(0, import_fs25.existsSync)(agentDir)) {
               await fsp.mkdir(agentDir, { recursive: true });
             }
-            if ((0, import_fs22.existsSync)(filePath)) {
+            if ((0, import_fs25.existsSync)(filePath)) {
               await fsp.appendFile(filePath, `
 
 ${pending.instruction}`, "utf-8");
@@ -10637,9 +11053,9 @@ ${collectResult.consensus.summary}`;
       async handlePlan(args) {
         let task = String(args.task);
         try {
-          const specPath = (0, import_path27.join)(this.projectRoot, ".gossip", "spec.md");
-          if ((0, import_fs22.existsSync)(specPath)) {
-            const spec = (0, import_fs22.readFileSync)(specPath, "utf-8");
+          const specPath = (0, import_path30.join)(this.projectRoot, ".gossip", "spec.md");
+          if ((0, import_fs25.existsSync)(specPath)) {
+            const spec = (0, import_fs25.readFileSync)(specPath, "utf-8");
             task = `${task}
 
 [Project Spec]
@@ -10697,11 +11113,11 @@ ${taskLines.join("\n")}`,
         if (!this.llm) {
           return { text: "Tool error: LLM not available for spec generation" };
         }
-        const specPath = (0, import_path27.join)(this.projectRoot, ".gossip", "spec.md");
+        const specPath = (0, import_path30.join)(this.projectRoot, ".gossip", "spec.md");
         let existingSpec = "";
         try {
-          if ((0, import_fs22.existsSync)(specPath)) {
-            existingSpec = (0, import_fs22.readFileSync)(specPath, "utf-8");
+          if ((0, import_fs25.existsSync)(specPath)) {
+            existingSpec = (0, import_fs25.readFileSync)(specPath, "utf-8");
           }
         } catch {
         }
@@ -10737,7 +11153,7 @@ Keep it SHORT \u2014 under 30 lines. This is a working document, not a design do
         const specContent = response.text || "";
         try {
           const { mkdirSync: mkdirSync14, writeFileSync: writeFS } = require("fs");
-          mkdirSync14((0, import_path27.join)(this.projectRoot, ".gossip"), { recursive: true });
+          mkdirSync14((0, import_path30.join)(this.projectRoot, ".gossip"), { recursive: true });
           writeFS(specPath, specContent, "utf-8");
         } catch (err) {
           return { text: `Spec generated but failed to save: ${err.message}
@@ -10775,11 +11191,11 @@ ${lines.join("\n")}` };
         if (!this.registry.get(agentId)) {
           return { text: `Tool error: agent "${agentId}" not found in registry` };
         }
-        const tasksPath = (0, import_path27.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
-        if (!(0, import_fs22.existsSync)(tasksPath)) {
+        const tasksPath = (0, import_path30.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
+        if (!(0, import_fs25.existsSync)(tasksPath)) {
           return { text: `Agent "${agentId}" \u2014 no task history found.` };
         }
-        const rawLines = (0, import_fs22.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+        const rawLines = (0, import_fs25.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
         const last5 = rawLines.slice(-5).map((line) => {
           try {
             return JSON.parse(line);
@@ -10796,11 +11212,11 @@ Last ${last5.length} tasks:
 ${formatted.join("\n")}` };
       }
       handleAgentPerformance() {
-        const perfPath = (0, import_path27.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
-        if (!(0, import_fs22.existsSync)(perfPath)) {
+        const perfPath = (0, import_path30.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
+        if (!(0, import_fs25.existsSync)(perfPath)) {
           return { text: "No performance data found." };
         }
-        const rawLines = (0, import_fs22.readFileSync)(perfPath, "utf-8").trim().split("\n").filter(Boolean);
+        const rawLines = (0, import_fs25.readFileSync)(perfPath, "utf-8").trim().split("\n").filter(Boolean);
         const last20 = rawLines.slice(-20).map((line) => {
           try {
             return JSON.parse(line);
@@ -10851,11 +11267,11 @@ Instruction: "${instruction}"`,
         if (!this.registry.get(agentId)) {
           return { text: `Tool error: agent "${agentId}" not found in registry` };
         }
-        const tasksPath = (0, import_path27.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
-        if (!(0, import_fs22.existsSync)(tasksPath)) {
+        const tasksPath = (0, import_path30.join)(this.projectRoot, ".gossip", "agents", agentId, "memory", "tasks.jsonl");
+        if (!(0, import_fs25.existsSync)(tasksPath)) {
           return { text: `No task history for agent "${agentId}".` };
         }
-        const rawLines = (0, import_fs22.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+        const rawLines = (0, import_fs25.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
         const entries = rawLines.slice(-limit).map((line) => {
           try {
             return JSON.parse(line);
@@ -10915,17 +11331,17 @@ ${formatted.join("\n")}` };
 });
 
 // packages/orchestrator/src/archetype-catalog.ts
-var import_fs23, import_path28, DEFAULT_PATH, ArchetypeCatalog;
+var import_fs26, import_path31, DEFAULT_PATH, ArchetypeCatalog;
 var init_archetype_catalog = __esm({
   "packages/orchestrator/src/archetype-catalog.ts"() {
     "use strict";
-    import_fs23 = require("fs");
-    import_path28 = require("path");
-    DEFAULT_PATH = (0, import_path28.resolve)(__dirname, "..", "..", "..", "data", "archetypes.json");
+    import_fs26 = require("fs");
+    import_path31 = require("path");
+    DEFAULT_PATH = (0, import_path31.resolve)(__dirname, "..", "..", "..", "data", "archetypes.json");
     ArchetypeCatalog = class {
       archetypes;
       constructor(catalogPath) {
-        const raw = (0, import_fs23.readFileSync)(catalogPath ?? DEFAULT_PATH, "utf-8");
+        const raw = (0, import_fs26.readFileSync)(catalogPath ?? DEFAULT_PATH, "utf-8");
         this.archetypes = JSON.parse(raw);
       }
       /** Return all archetype IDs */
@@ -10975,13 +11391,13 @@ var init_archetype_catalog = __esm({
 });
 
 // packages/orchestrator/src/project-initializer.ts
-var import_fs24, import_path29, SIGNAL_DIRS, SIGNAL_FILES, LANG_FILES, ProjectInitializer;
+var import_fs27, import_path32, SIGNAL_DIRS, SIGNAL_FILES, LANG_FILES, ProjectInitializer;
 var init_project_initializer = __esm({
   "packages/orchestrator/src/project-initializer.ts"() {
     "use strict";
     init_archetype_catalog();
-    import_fs24 = require("fs");
-    import_path29 = require("path");
+    import_fs27 = require("fs");
+    import_path32 = require("path");
     SIGNAL_DIRS = [
       "src",
       "pages",
@@ -11013,16 +11429,16 @@ var init_project_initializer = __esm({
         this.config = config2;
       }
       scanDirectory(root) {
-        const absRoot = (0, import_path29.resolve)(root);
+        const absRoot = (0, import_path32.resolve)(root);
         const signals = { dependencies: [], directories: [], files: [] };
         for (const [file2, lang] of Object.entries(LANG_FILES)) {
-          if (this.safeExists(absRoot, (0, import_path29.join)(absRoot, file2))) signals.language = lang;
+          if (this.safeExists(absRoot, (0, import_path32.join)(absRoot, file2))) signals.language = lang;
         }
-        const pkgPath = (0, import_path29.join)(absRoot, "package.json");
+        const pkgPath = (0, import_path32.join)(absRoot, "package.json");
         if (this.safeExists(absRoot, pkgPath)) {
           signals.files.push("package.json");
           try {
-            const pkg = JSON.parse((0, import_fs24.readFileSync)(pkgPath, "utf-8"));
+            const pkg = JSON.parse((0, import_fs27.readFileSync)(pkgPath, "utf-8"));
             signals.dependencies = [
               ...Object.keys(pkg.dependencies || {}),
               ...Object.keys(pkg.devDependencies || {})
@@ -11032,18 +11448,18 @@ var init_project_initializer = __esm({
           if (!signals.language) signals.language = "JavaScript";
         }
         for (const dir of SIGNAL_DIRS) {
-          const p = (0, import_path29.join)(absRoot, dir);
+          const p = (0, import_path32.join)(absRoot, dir);
           if (this.safeExists(absRoot, p) && this.isDir(p)) signals.directories.push(`${dir}/`);
         }
-        const wfPath = (0, import_path29.join)(absRoot, ".github", "workflows");
+        const wfPath = (0, import_path32.join)(absRoot, ".github", "workflows");
         if (this.safeExists(absRoot, wfPath) && this.isDir(wfPath)) {
           signals.directories.push(".github/workflows/");
         }
         for (const file2 of SIGNAL_FILES) {
-          if (this.safeExists(absRoot, (0, import_path29.join)(absRoot, file2))) signals.files.push(file2);
+          if (this.safeExists(absRoot, (0, import_path32.join)(absRoot, file2))) signals.files.push(file2);
         }
         for (const file2 of Object.keys(LANG_FILES)) {
-          if (this.safeExists(absRoot, (0, import_path29.join)(absRoot, file2))) signals.files.push(file2);
+          if (this.safeExists(absRoot, (0, import_path32.join)(absRoot, file2))) signals.files.push(file2);
         }
         return signals;
       }
@@ -11175,13 +11591,13 @@ ${agentList}`,
       }
       async writeConfig(projectRoot) {
         if (!this.pendingProposal) throw new Error("No pending proposal to write");
-        const gossipDir = (0, import_path29.join)(projectRoot, ".gossip");
-        if (!(0, import_fs24.existsSync)(gossipDir)) (0, import_fs24.mkdirSync)(gossipDir, { recursive: true });
+        const gossipDir = (0, import_path32.join)(projectRoot, ".gossip");
+        if (!(0, import_fs27.existsSync)(gossipDir)) (0, import_fs27.mkdirSync)(gossipDir, { recursive: true });
         const agents = {};
         for (const a of this.pendingProposal.agents || []) {
           agents[a.id] = { provider: a.provider, model: a.model, preset: a.preset, skills: a.skills || [] };
-          const agentDir = (0, import_path29.join)(gossipDir, "agents", a.id);
-          if (!(0, import_fs24.existsSync)(agentDir)) (0, import_fs24.mkdirSync)(agentDir, { recursive: true });
+          const agentDir = (0, import_path32.join)(gossipDir, "agents", a.id);
+          if (!(0, import_fs27.existsSync)(agentDir)) (0, import_fs27.mkdirSync)(agentDir, { recursive: true });
         }
         const config2 = {
           main_agent: this.pendingProposal.main_agent,
@@ -11192,20 +11608,20 @@ ${agentList}`,
           },
           agents
         };
-        (0, import_fs24.writeFileSync)((0, import_path29.join)(gossipDir, "config.json"), JSON.stringify(config2, null, 2));
+        (0, import_fs27.writeFileSync)((0, import_path32.join)(gossipDir, "config.json"), JSON.stringify(config2, null, 2));
       }
       safeExists(root, target) {
-        const resolved = (0, import_path29.resolve)(target);
+        const resolved = (0, import_path32.resolve)(target);
         if (!resolved.startsWith(root)) return false;
         try {
-          return !(0, import_fs24.lstatSync)(resolved).isSymbolicLink();
+          return !(0, import_fs27.lstatSync)(resolved).isSymbolicLink();
         } catch {
           return false;
         }
       }
       isDir(target) {
         try {
-          return (0, import_fs24.lstatSync)(target).isDirectory();
+          return (0, import_fs27.lstatSync)(target).isDirectory();
         } catch {
           return false;
         }
@@ -11215,12 +11631,12 @@ ${agentList}`,
 });
 
 // packages/orchestrator/src/team-manager.ts
-var import_fs25, import_path30, TeamManager;
+var import_fs28, import_path33, TeamManager;
 var init_team_manager = __esm({
   "packages/orchestrator/src/team-manager.ts"() {
     "use strict";
-    import_fs25 = require("fs");
-    import_path30 = require("path");
+    import_fs28 = require("fs");
+    import_path33 = require("path");
     TeamManager = class {
       registry;
       pipeline;
@@ -11276,8 +11692,8 @@ var init_team_manager = __esm({
       applyAdd(config2) {
         this.registry.register(config2);
         this.writeConfig();
-        const dir = (0, import_path30.join)(this.projectRoot, ".gossip", "agents", config2.id);
-        if (!(0, import_fs25.existsSync)(dir)) (0, import_fs25.mkdirSync)(dir, { recursive: true });
+        const dir = (0, import_path33.join)(this.projectRoot, ".gossip", "agents", config2.id);
+        if (!(0, import_fs28.existsSync)(dir)) (0, import_fs28.mkdirSync)(dir, { recursive: true });
         this.pendingAction = null;
       }
       applyRemove(agentId) {
@@ -11311,11 +11727,11 @@ var init_team_manager = __esm({
         };
       }
       writeConfig() {
-        const configPath = (0, import_path30.join)(this.projectRoot, ".gossip", "config.json");
+        const configPath = (0, import_path33.join)(this.projectRoot, ".gossip", "config.json");
         let existing = {};
-        if ((0, import_fs25.existsSync)(configPath)) {
+        if ((0, import_fs28.existsSync)(configPath)) {
           try {
-            existing = JSON.parse((0, import_fs25.readFileSync)(configPath, "utf-8"));
+            existing = JSON.parse((0, import_fs28.readFileSync)(configPath, "utf-8"));
           } catch {
           }
         }
@@ -11327,9 +11743,9 @@ var init_team_manager = __esm({
           ...a.preset ? { preset: a.preset } : {},
           skills: a.skills
         }));
-        const dir = (0, import_path30.join)(this.projectRoot, ".gossip");
-        if (!(0, import_fs25.existsSync)(dir)) (0, import_fs25.mkdirSync)(dir, { recursive: true });
-        (0, import_fs25.writeFileSync)(configPath, JSON.stringify(existing, null, 2) + "\n");
+        const dir = (0, import_path33.join)(this.projectRoot, ".gossip");
+        if (!(0, import_fs28.existsSync)(dir)) (0, import_fs28.mkdirSync)(dir, { recursive: true });
+        (0, import_fs28.writeFileSync)(configPath, JSON.stringify(existing, null, 2) + "\n");
       }
     };
   }
@@ -11343,12 +11759,12 @@ __export(competency_profiler_exports, {
 function clamp2(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
-var import_fs26, import_path31, DECAY_HALF_LIFE, MIN_TASKS_THRESHOLD, MAX_ACCURACY_CHANGE_PER_ROUND, AGREEMENT_WEIGHT, DISAGREEMENT_WEIGHT, CompetencyProfiler;
+var import_fs29, import_path34, DECAY_HALF_LIFE, MIN_TASKS_THRESHOLD, MAX_ACCURACY_CHANGE_PER_ROUND, AGREEMENT_WEIGHT, DISAGREEMENT_WEIGHT, CompetencyProfiler;
 var init_competency_profiler = __esm({
   "packages/orchestrator/src/competency-profiler.ts"() {
     "use strict";
-    import_fs26 = require("fs");
-    import_path31 = require("path");
+    import_fs29 = require("fs");
+    import_path34 = require("path");
     DECAY_HALF_LIFE = 50;
     MIN_TASKS_THRESHOLD = 10;
     MAX_ACCURACY_CHANGE_PER_ROUND = 0.3;
@@ -11359,7 +11775,7 @@ var init_competency_profiler = __esm({
       cachedProfiles = null;
       cachedMtimeMs = 0;
       constructor(projectRoot) {
-        this.filePath = (0, import_path31.join)(projectRoot, ".gossip", "agent-performance.jsonl");
+        this.filePath = (0, import_path34.join)(projectRoot, ".gossip", "agent-performance.jsonl");
       }
       getProfile(agentId) {
         const profiles = this.getProfiles();
@@ -11368,7 +11784,7 @@ var init_competency_profiler = __esm({
       getProfiles() {
         let mtimeMs = 0;
         try {
-          mtimeMs = (0, import_fs26.statSync)(this.filePath).mtimeMs;
+          mtimeMs = (0, import_fs29.statSync)(this.filePath).mtimeMs;
         } catch {
         }
         if (this.cachedProfiles && mtimeMs === this.cachedMtimeMs) {
@@ -11546,9 +11962,9 @@ var init_competency_profiler = __esm({
         return result;
       }
       readSignals() {
-        if (!(0, import_fs26.existsSync)(this.filePath)) return [];
+        if (!(0, import_fs29.existsSync)(this.filePath)) return [];
         try {
-          return (0, import_fs26.readFileSync)(this.filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
+          return (0, import_fs29.readFileSync)(this.filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
             try {
               return JSON.parse(line);
             } catch {
@@ -11779,8 +12195,8 @@ message: Your question?
       }
       /** Start all worker agents (connect to relay) */
       async start() {
-        const { existsSync: existsSync29, readFileSync: readFileSync30 } = await import("fs");
-        const { join: join33 } = await import("path");
+        const { existsSync: existsSync32, readFileSync: readFileSync33 } = await import("fs");
+        const { join: join36 } = await import("path");
         for (const config2 of this.registry.getAll()) {
           if (config2.native) continue;
           if (this.workers.has(config2.id)) continue;
@@ -11789,8 +12205,8 @@ message: Your question?
             apiKey = await this.keyProviderFn(config2.provider) ?? void 0;
           }
           const llm = createProvider(config2.provider, config2.model, apiKey);
-          const instructionsPath = join33(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
-          const instructions = existsSync29(instructionsPath) ? readFileSync30(instructionsPath, "utf-8") : void 0;
+          const instructionsPath = join36(this.projectRoot, ".gossip", "agents", config2.id, "instructions.md");
+          const instructions = existsSync32(instructionsPath) ? readFileSync33(instructionsPath, "utf-8") : void 0;
           const enableWebSearch = config2.preset === "researcher" || config2.skills.includes("research");
           const worker = new WorkerAgent(config2.id, llm, this.relayUrl, ALL_TOOLS, instructions, enableWebSearch);
           await worker.start();
@@ -11943,16 +12359,16 @@ message: Your question?
         this.registry.register(config2);
       }
       async syncWorkers(keyProvider) {
-        const { existsSync: existsSync29, readFileSync: readFileSync30 } = await import("fs");
-        const { join: join33 } = await import("path");
+        const { existsSync: existsSync32, readFileSync: readFileSync33 } = await import("fs");
+        const { join: join36 } = await import("path");
         let added = 0;
         for (const ac of this.registry.getAll()) {
           if (ac.native) continue;
           if (this.workers.has(ac.id)) continue;
           const key = await keyProvider(ac.provider);
           const llm = createProvider(ac.provider, ac.model, key ?? void 0);
-          const instructionsPath = join33(this.projectRoot, ".gossip", "agents", ac.id, "instructions.md");
-          const instructions = existsSync29(instructionsPath) ? readFileSync30(instructionsPath, "utf-8") : void 0;
+          const instructionsPath = join36(this.projectRoot, ".gossip", "agents", ac.id, "instructions.md");
+          const instructions = existsSync32(instructionsPath) ? readFileSync33(instructionsPath, "utf-8") : void 0;
           const enableWebSearch = ac.preset === "researcher" || ac.skills.includes("research");
           const worker = new WorkerAgent(ac.id, llm, this.relayUrl, ALL_TOOLS, instructions, enableWebSearch);
           await worker.start();
@@ -12493,12 +12909,12 @@ function safeId(value) {
   }
   return encodeURIComponent(value);
 }
-var import_fs27, import_path32, TaskGraphSync;
+var import_fs30, import_path35, TaskGraphSync;
 var init_task_graph_sync = __esm({
   "packages/orchestrator/src/task-graph-sync.ts"() {
     "use strict";
-    import_fs27 = require("fs");
-    import_path32 = require("path");
+    import_fs30 = require("fs");
+    import_path35 = require("path");
     TaskGraphSync = class {
       constructor(graph, supabaseUrl, supabaseKey, userId, projectId, projectRoot, displayName, migration) {
         this.graph = graph;
@@ -12508,7 +12924,7 @@ var init_task_graph_sync = __esm({
         this.projectId = projectId;
         this.displayName = displayName;
         this.migration = migration;
-        this.gossipDir = (0, import_path32.join)(projectRoot, ".gossip");
+        this.gossipDir = (0, import_path35.join)(projectRoot, ".gossip");
       }
       gossipDir;
       migrationDone = false;
@@ -12631,9 +13047,9 @@ var init_task_graph_sync = __esm({
         });
       }
       async syncAgentScores() {
-        const perfPath = (0, import_path32.join)(this.gossipDir, "agent-performance.jsonl");
-        if (!(0, import_fs27.existsSync)(perfPath)) return 0;
-        const content = (0, import_fs27.readFileSync)(perfPath, "utf-8");
+        const perfPath = (0, import_path35.join)(this.gossipDir, "agent-performance.jsonl");
+        if (!(0, import_fs30.existsSync)(perfPath)) return 0;
+        const content = (0, import_fs30.readFileSync)(perfPath, "utf-8");
         const lines = content.trim().split("\n").filter(Boolean);
         const meta3 = this.graph.getSyncMeta();
         let synced = 0;
@@ -12779,12 +13195,12 @@ Return JSON: { "<agentId>": "<summary>", ... }`
 });
 
 // packages/orchestrator/src/bootstrap.ts
-var import_fs28, import_path33, log4, BootstrapGenerator;
+var import_fs31, import_path36, log4, BootstrapGenerator;
 var init_bootstrap = __esm({
   "packages/orchestrator/src/bootstrap.ts"() {
     "use strict";
-    import_fs28 = require("fs");
-    import_path33 = require("path");
+    import_fs31 = require("fs");
+    import_path36 = require("path");
     log4 = (msg) => process.stderr.write(`[gossipcat] ${msg}
 `);
     BootstrapGenerator = class {
@@ -12806,23 +13222,23 @@ var init_bootstrap = __esm({
         };
       }
       migrateConfig() {
-        const oldPath = (0, import_path33.resolve)(this.projectRoot, "gossip.agents.json");
-        const newPath = (0, import_path33.resolve)(this.projectRoot, ".gossip", "config.json");
-        if (!(0, import_fs28.existsSync)(newPath) && (0, import_fs28.existsSync)(oldPath)) {
-          (0, import_fs28.mkdirSync)((0, import_path33.resolve)(this.projectRoot, ".gossip"), { recursive: true });
-          (0, import_fs28.copyFileSync)(oldPath, newPath);
+        const oldPath = (0, import_path36.resolve)(this.projectRoot, "gossip.agents.json");
+        const newPath = (0, import_path36.resolve)(this.projectRoot, ".gossip", "config.json");
+        if (!(0, import_fs31.existsSync)(newPath) && (0, import_fs31.existsSync)(oldPath)) {
+          (0, import_fs31.mkdirSync)((0, import_path36.resolve)(this.projectRoot, ".gossip"), { recursive: true });
+          (0, import_fs31.copyFileSync)(oldPath, newPath);
           log4("Migrated config to .gossip/config.json \u2014 gossip.agents.json is now ignored.");
         }
       }
       loadConfig() {
         const paths = [
-          (0, import_path33.resolve)(this.projectRoot, ".gossip", "config.json"),
-          (0, import_path33.resolve)(this.projectRoot, "gossip.agents.json")
+          (0, import_path36.resolve)(this.projectRoot, ".gossip", "config.json"),
+          (0, import_path36.resolve)(this.projectRoot, "gossip.agents.json")
         ];
         for (const p of paths) {
-          if ((0, import_fs28.existsSync)(p)) {
+          if ((0, import_fs31.existsSync)(p)) {
             try {
-              return JSON.parse((0, import_fs28.readFileSync)(p, "utf-8"));
+              return JSON.parse((0, import_fs31.readFileSync)(p, "utf-8"));
             } catch {
               log4("Config parse error, falling back to setup mode");
               return null;
@@ -12843,9 +13259,9 @@ var init_bootstrap = __esm({
             skills: ac.skills || [],
             taskCount: 0
           };
-          const tasksPath = (0, import_path33.join)(this.projectRoot, ".gossip", "agents", id, "memory", "tasks.jsonl");
-          if ((0, import_fs28.existsSync)(tasksPath)) {
-            const lines = (0, import_fs28.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
+          const tasksPath = (0, import_path36.join)(this.projectRoot, ".gossip", "agents", id, "memory", "tasks.jsonl");
+          if ((0, import_fs31.existsSync)(tasksPath)) {
+            const lines = (0, import_fs31.readFileSync)(tasksPath, "utf-8").trim().split("\n").filter(Boolean);
             let count = 0;
             let lastTs = "";
             for (const line of lines) {
@@ -12859,9 +13275,9 @@ var init_bootstrap = __esm({
             summary.taskCount = count;
             if (lastTs) summary.lastActive = lastTs.split("T")[0];
           }
-          const memPath = (0, import_path33.join)(this.projectRoot, ".gossip", "agents", id, "memory", "MEMORY.md");
-          if ((0, import_fs28.existsSync)(memPath)) {
-            const content = (0, import_fs28.readFileSync)(memPath, "utf-8").slice(0, 500);
+          const memPath = (0, import_path36.join)(this.projectRoot, ".gossip", "agents", id, "memory", "MEMORY.md");
+          if ((0, import_fs31.existsSync)(memPath)) {
+            const content = (0, import_fs31.readFileSync)(memPath, "utf-8").slice(0, 500);
             const knowledgeLines = content.match(/- \[([^\]]+)\]/g);
             if (knowledgeLines?.length) {
               summary.topics = knowledgeLines.map((l) => l.replace(/- \[([^\]]+)\].*/, "$1")).join(", ");
@@ -12984,6 +13400,8 @@ ${sessionSection}
 | \`gossip_plan(task)\` | Plan task with write-mode suggestions. Returns dispatch-ready JSON. |
 | \`gossip_session_save()\` | Save session summary for next session context. Call before ending session. |
 | \`gossip_scores()\` | View agent performance scores and dispatch weights. |
+| \`gossip_record_signals(signals)\` | Record consensus signals after verifying agent findings. Call IMMEDIATELY on verify. |
+| \`gossip_retract_signal(agent_id, task_id, reason)\` | Retract a previously recorded signal (e.g., wrong severity). Append-only \u2014 excluded from scoring. |
 
 ## Dispatch Rules
 
@@ -13013,8 +13431,8 @@ When multiple agents review the same work, use **consensus review** for structur
 
 \`\`\`
 gossip_dispatch_consensus(tasks: [
-  { agent_id: "gemini-reviewer", task: "Security review X" },
-  { agent_id: "gemini-tester", task: "Security review X" },
+  { agent_id: "<reviewer-1>", task: "Security review X" },
+  { agent_id: "<reviewer-2>", task: "Security review X" },
 ])
 // then:
 gossip_collect_consensus(task_ids, 300000)
@@ -13048,6 +13466,14 @@ Agents can modify files when dispatched with a write mode:
 
 For read-only tasks (reviews, analysis), use \`gossip_dispatch\` or \`gossip_orchestrate\` directly \u2014 no write mode needed.
 
+## Scoring System
+
+Agents are scored by ratio-based accuracy with recency decay. Key behaviors:
+- **Auto-signals**: \`gossip_collect\` automatically records failure signals for empty/timeout/failed results.
+- **Circuit breaker**: 3 consecutive failures \u2192 agent demoted to minimum weight (0.3). Resets on any positive signal.
+- **Signal expiry**: Signals older than 30 days are excluded from scoring.
+- **Retraction**: Use \`gossip_retract_signal\` to correct a wrongly recorded signal (e.g., minor citation error recorded as hallucination).
+
 ## Memory
 
 Agent memory is auto-managed:
@@ -13062,13 +13488,13 @@ Skills are auto-injected from agent config. Project-wide skills in .gossip/skill
        * Returns the body content of the top knowledge files, capped at 2500 chars.
        */
       readProjectMemory() {
-        const knowledgeDir = (0, import_path33.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "knowledge");
-        if (!(0, import_fs28.existsSync)(knowledgeDir)) return null;
-        const files = (0, import_fs28.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md"));
+        const knowledgeDir = (0, import_path36.join)(this.projectRoot, ".gossip", "agents", "_project", "memory", "knowledge");
+        if (!(0, import_fs31.existsSync)(knowledgeDir)) return null;
+        const files = (0, import_fs31.readdirSync)(knowledgeDir).filter((f) => f.endsWith(".md") && !f.endsWith("-session.md"));
         if (files.length === 0) return null;
         const scored = files.map((f) => {
           try {
-            const content = (0, import_fs28.readFileSync)((0, import_path33.join)(knowledgeDir, f), "utf-8");
+            const content = (0, import_fs31.readFileSync)((0, import_path36.join)(knowledgeDir, f), "utf-8");
             const importance = parseFloat(content.match(/importance:\s*([\d.]+)/)?.[1] ?? "0.5");
             const isPinned = /pinned:\s*true/i.test(content);
             const tsPart = f.slice(0, 19);
@@ -13093,9 +13519,9 @@ Skills are auto-injected from agent config. Project-wide skills in .gossip/skill
        * Annotates TODO/remaining lines where the referenced tool actually exists.
        */
       verifyToolClaims(content) {
-        const mcpPath = (0, import_path33.join)(this.projectRoot, "apps", "cli", "src", "mcp-server-sdk.ts");
-        if (!(0, import_fs28.existsSync)(mcpPath)) return content;
-        const rawSource = (0, import_fs28.readFileSync)(mcpPath, "utf-8");
+        const mcpPath = (0, import_path36.join)(this.projectRoot, "apps", "cli", "src", "mcp-server-sdk.ts");
+        if (!(0, import_fs31.existsSync)(mcpPath)) return content;
+        const rawSource = (0, import_fs31.readFileSync)(mcpPath, "utf-8");
         const source = rawSource.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, "");
         const keywordRe = /TODO|remaining|deferred|needed|pending/i;
         const toolRe = /gossip_\w+/;
@@ -13113,10 +13539,10 @@ Skills are auto-injected from agent config. Project-wide skills in .gossip/skill
       }
       /** Read .gossip/next-session.md if it exists — user/orchestrator notes for the next session */
       readNextSessionNotes() {
-        const notesPath = (0, import_path33.join)(this.projectRoot, ".gossip", "next-session.md");
-        if (!(0, import_fs28.existsSync)(notesPath)) return null;
+        const notesPath = (0, import_path36.join)(this.projectRoot, ".gossip", "next-session.md");
+        if (!(0, import_fs31.existsSync)(notesPath)) return null;
         try {
-          const content = (0, import_fs28.readFileSync)(notesPath, "utf-8").trim();
+          const content = (0, import_fs31.readFileSync)(notesPath, "utf-8").trim();
           if (content.length === 0) return null;
           return this.verifyToolClaims(content.slice(0, 2e3));
         } catch {
@@ -13233,12 +13659,12 @@ Return ONLY the JSON array, no other text.`
 });
 
 // packages/orchestrator/src/skill-generator.ts
-var import_fs29, import_path34, SAFE_NAME, KNOWN_CATEGORIES, REQUIRED_SECTIONS, BUNDLED_TEMPLATE, SkillGenerator;
+var import_fs32, import_path37, SAFE_NAME, KNOWN_CATEGORIES, REQUIRED_SECTIONS, BUNDLED_TEMPLATE, SkillGenerator;
 var init_skill_generator = __esm({
   "packages/orchestrator/src/skill-generator.ts"() {
     "use strict";
-    import_fs29 = require("fs");
-    import_path34 = require("path");
+    import_fs32 = require("fs");
+    import_path37 = require("path");
     init_skill_name();
     SAFE_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
     KNOWN_CATEGORIES = /* @__PURE__ */ new Set([
@@ -13315,9 +13741,9 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST.
           }
         }
         let projectContext = "";
-        const bootstrapPath = (0, import_path34.join)(this.projectRoot, ".gossip", "bootstrap.md");
-        if ((0, import_fs29.existsSync)(bootstrapPath)) {
-          projectContext = (0, import_fs29.readFileSync)(bootstrapPath, "utf-8").slice(0, 2e3);
+        const bootstrapPath = (0, import_path37.join)(this.projectRoot, ".gossip", "bootstrap.md");
+        if ((0, import_fs32.existsSync)(bootstrapPath)) {
+          projectContext = (0, import_fs32.readFileSync)(bootstrapPath, "utf-8").slice(0, 2e3);
         }
         const totalDispatches = agentProfile?.totalTasks ?? 0;
         const categoryConfirmations = findings.filter((f) => f.agentId === agentId).length;
@@ -13376,10 +13802,10 @@ Requirements:
         }
         this.validateSkillContent(cleaned);
         const skillName = normalizeSkillName(category);
-        const skillDir = (0, import_path34.join)(this.projectRoot, ".gossip", "agents", agentId, "skills");
-        (0, import_fs29.mkdirSync)(skillDir, { recursive: true });
-        const skillPath = (0, import_path34.join)(skillDir, `${skillName}.md`);
-        (0, import_fs29.writeFileSync)(skillPath, cleaned);
+        const skillDir = (0, import_path37.join)(this.projectRoot, ".gossip", "agents", agentId, "skills");
+        (0, import_fs32.mkdirSync)(skillDir, { recursive: true });
+        const skillPath = (0, import_path37.join)(skillDir, `${skillName}.md`);
+        (0, import_fs32.writeFileSync)(skillPath, cleaned);
         return { path: skillPath, content: cleaned };
       }
       validateSkillContent(content) {
@@ -13397,24 +13823,24 @@ Requirements:
         }
       }
       loadTemplate() {
-        const userDir = (0, import_path34.join)(this.projectRoot, ".gossip", "skill-templates");
-        if ((0, import_fs29.existsSync)(userDir)) {
-          const files = (0, import_fs29.readdirSync)(userDir).filter((f) => f.endsWith(".md"));
+        const userDir = (0, import_path37.join)(this.projectRoot, ".gossip", "skill-templates");
+        if ((0, import_fs32.existsSync)(userDir)) {
+          const files = (0, import_fs32.readdirSync)(userDir).filter((f) => f.endsWith(".md"));
           if (files.length > 0) {
-            return (0, import_fs29.readFileSync)((0, import_path34.join)(userDir, files[0]), "utf-8");
+            return (0, import_fs32.readFileSync)((0, import_path37.join)(userDir, files[0]), "utf-8");
           }
         }
         const home = process.env.HOME || process.env.USERPROFILE || "";
-        const cacheBase = (0, import_path34.join)(home, ".claude", "plugins", "cache", "claude-plugins-official", "superpowers");
-        if ((0, import_fs29.existsSync)(cacheBase)) {
+        const cacheBase = (0, import_path37.join)(home, ".claude", "plugins", "cache", "claude-plugins-official", "superpowers");
+        if ((0, import_fs32.existsSync)(cacheBase)) {
           try {
-            const versions = (0, import_fs29.readdirSync)(cacheBase).sort().reverse();
+            const versions = (0, import_fs32.readdirSync)(cacheBase).sort().reverse();
             for (const ver of versions) {
-              const skillPath = (0, import_path34.join)(cacheBase, ver, "skills", "systematic-debugging", "SKILL.md");
-              if ((0, import_fs29.existsSync)(skillPath)) {
-                const realPath = (0, import_fs29.realpathSync)(skillPath);
-                if (realPath.startsWith((0, import_path34.resolve)(cacheBase))) {
-                  return (0, import_fs29.readFileSync)(realPath, "utf-8");
+              const skillPath = (0, import_path37.join)(cacheBase, ver, "skills", "systematic-debugging", "SKILL.md");
+              if ((0, import_fs32.existsSync)(skillPath)) {
+                const realPath = (0, import_fs32.realpathSync)(skillPath);
+                if (realPath.startsWith((0, import_path37.resolve)(cacheBase))) {
+                  return (0, import_fs32.readFileSync)(realPath, "utf-8");
                 }
               }
             }
@@ -13424,10 +13850,10 @@ Requirements:
         return BUNDLED_TEMPLATE;
       }
       loadCategoryFindings(category) {
-        const filePath = (0, import_path34.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
-        if (!(0, import_fs29.existsSync)(filePath)) return [];
+        const filePath = (0, import_path37.join)(this.projectRoot, ".gossip", "agent-performance.jsonl");
+        if (!(0, import_fs32.existsSync)(filePath)) return [];
         try {
-          return (0, import_fs29.readFileSync)(filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
+          return (0, import_fs32.readFileSync)(filePath, "utf-8").trim().split("\n").filter(Boolean).map((line) => {
             try {
               return JSON.parse(line);
             } catch {
@@ -13445,12 +13871,12 @@ Requirements:
 });
 
 // packages/orchestrator/src/consensus-judge.ts
-var import_fs30, import_path35, log5, ConsensusJudge;
+var import_fs33, import_path38, log5, ConsensusJudge;
 var init_consensus_judge = __esm({
   "packages/orchestrator/src/consensus-judge.ts"() {
     "use strict";
-    import_fs30 = require("fs");
-    import_path35 = require("path");
+    import_fs33 = require("fs");
+    import_path38 = require("path");
     log5 = (msg) => process.stderr.write(`[consensus-judge] ${msg}
 `);
     ConsensusJudge = class {
@@ -13520,12 +13946,12 @@ For each, return: [{"index": 1, "verdict": "VERIFIED|REFUTED|UNVERIFIABLE", "evi
       readCodeSnippet(fileRef, line) {
         const fileName = fileRef.split("/").pop();
         let filePath = null;
-        const direct = (0, import_path35.join)(this.projectRoot, fileRef);
-        if ((0, import_fs30.existsSync)(direct)) {
+        const direct = (0, import_path38.join)(this.projectRoot, fileRef);
+        if ((0, import_fs33.existsSync)(direct)) {
           filePath = direct;
         } else {
           for (const dir of ["packages", "src", "apps"]) {
-            const found = this.findFileSync((0, import_path35.join)(this.projectRoot, dir), fileName);
+            const found = this.findFileSync((0, import_path38.join)(this.projectRoot, dir), fileName);
             if (found) {
               filePath = found;
               break;
@@ -13534,7 +13960,7 @@ For each, return: [{"index": 1, "verdict": "VERIFIED|REFUTED|UNVERIFIABLE", "evi
         }
         if (!filePath) return null;
         try {
-          const content = (0, import_fs30.readFileSync)(filePath, "utf-8");
+          const content = (0, import_fs33.readFileSync)(filePath, "utf-8");
           const lines = content.split("\n");
           if (line > lines.length) return null;
           const start = Math.max(0, line - 4);
@@ -13546,9 +13972,9 @@ For each, return: [{"index": 1, "verdict": "VERIFIED|REFUTED|UNVERIFIABLE", "evi
       }
       findFileSync(dir, fileName) {
         try {
-          const entries = (0, import_fs30.readdirSync)(dir, { withFileTypes: true });
+          const entries = (0, import_fs33.readdirSync)(dir, { withFileTypes: true });
           for (const entry of entries) {
-            const fullPath = (0, import_path35.join)(dir, entry.name);
+            const fullPath = (0, import_path38.join)(dir, entry.name);
             if (entry.isFile() && entry.name === fileName) return fullPath;
             if (entry.isDirectory() && entry.name !== "node_modules" && entry.name !== ".git") {
               const found = this.findFileSync(fullPath, fileName);
@@ -13674,18 +14100,18 @@ __export(config_exports, {
 function findConfigPath(projectRoot) {
   const root = projectRoot || process.cwd();
   const candidates = [
-    (0, import_path36.resolve)(root, ".gossip", "config.json"),
-    (0, import_path36.resolve)(root, "gossip.agents.json"),
-    (0, import_path36.resolve)(root, "gossip.agents.yaml"),
-    (0, import_path36.resolve)(root, "gossip.agents.yml")
+    (0, import_path39.resolve)(root, ".gossip", "config.json"),
+    (0, import_path39.resolve)(root, "gossip.agents.json"),
+    (0, import_path39.resolve)(root, "gossip.agents.yaml"),
+    (0, import_path39.resolve)(root, "gossip.agents.yml")
   ];
   for (const p of candidates) {
-    if ((0, import_fs31.existsSync)(p)) return p;
+    if ((0, import_fs34.existsSync)(p)) return p;
   }
   return null;
 }
 function loadConfig(configPath) {
-  const raw = (0, import_fs31.readFileSync)(configPath, "utf-8");
+  const raw = (0, import_fs34.readFileSync)(configPath, "utf-8");
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -13737,19 +14163,19 @@ function configToAgentConfigs(config2) {
 }
 function loadClaudeSubagents(projectRoot, existingIds) {
   const root = projectRoot || process.cwd();
-  const agentsDir = (0, import_path36.join)(root, ".claude", "agents");
-  if (!(0, import_fs31.existsSync)(agentsDir)) return [];
+  const agentsDir = (0, import_path39.join)(root, ".claude", "agents");
+  if (!(0, import_fs34.existsSync)(agentsDir)) return [];
   let files;
   try {
-    files = (0, import_fs31.readdirSync)(agentsDir).filter((f) => f.endsWith(".md"));
+    files = (0, import_fs34.readdirSync)(agentsDir).filter((f) => f.endsWith(".md"));
   } catch {
     return [];
   }
   const agents = [];
   for (const file2 of files) {
-    const filePath = (0, import_path36.join)(agentsDir, file2);
+    const filePath = (0, import_path39.join)(agentsDir, file2);
     try {
-      const content = (0, import_fs31.readFileSync)(filePath, "utf-8");
+      const content = (0, import_fs34.readFileSync)(filePath, "utf-8");
       const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
       if (!frontmatter) continue;
       const fm = frontmatter[1];
@@ -13811,12 +14237,12 @@ function inferSkills(description, name) {
   if (skills.length === 0) skills.push("general");
   return skills;
 }
-var import_fs31, import_path36, VALID_PROVIDERS, CLAUDE_MODEL_MAP;
+var import_fs34, import_path39, VALID_PROVIDERS, CLAUDE_MODEL_MAP;
 var init_config = __esm({
   "apps/cli/src/config.ts"() {
     "use strict";
-    import_fs31 = require("fs");
-    import_path36 = require("path");
+    import_fs34 = require("fs");
+    import_path39 = require("path");
     VALID_PROVIDERS = ["anthropic", "openai", "google", "local"];
     CLAUDE_MODEL_MAP = {
       opus: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -13966,17 +14392,17 @@ __export(identity_exports, {
   normalizeGitUrl: () => normalizeGitUrl
 });
 function getOrCreateSalt(projectRoot) {
-  const saltPath = (0, import_path37.join)(projectRoot, ".gossip", "local-salt");
+  const saltPath = (0, import_path40.join)(projectRoot, ".gossip", "local-salt");
   try {
-    return (0, import_fs32.readFileSync)(saltPath, "utf-8").trim();
+    return (0, import_fs35.readFileSync)(saltPath, "utf-8").trim();
   } catch {
-    const salt = (0, import_crypto10.randomBytes)(16).toString("hex");
-    (0, import_fs32.mkdirSync)((0, import_path37.join)(projectRoot, ".gossip"), { recursive: true });
+    const salt = (0, import_crypto11.randomBytes)(16).toString("hex");
+    (0, import_fs35.mkdirSync)((0, import_path40.join)(projectRoot, ".gossip"), { recursive: true });
     try {
-      (0, import_fs32.writeFileSync)(saltPath, salt, { flag: "wx" });
+      (0, import_fs35.writeFileSync)(saltPath, salt, { flag: "wx" });
       return salt;
     } catch {
-      return (0, import_fs32.readFileSync)(saltPath, "utf-8").trim();
+      return (0, import_fs35.readFileSync)(saltPath, "utf-8").trim();
     }
   }
 }
@@ -13984,7 +14410,7 @@ function getUserId(projectRoot) {
   try {
     const email3 = (0, import_child_process5.execFileSync)("git", ["config", "user.email"], { stdio: "pipe" }).toString().trim();
     const salt = getOrCreateSalt(projectRoot);
-    return (0, import_crypto10.createHash)("sha256").update(email3 + projectRoot + salt).digest("hex").slice(0, 16);
+    return (0, import_crypto11.createHash)("sha256").update(email3 + projectRoot + salt).digest("hex").slice(0, 16);
   } catch {
     return "anonymous";
   }
@@ -14001,7 +14427,7 @@ function normalizeGitUrl(url2) {
   }
 }
 function getTeamUserId(email3, teamSalt) {
-  return (0, import_crypto10.createHash)("sha256").update(email3 + teamSalt).digest("hex").slice(0, 16);
+  return (0, import_crypto11.createHash)("sha256").update(email3 + teamSalt).digest("hex").slice(0, 16);
 }
 function getGitEmail() {
   try {
@@ -14020,19 +14446,19 @@ function getProjectId(projectRoot) {
     ).toString().trim();
     const normalized = normalizeGitUrl(remoteUrl);
     if (normalized) {
-      return (0, import_crypto10.createHash)("sha256").update(normalized).digest("hex").slice(0, 16);
+      return (0, import_crypto11.createHash)("sha256").update(normalized).digest("hex").slice(0, 16);
     }
   } catch {
   }
-  return (0, import_crypto10.createHash)("sha256").update(projectRoot).digest("hex").slice(0, 16);
+  return (0, import_crypto11.createHash)("sha256").update(projectRoot).digest("hex").slice(0, 16);
 }
-var import_fs32, import_path37, import_crypto10, import_child_process5;
+var import_fs35, import_path40, import_crypto11, import_child_process5;
 var init_identity = __esm({
   "apps/cli/src/identity.ts"() {
     "use strict";
-    import_fs32 = require("fs");
-    import_path37 = require("path");
-    import_crypto10 = require("crypto");
+    import_fs35 = require("fs");
+    import_path40 = require("path");
+    import_crypto11 = require("crypto");
     import_child_process5 = require("child_process");
   }
 });
@@ -27810,7 +28236,7 @@ function date4(params) {
 config(en_default());
 
 // apps/cli/src/mcp-server-sdk.ts
-var import_crypto11 = require("crypto");
+var import_crypto12 = require("crypto");
 function detectEnvironment() {
   if (process.env.CLAUDECODE === "1" || process.env.CLAUDE_CODE_ENTRYPOINT) {
     return { host: "claude-code", supportsNativeAgents: true, nativeAgentDir: ".claude/agents", rulesDir: ".claude/rules", rulesFile: ".claude/rules/gossipcat.md" };
@@ -27924,6 +28350,22 @@ Memory persists across sessions automatically:
 ## Dashboard
 
 Use \`gossip_status()\` for URL and key. Tabs: Overview, Agents, Consensus, Skills, Memory.
+
+## Subagent Override (IMPORTANT)
+
+When ANY skill or workflow (including subagent-driven-development, executing-plans, or
+any custom skill) instructs you to dispatch work via the Agent() tool, use \`gossip_run\`
+instead. This ensures tasks appear in the dashboard, agent memory is written, and
+performance signals are recorded.
+
+**Flow:** \`gossip_run(agent_id, task)\` \u2192 returns Agent() instructions for native agents \u2192
+execute the Agent() \u2192 \`gossip_run_complete(task_id, result)\` to close the loop.
+
+**Exception:** \`gossip_dispatch_consensus\` already handles its own native Agent() calls \u2014
+don't double-wrap those.
+
+**Why:** Raw Agent() bypasses the gossipcat pipeline. Tasks won't appear in the activity
+feed, no memory is written, no signals recorded. The agent effectively works off-grid.
 
 ## Native Agent Relay Rule
 
@@ -28096,10 +28538,10 @@ async function doBoot() {
     }
     const key = await keychain.getKey(ac.provider);
     const llm = m.createProvider(ac.provider, ac.model, key ?? void 0);
-    const { existsSync: existsSync29, readFileSync: readFileSync30 } = require("fs");
-    const { join: join33 } = require("path");
-    const instructionsPath = join33(process.cwd(), ".gossip", "agents", ac.id, "instructions.md");
-    const instructions = existsSync29(instructionsPath) ? readFileSync30(instructionsPath, "utf-8") : void 0;
+    const { existsSync: existsSync32, readFileSync: readFileSync33 } = require("fs");
+    const { join: join36 } = require("path");
+    const instructionsPath = join36(process.cwd(), ".gossip", "agents", ac.id, "instructions.md");
+    const instructions = existsSync32(instructionsPath) ? readFileSync33(instructionsPath, "utf-8") : void 0;
     const worker = new m.WorkerAgent(ac.id, llm, relay.url, m.ALL_TOOLS, instructions);
     worker.setOnTaskComplete?.((event) => {
       try {
@@ -28441,7 +28883,7 @@ server.tool(
       }).join("\n");
       const assignedTasks = planned.filter((t) => t.agentId);
       const unassignedTasks = planned.filter((t) => !t.agentId);
-      const planId = (0, import_crypto11.randomUUID)().slice(0, 8);
+      const planId = (0, import_crypto12.randomUUID)().slice(0, 8);
       const planState = {
         id: planId,
         task,
@@ -28547,7 +28989,7 @@ server.tool(
     const nativeConfig = nativeAgentConfigs.get(agent_id);
     if (nativeConfig) {
       evictStaleNativeTasks();
-      const taskId = (0, import_crypto11.randomUUID)().slice(0, 8);
+      const taskId = (0, import_crypto12.randomUUID)().slice(0, 8);
       nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), planId: plan_id, step });
       persistNativeTaskMap();
       try {
@@ -28653,7 +29095,7 @@ server.tool(
     const nativeInstructions = [];
     for (const def of nativeTasks) {
       const nativeConfig = nativeAgentConfigs.get(def.agent_id);
-      const taskId = (0, import_crypto11.randomUUID)().slice(0, 8);
+      const taskId = (0, import_crypto12.randomUUID)().slice(0, 8);
       nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now() });
       try {
         mainAgent.recordNativeTask(taskId, def.agent_id, def.task);
@@ -28757,6 +29199,29 @@ server.tool(
     }
     if (allResults.length === 0) {
       return { content: [{ type: "text", text: requestedIds ? "No matching tasks." : "No pending tasks." }] };
+    }
+    try {
+      const failedResults = allResults.filter(
+        (r) => r.status === "failed" || r.status === "timeout" || r.status === "completed" && (!r.result || r.result.trim().length === 0)
+      );
+      if (failedResults.length > 0) {
+        const { PerformanceWriter: PerformanceWriter2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
+        const writer = new PerformanceWriter2(process.cwd());
+        const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+        const autoSignals = failedResults.map((r) => ({
+          type: "consensus",
+          taskId: r.id || "",
+          // Use disagreement for empty/timeout (reliability failure), hallucination only for actual errors
+          signal: r.status === "failed" ? "disagreement" : "disagreement",
+          agentId: r.agentId,
+          evidence: r.status === "failed" ? `Task failed: ${(r.error || "").slice(0, 100)}` : r.status === "timeout" ? "Task timed out \u2014 no response" : "Empty response \u2014 agent produced no output",
+          timestamp
+        }));
+        writer.appendSignals(autoSignals);
+        process.stderr.write(`[gossipcat] Auto-recorded ${autoSignals.length} failure signal(s): ${autoSignals.map((s) => s.agentId).join(", ")}
+`);
+      }
+    } catch {
     }
     let consensusReport = void 0;
     if (consensus && allResults.filter((r) => r.status === "completed").length >= 2) {
@@ -28865,7 +29330,7 @@ server.tool(
     const nativeInstructions = [];
     for (const def of nativeTasks) {
       const nativeConfig = nativeAgentConfigs.get(def.agent_id);
-      const taskId = (0, import_crypto11.randomUUID)().slice(0, 8);
+      const taskId = (0, import_crypto12.randomUUID)().slice(0, 8);
       nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now() });
       try {
         mainAgent.recordNativeTask(taskId, def.agent_id, def.task);
@@ -29120,9 +29585,9 @@ server.tool(
     const generator = new BootstrapGenerator2(process.cwd());
     const result = generator.generate();
     const { writeFileSync: writeFileSync13, mkdirSync: mkdirSync14 } = require("fs");
-    const { join: join33 } = require("path");
-    mkdirSync14(join33(process.cwd(), ".gossip"), { recursive: true });
-    writeFileSync13(join33(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
+    const { join: join36 } = require("path");
+    mkdirSync14(join36(process.cwd(), ".gossip"), { recursive: true });
+    writeFileSync13(join36(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
     return { content: [{ type: "text", text: result.prompt }] };
   }
 );
@@ -29151,8 +29616,8 @@ server.tool(
     })).describe("Array of agents to create")
   },
   async ({ main_provider, main_model, mode, agents }) => {
-    const { writeFileSync: writeFileSync13, mkdirSync: mkdirSync14, existsSync: existsSync29 } = require("fs");
-    const { join: join33 } = require("path");
+    const { writeFileSync: writeFileSync13, mkdirSync: mkdirSync14, existsSync: existsSync32 } = require("fs");
+    const { join: join36 } = require("path");
     const root = process.cwd();
     const CLAUDE_MODEL_MAP2 = {
       opus: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -29190,9 +29655,9 @@ server.tool(
           "",
           body
         ].join("\n");
-        const agentsDir = join33(root, ".claude", "agents");
+        const agentsDir = join36(root, ".claude", "agents");
         mkdirSync14(agentsDir, { recursive: true });
-        writeFileSync13(join33(agentsDir, `${agent.id}.md`), md, "utf-8");
+        writeFileSync13(join36(agentsDir, `${agent.id}.md`), md, "utf-8");
         nativeCreated.push(agent.id);
         configAgents[agent.id] = {
           provider: mapped.provider,
@@ -29210,8 +29675,8 @@ server.tool(
           errors.push(`${agent.id}: custom agent requires "custom_model" field`);
           continue;
         }
-        const nativeFile = join33(root, ".claude", "agents", `${agent.id}.md`);
-        const wasNative = existingAgents[agent.id]?.native || existsSync29(nativeFile);
+        const nativeFile = join36(root, ".claude", "agents", `${agent.id}.md`);
+        const wasNative = existingAgents[agent.id]?.native || existsSync32(nativeFile);
         if (wasNative) {
           errors.push(`${agent.id}: cannot re-register native agent as custom \u2014 .claude/agents/${agent.id}.md exists. Remove the file first or keep it as native.`);
           continue;
@@ -29224,17 +29689,17 @@ server.tool(
         };
         customCreated.push(agent.id);
         if (agent.instructions) {
-          const instrDir = join33(root, ".gossip", "agents", agent.id);
+          const instrDir = join36(root, ".gossip", "agents", agent.id);
           mkdirSync14(instrDir, { recursive: true });
-          writeFileSync13(join33(instrDir, "instructions.md"), agent.instructions, "utf-8");
+          writeFileSync13(join36(instrDir, "instructions.md"), agent.instructions, "utf-8");
         }
       }
     }
     let existingAgents = {};
     if (mode === "merge") {
       try {
-        const { readFileSync: readFileSync30 } = require("fs");
-        const existing = JSON.parse(readFileSync30(join33(root, ".gossip", "config.json"), "utf-8"));
+        const { readFileSync: readFileSync33 } = require("fs");
+        const existing = JSON.parse(readFileSync33(join36(root, ".gossip", "config.json"), "utf-8"));
         existingAgents = existing.agents || {};
       } catch {
       }
@@ -29249,11 +29714,11 @@ server.tool(
     } catch (err) {
       return { content: [{ type: "text", text: `Invalid config: ${err.message}` }] };
     }
-    mkdirSync14(join33(root, ".gossip"), { recursive: true });
-    writeFileSync13(join33(root, ".gossip", "config.json"), JSON.stringify(config2, null, 2));
+    mkdirSync14(join36(root, ".gossip"), { recursive: true });
+    writeFileSync13(join36(root, ".gossip", "config.json"), JSON.stringify(config2, null, 2));
     const agentList = Object.entries(config2.agents).map(([id, a]) => `- ${id}: ${a.provider}/${a.model} (${a.preset || "custom"})${a.native ? " \u2014 native" : ""}`).join("\n");
-    const rulesDir = join33(root, env.rulesDir);
-    const rulesFile = join33(root, env.rulesFile);
+    const rulesDir = join36(root, env.rulesDir);
+    const rulesFile = join36(root, env.rulesFile);
     mkdirSync14(rulesDir, { recursive: true });
     writeFileSync13(rulesFile, generateRulesContent(agentList));
     const lines = [`Host: ${env.host}`, ""];
@@ -29531,6 +29996,7 @@ server.tool(
   "gossip_record_signals",
   "Record consensus performance signals after cross-referencing agent findings. Call IMMEDIATELY when you verify a finding against code \u2014 don't batch or defer. If you read the code and the finding is wrong, record hallucination_caught right away. If confirmed, record unique_confirmed/agreement right away. Maps signals to agent performance scores that improve future dispatch decisions.",
   {
+    task_id: external_exports.string().optional().describe("Real task ID to link manual signals to the triggering task. If omitted, a synthetic manual-* ID is generated."),
     signals: external_exports.array(external_exports.object({
       signal: external_exports.enum(["agreement", "disagreement", "unique_confirmed", "unique_unconfirmed", "new_finding", "hallucination_caught"]).describe("Signal type: agreement (both agree), disagreement (one wrong), unique_confirmed (only one found it + verified), unique_unconfirmed (only one found it, unverified), new_finding (discovered during cross-review), hallucination_caught (fabricated finding)"),
       agent_id: external_exports.string().describe("Agent being evaluated"),
@@ -29539,7 +30005,7 @@ server.tool(
       evidence: external_exports.string().optional().describe("Supporting evidence or reasoning")
     })).describe("Array of consensus signals from your cross-referencing of agent results")
   },
-  async ({ signals }) => {
+  async ({ task_id, signals }) => {
     await boot();
     if (signals.length === 0) {
       return { content: [{ type: "text", text: "No signals to record." }] };
@@ -29548,13 +30014,24 @@ server.tool(
       const { PerformanceWriter: PerformanceWriter2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
       const writer = new PerformanceWriter2(process.cwd());
       const timestamp = (/* @__PURE__ */ new Date()).toISOString();
-      const formatted = signals.map((s) => ({
+      const MAX_EVIDENCE_LENGTH = 2e3;
+      const PUNITIVE_SIGNALS = /* @__PURE__ */ new Set(["hallucination_caught", "disagreement"]);
+      const COUNTERPART_REQUIRED = /* @__PURE__ */ new Set(["agreement", "disagreement"]);
+      for (const s of signals) {
+        if (PUNITIVE_SIGNALS.has(s.signal) && (!s.evidence || s.evidence.trim().length === 0)) {
+          return { content: [{ type: "text", text: `Error: ${s.signal} signals require non-empty evidence for audit trail. Agent: ${s.agent_id}` }] };
+        }
+        if (COUNTERPART_REQUIRED.has(s.signal) && (!s.counterpart_id || s.counterpart_id.trim().length === 0)) {
+          return { content: [{ type: "text", text: `Error: ${s.signal} signals require counterpart_id. Agent: ${s.agent_id}` }] };
+        }
+      }
+      const formatted = signals.map((s, i) => ({
         type: "consensus",
-        taskId: "",
+        taskId: task_id || `manual-${timestamp.replace(/[:.]/g, "")}-${i}`,
         signal: s.signal,
         agentId: s.agent_id,
         counterpartId: s.counterpart_id,
-        evidence: s.evidence || s.finding,
+        evidence: ((s.evidence || s.finding) ?? "").slice(0, MAX_EVIDENCE_LENGTH),
         timestamp
       }));
       writer.appendSignals(formatted);
@@ -29566,12 +30043,49 @@ server.tool(
         byAgent.set(s.agent_id, entry);
       }
       const summary = Array.from(byAgent.entries()).map(([id, { pos, neg }]) => `  ${id}: +${pos} / -${neg}`).join("\n");
+      const taskIdList = formatted.map((f) => `  ${f.agentId}: ${f.taskId}`).join("\n");
       return { content: [{ type: "text", text: `Recorded ${signals.length} consensus signals:
 ${summary}
+
+Task IDs (for retraction):
+${taskIdList}
 
 These will influence future agent selection via dispatch weighting.` }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Failed to record signals: ${err.message}` }] };
+    }
+  }
+);
+server.tool(
+  "gossip_retract_signal",
+  "Retract a previously recorded signal for an agent. Use when a signal was recorded incorrectly (e.g., hallucination_caught for a minor citation error that should have been unverified). The retraction is append-only \u2014 the original signal stays in the audit log but is excluded from scoring.",
+  {
+    agent_id: external_exports.string().describe("Agent whose signal to retract"),
+    task_id: external_exports.string().describe("Task ID of the signal to retract (from the original signal)"),
+    reason: external_exports.string().describe("Why this signal is being retracted")
+  },
+  async ({ agent_id, task_id, reason }) => {
+    await boot();
+    if (!task_id || task_id.trim().length === 0) {
+      return { content: [{ type: "text", text: "Error: task_id is required for retraction. Use the task ID from the original signal." }] };
+    }
+    try {
+      const { PerformanceWriter: PerformanceWriter2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
+      const writer = new PerformanceWriter2(process.cwd());
+      writer.appendSignals([{
+        type: "consensus",
+        taskId: task_id,
+        signal: "signal_retracted",
+        agentId: agent_id,
+        evidence: `Retracted: ${reason}`,
+        timestamp: (/* @__PURE__ */ new Date()).toISOString()
+      }]);
+      return { content: [{ type: "text", text: `Retracted signal for ${agent_id} on task ${task_id}.
+Reason: ${reason}
+
+The original signal remains in the audit log but will be excluded from scoring.` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Failed to retract: ${err.message}` }] };
     }
   }
 );
@@ -29623,12 +30137,12 @@ server.tool(
     if (findings.length === 0) {
       return { content: [{ type: "text", text: "No findings to log." }] };
     }
-    const { appendFileSync: appendFileSync7, mkdirSync: mkdirSync14, existsSync: existsSync29 } = require("fs");
-    const { join: join33 } = require("path");
+    const { appendFileSync: appendFileSync7, mkdirSync: mkdirSync14, existsSync: existsSync32 } = require("fs");
+    const { join: join36 } = require("path");
     const root = process.cwd();
-    const dir = join33(root, ".gossip");
-    if (!existsSync29(dir)) mkdirSync14(dir, { recursive: true });
-    const filePath = join33(dir, "implementation-findings.jsonl");
+    const dir = join36(root, ".gossip");
+    if (!existsSync32(dir)) mkdirSync14(dir, { recursive: true });
+    const filePath = join36(dir, "implementation-findings.jsonl");
     const timestamp = (/* @__PURE__ */ new Date()).toISOString();
     const data = findings.map((f) => JSON.stringify({
       timestamp,
@@ -29669,15 +30183,15 @@ server.tool(
     agent_id: external_exports.string().optional().describe("Filter by implementer agent ID. Omit to see all.")
   },
   async ({ agent_id }) => {
-    const { existsSync: existsSync29, readFileSync: readFileSync30 } = require("fs");
-    const { join: join33 } = require("path");
-    const filePath = join33(process.cwd(), ".gossip", "implementation-findings.jsonl");
-    if (!existsSync29(filePath)) {
+    const { existsSync: existsSync32, readFileSync: readFileSync33 } = require("fs");
+    const { join: join36 } = require("path");
+    const filePath = join36(process.cwd(), ".gossip", "implementation-findings.jsonl");
+    if (!existsSync32(filePath)) {
       return { content: [{ type: "text", text: "No implementation findings yet. Use gossip_log_finding to record findings after code reviews." }] };
     }
     const entries = [];
     try {
-      const lines = readFileSync30(filePath, "utf-8").trim().split("\n").filter(Boolean);
+      const lines = readFileSync33(filePath, "utf-8").trim().split("\n").filter(Boolean);
       for (const l of lines) {
         try {
           entries.push(JSON.parse(l));
@@ -29740,16 +30254,16 @@ server.tool(
     const { SkillGapTracker: SkillGapTracker2, parseSkillFrontmatter: parseSkillFrontmatter2, normalizeSkillName: normalizeSkillName2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
     const tracker = new SkillGapTracker2(process.cwd());
     if (skills && skills.length > 0) {
-      const { writeFileSync: writeFileSync13, mkdirSync: mkdirSync14, existsSync: existsSync29, readFileSync: readFileSync30 } = require("fs");
-      const { join: join33 } = require("path");
-      const dir = join33(process.cwd(), ".gossip", "skills");
+      const { writeFileSync: writeFileSync13, mkdirSync: mkdirSync14, existsSync: existsSync32, readFileSync: readFileSync33 } = require("fs");
+      const { join: join36 } = require("path");
+      const dir = join36(process.cwd(), ".gossip", "skills");
       mkdirSync14(dir, { recursive: true });
       const results = [];
       for (const skill of skills) {
         const name = normalizeSkillName2(skill.name);
-        const filePath = join33(dir, `${name}.md`);
-        if (existsSync29(filePath)) {
-          const existing = readFileSync30(filePath, "utf-8");
+        const filePath = join36(dir, `${name}.md`);
+        if (existsSync32(filePath)) {
+          const existing = readFileSync33(filePath, "utf-8");
           const fm = parseSkillFrontmatter2(existing);
           if (fm) {
             if (fm.generated_by === "manual") {
@@ -29979,6 +30493,17 @@ server.tool(
       const { writeFileSync: wf } = require("fs");
       const { join: j } = require("path");
       wf(j(process.cwd(), ".gossip", "agents", "_project", "memory", "session-gossip.jsonl"), "");
+    } catch {
+    }
+    try {
+      const { BootstrapGenerator: BootstrapGenerator2 } = await Promise.resolve().then(() => (init_src5(), src_exports4));
+      const generator = new BootstrapGenerator2(process.cwd());
+      const result = generator.generate();
+      const { writeFileSync: wf, mkdirSync: md } = require("fs");
+      const { join: j } = require("path");
+      md(j(process.cwd(), ".gossip"), { recursive: true });
+      wf(j(process.cwd(), ".gossip", "bootstrap.md"), result.prompt);
+      process.stderr.write("[gossipcat] Bootstrap regenerated with new session context\n");
     } catch {
     }
     let output = `Session saved to .gossip/agents/_project/memory/
