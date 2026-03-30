@@ -1813,7 +1813,7 @@ server.tool(
         content: [{ type: 'text' as const, text:
           `Dispatched to ${agent_id} (native). Task ID: ${taskId}\n\n` +
           `NATIVE_DISPATCH:\n\n` +
-          `Agent(model: "${config.model}", prompt: "${scopePrefix}${presetPrompt}\\n\\n---\\n\\nTask: ${task}")\n` +
+          `Agent(model: "${config.model}", prompt: ${JSON.stringify(`${scopePrefix}${presetPrompt}\n\n---\n\nTask: ${task}`)})\n` +
           `  → then: gossip_run_complete(task_id: "${taskId}", result: "<output>")\n`
         }],
       };
