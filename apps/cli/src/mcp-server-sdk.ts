@@ -2114,21 +2114,116 @@ server.tool(
   }
 );
 
-// ── Build skill files from gap suggestions ────────────────────────────────
+// ── Unified skill management ─────────────────────────────────────────────
 server.tool(
-  'gossip_build_skills',
-  'Build skill files from agent suggestions that hit threshold (3+ suggestions, 2+ agents). Call without skills to discover pending gaps. Call with skills array to save generated content.',
+  'gossip_skills',
+  'Manage agent skills. Actions: list (show skill index), bind (attach skill to agent), unbind (remove skill from agent), build (create skills from gap suggestions), develop (generate skill from ATI competency data).',
   {
-    skill_names: z.array(z.string()).optional()
-      .describe('Filter to specific skills. Omit to get all pending.'),
+    action: z.enum(['list', 'bind', 'unbind', 'build', 'develop']).describe('Action to perform'),
+    // bind/unbind/develop params
+    agent_id: z.string().optional().describe('Agent ID (required for bind, unbind, develop)'),
+    skill: z.string().optional().describe('Skill name (required for bind, unbind)'),
+    enabled: z.boolean().default(true).optional().describe('For bind: set to false to disable the slot without removing it'),
+    // develop params
+    category: z.string().optional().describe('Category to improve (required for develop). One of: trust_boundaries, injection_vectors, input_validation, concurrency, resource_exhaustion, type_safety, error_handling, data_integrity'),
+    // build params
+    skill_names: z.array(z.string()).optional().describe('For build: filter to specific skills. Omit to get all pending.'),
     skills: z.array(z.object({
       name: z.string().describe('Skill name (kebab-case)'),
       content: z.string().describe('Full .md content with frontmatter'),
-    })).optional().describe('Generated skill files to save. Omit for discovery mode.'),
+    })).optional().describe('For build: generated skill files to save. Omit for discovery mode.'),
   },
-  async ({ skill_names, skills }) => {
+  async ({ action, agent_id, skill, enabled, category, skill_names, skills }) => {
     await boot();
 
+    // ── list ──
+    if (action === 'list') {
+      const index = mainAgent.getSkillIndex();
+      if (!index) return { content: [{ type: 'text' as const, text: 'Skill index not initialized.' }] };
+
+      const data = index.getIndex();
+      const agentIds = Object.keys(data);
+      if (agentIds.length === 0) return { content: [{ type: 'text' as const, text: 'Skill index is empty. Skills will be indexed on next dispatch.' }] };
+
+      const sections = agentIds.map((agentId: string) => {
+        const slots = Object.values(data[agentId]);
+        const lines = slots.map((s: any) =>
+          `  [${s.enabled ? '✓' : '✗'}] ${s.skill} (v${s.version}, ${s.source})`
+        );
+        return `${agentId} (${slots.filter((s: any) => s.enabled).length}/${slots.length} enabled):\n${lines.join('\n')}`;
+      });
+
+      return { content: [{ type: 'text' as const, text: `Skill Index (${agentIds.length} agents):\n\n${sections.join('\n\n')}` }] };
+    }
+
+    // ── bind ──
+    if (action === 'bind') {
+      if (!agent_id) return { content: [{ type: 'text' as const, text: 'Error: agent_id is required for bind.' }] };
+      if (!skill) return { content: [{ type: 'text' as const, text: 'Error: skill is required for bind.' }] };
+      const index = mainAgent.getSkillIndex();
+      if (!index) return { content: [{ type: 'text' as const, text: 'Skill index not initialized.' }] };
+
+      const existing = index.getSlot(agent_id, skill);
+      const slot = index.bind(agent_id, skill, { enabled });
+
+      const bindAction = existing
+        ? (existing.enabled !== enabled ? (enabled ? 'enabled' : 'disabled') : 'updated')
+        : 'bound';
+
+      return { content: [{ type: 'text' as const, text: `Skill "${slot.skill}" ${bindAction} for ${agent_id} (v${slot.version}, ${slot.enabled ? 'enabled' : 'disabled'})` }] };
+    }
+
+    // ── unbind ──
+    if (action === 'unbind') {
+      if (!agent_id) return { content: [{ type: 'text' as const, text: 'Error: agent_id is required for unbind.' }] };
+      if (!skill) return { content: [{ type: 'text' as const, text: 'Error: skill is required for unbind.' }] };
+      const index = mainAgent.getSkillIndex();
+      if (!index) return { content: [{ type: 'text' as const, text: 'Skill index not initialized.' }] };
+
+      const removed = index.unbind(agent_id, skill);
+      return { content: [{ type: 'text' as const, text: removed
+        ? `Skill "${skill}" unbound from ${agent_id}`
+        : `No slot found for "${skill}" on ${agent_id}`
+      }] };
+    }
+
+    // ── develop ──
+    if (action === 'develop') {
+      if (!agent_id) return { content: [{ type: 'text' as const, text: 'Error: agent_id is required for develop.' }] };
+      if (!category) return { content: [{ type: 'text' as const, text: 'Error: category is required for develop.' }] };
+
+      if (!skillGenerator) {
+        return { content: [{ type: 'text' as const, text: 'Skill generator not available. Check boot logs.' }] };
+      }
+
+      try {
+        const result = await skillGenerator.generate(agent_id, category);
+
+        // Register skill on agent config so loadSkills picks it up
+        if (mainAgent) {
+          const registry = (mainAgent as any).registry;
+          const config = registry?.get(agent_id);
+          if (config && !config.skills.includes(category)) {
+            config.skills.push(category);
+          }
+        }
+
+        const preview = result.content.length > 1000
+          ? result.content.slice(0, 1000) + '\n\n... (truncated)'
+          : result.content;
+
+        return {
+          content: [{ type: 'text' as const, text: `Skill generated and saved:\n\nPath: ${result.path}\n\n${preview}` }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: `Skill generation failed: ${(err as Error).message}` }],
+        };
+      }
+    }
+
+    // ── build ──
+    // action === 'build'
     const { SkillGapTracker, parseSkillFrontmatter, normalizeSkillName } = await import('@gossip/orchestrator');
     const tracker = new SkillGapTracker(process.cwd());
 
@@ -2140,8 +2235,8 @@ server.tool(
       mkdirSync(dir, { recursive: true });
 
       const results: string[] = [];
-      for (const skill of skills) {
-        const name = normalizeSkillName(skill.name);
+      for (const sk of skills) {
+        const name = normalizeSkillName(sk.name);
         const filePath = join(dir, `${name}.md`);
 
         // Overwrite protection
@@ -2150,24 +2245,24 @@ server.tool(
           const fm = parseSkillFrontmatter(existing);
           if (fm) {
             if (fm.generated_by === 'manual') {
-              results.push(`⚠️ Skipped ${name}: manually created file (generated_by: manual)`);
+              results.push(`Skipped ${name}: manually created file (generated_by: manual)`);
               continue;
             }
             if (fm.status === 'active') {
-              results.push(`⚠️ Skipped ${name}: already active`);
+              results.push(`Skipped ${name}: already active`);
               continue;
             }
             if (fm.status === 'disabled') {
-              results.push(`⚠️ Skipped ${name}: disabled by user`);
+              results.push(`Skipped ${name}: disabled by user`);
               continue;
             }
           }
           // No frontmatter = old skeleton template, safe to overwrite
         }
 
-        writeFileSync(filePath, skill.content);
+        writeFileSync(filePath, sk.content);
         tracker.recordResolution(name);
-        results.push(`✅ Created .gossip/skills/${name}.md`);
+        results.push(`Created .gossip/skills/${name}.md`);
       }
 
       return { content: [{ type: 'text' as const, text: results.join('\n') }] };
@@ -2202,121 +2297,9 @@ server.tool(
     text += `Generate each skill as a .md file with this frontmatter format:\n`;
     text += '```\n---\nname: skill-name\ndescription: What this skill does.\nkeywords: [keyword1, keyword2]\ngenerated_by: orchestrator\nsources: N suggestions from agent1, agent2\nstatus: active\n---\n```\n';
     text += `Body sections: Approach (numbered steps), Output (format), Don't (anti-patterns).\n\n`;
-    text += `Then call gossip_build_skills(skills: [{name: "...", content: "..."}]) to save.`;
+    text += `Then call gossip_skills(action: "build", skills: [{name: "...", content: "..."}]) to save.`;
 
     return { content: [{ type: 'text' as const, text }] };
-  }
-);
-
-// ── Generate agent-specific skill from ATI competency data ──────────────
-server.tool(
-  'gossip_develop_skill',
-  'Generate a superpowers-quality skill file for an agent to improve performance in a specific review category. Uses ATI profiler data + reference templates.',
-  {
-    agent_id: z.string().describe('Agent to develop skill for (e.g., "gemini-reviewer")'),
-    category: z.string().describe('Category to improve. One of: trust_boundaries, injection_vectors, input_validation, concurrency, resource_exhaustion, type_safety, error_handling, data_integrity'),
-  },
-  async ({ agent_id, category }) => {
-    await boot();
-
-    if (!skillGenerator) {
-      return { content: [{ type: 'text' as const, text: 'Skill generator not available. Check boot logs.' }] };
-    }
-
-    try {
-      const result = await skillGenerator.generate(agent_id, category);
-
-      // Register skill on agent config so loadSkills picks it up
-      if (mainAgent) {
-        const registry = (mainAgent as any).registry;
-        const config = registry?.get(agent_id);
-        if (config && !config.skills.includes(category)) {
-          config.skills.push(category);
-        }
-      }
-
-      const preview = result.content.length > 1000
-        ? result.content.slice(0, 1000) + '\n\n... (truncated)'
-        : result.content;
-
-      return {
-        content: [{ type: 'text' as const, text: `✅ Skill generated and saved:\n\nPath: ${result.path}\n\n${preview}` }],
-      };
-    } catch (err) {
-      return {
-        content: [{ type: 'text' as const, text: `❌ Skill generation failed: ${(err as Error).message}` }],
-      };
-    }
-  },
-);
-
-// ── Skill Index: per-agent skill slot management ─────────────────────────
-server.tool(
-  'gossip_skill_index',
-  'Show the per-agent skill index. Each agent has skill "slots" that can be enabled/disabled. Like smart contract storage slots — deterministic addressing, O(1) lookup.',
-  {},
-  async () => {
-    await boot();
-    const index = mainAgent.getSkillIndex();
-    if (!index) return { content: [{ type: 'text' as const, text: 'Skill index not initialized.' }] };
-
-    const data = index.getIndex();
-    const agentIds = Object.keys(data);
-    if (agentIds.length === 0) return { content: [{ type: 'text' as const, text: 'Skill index is empty. Skills will be indexed on next dispatch.' }] };
-
-    const sections = agentIds.map((agentId: string) => {
-      const slots = Object.values(data[agentId]);
-      const lines = slots.map((s: any) =>
-        `  [${s.enabled ? '✓' : '✗'}] ${s.skill} (v${s.version}, ${s.source})`
-      );
-      return `${agentId} (${slots.filter((s: any) => s.enabled).length}/${slots.length} enabled):\n${lines.join('\n')}`;
-    });
-
-    return { content: [{ type: 'text' as const, text: `Skill Index (${agentIds.length} agents):\n\n${sections.join('\n\n')}` }] };
-  }
-);
-
-server.tool(
-  'gossip_skill_bind',
-  'Bind a skill to an agent (creates or updates the slot). Can also enable/disable existing slots. Skills are shared — one skill file, many agents.',
-  {
-    agent_id: z.string().describe('Agent to bind skill to'),
-    skill: z.string().describe('Skill name (e.g. "security-audit", "typescript")'),
-    enabled: z.boolean().default(true).describe('Set to false to disable the slot without removing it'),
-  },
-  async ({ agent_id, skill, enabled }) => {
-    await boot();
-    const index = mainAgent.getSkillIndex();
-    if (!index) return { content: [{ type: 'text' as const, text: 'Skill index not initialized.' }] };
-
-    const existing = index.getSlot(agent_id, skill);
-    const slot = index.bind(agent_id, skill, { enabled });
-
-    const action = existing
-      ? (existing.enabled !== enabled ? (enabled ? 'enabled' : 'disabled') : 'updated')
-      : 'bound';
-
-    return { content: [{ type: 'text' as const, text: `Skill "${slot.skill}" ${action} for ${agent_id} (v${slot.version}, ${slot.enabled ? 'enabled' : 'disabled'})` }] };
-  }
-);
-
-server.tool(
-  'gossip_skill_unbind',
-  'Remove a skill slot from an agent entirely. Use gossip_skill_bind with enabled: false to disable without removing.',
-  {
-    agent_id: z.string().describe('Agent to unbind skill from'),
-    skill: z.string().describe('Skill name to remove'),
-  },
-  async ({ agent_id, skill }) => {
-    await boot();
-    const index = mainAgent.getSkillIndex();
-    if (!index) return { content: [{ type: 'text' as const, text: 'Skill index not initialized.' }] };
-
-    const removed = index.unbind(agent_id, skill);
-    return { content: [{ type: 'text' as const, text: removed
-      ? `Skill "${skill}" unbound from ${agent_id}`
-      : `No slot found for "${skill}" on ${agent_id}`
-    }] };
   }
 );
 
@@ -2444,12 +2427,8 @@ server.tool(
       { name: 'gossip_scores', desc: 'View agent performance scores and dispatch weights' },
       { name: 'gossip_log_finding', desc: 'Log implementation quality finding (observer-only, no scoring)' },
       { name: 'gossip_findings', desc: 'View implementation findings per agent' },
-      { name: 'gossip_build_skills', desc: 'Build skill files from agent gap suggestions' },
-      { name: 'gossip_develop_skill', desc: 'Generate agent-specific skill from ATI competency data' },
+      { name: 'gossip_skills', desc: 'Manage skills: list, bind, unbind, build, develop' },
       { name: 'gossip_session_save', desc: 'Save cognitive session summary for next session context' },
-      { name: 'gossip_skill_index', desc: 'Show per-agent skill slots (enabled/disabled/version)' },
-      { name: 'gossip_skill_bind', desc: 'Bind/enable/disable a skill slot on an agent' },
-      { name: 'gossip_skill_unbind', desc: 'Remove a skill slot from an agent' },
       { name: 'gossip_tools', desc: 'List available tools (this command)' },
       { name: 'gossip_bootstrap', desc: 'Generate team context prompt with live agent state' },
       { name: 'gossip_setup', desc: 'Create or update team configuration' },
