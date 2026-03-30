@@ -495,7 +495,7 @@ async function doBoot() {
   }
 
 
-  // Create skill generator for gossip_develop_skill tool
+  // Create skill generator for gossip_skills develop action
   try {
     const { CompetencyProfiler: CP, SkillGenerator: SG } = await import('@gossip/orchestrator');
     const skillProfiler = new CP(process.cwd());
@@ -1120,7 +1120,7 @@ server.tool(
       const tracker = new SkillGapTracker(process.cwd());
       const thresholds = tracker.checkThresholds();
       if (thresholds.count > 0) {
-        output += `\n\n🔧 ${thresholds.count} skill(s) ready to build. Call gossip_build_skills() to generate them.`;
+        output += `\n\n🔧 ${thresholds.count} skill(s) ready to build. Call gossip_skills(action: "build") to generate them.`;
       }
     } catch { /* best-effort */ }
 
