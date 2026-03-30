@@ -88,9 +88,10 @@ describe('PerformanceReader', () => {
 
   it('handles malformed lines gracefully', () => {
     mkdirSync(join(TEST_DIR, '.gossip'), { recursive: true });
+    const recent = new Date().toISOString();
     writeFileSync(
       join(TEST_DIR, '.gossip', 'agent-performance.jsonl'),
-      '{"type":"consensus","signal":"agreement","agentId":"rev","taskId":"t1","evidence":"","timestamp":"2026-01-01"}\nnot json\n{"broken\n'
+      `{"type":"consensus","signal":"agreement","agentId":"rev","taskId":"t1","evidence":"","timestamp":"${recent}"}\nnot json\n{"broken\n`
     );
     const reader = new PerformanceReader(TEST_DIR);
     const scores = reader.getScores();
@@ -106,12 +107,13 @@ describe('PerformanceReader', () => {
     ]);
     const reader = new PerformanceReader(TEST_DIR);
     const score = reader.getAgentScore('rev')!;
-    // accuracy = 0.5 + 0.1 + 0.1 = 0.7
+    // Ratio-based: rawAccuracy = 2/2 = 1.0 (2 agreements, each adds 1 to correct & total)
+    // hallucinationMultiplier = 1.0 (no hallucinations), accuracy = 1.0
     // uniqueness = 0.5 + 0.2 = 0.7
-    // reliability = 0.7 * 0.7 + 0.7 * 0.3 = 0.49 + 0.21 = 0.7
-    expect(score.accuracy).toBeCloseTo(0.7, 1);
+    // reliability = 1.0 * 0.8 + 0.7 * 0.2 = 0.94 (before time decay, ~1.0 for recent signals)
+    expect(score.accuracy).toBeCloseTo(1.0, 1);
     expect(score.uniqueness).toBeCloseTo(0.7, 1);
-    expect(score.reliability).toBeCloseTo(0.7, 1);
+    expect(score.reliability).toBeGreaterThan(0.9);
   });
 
   it('clamps scores to 0-1 range', () => {
@@ -151,14 +153,14 @@ describe('PerformanceReader', () => {
       { type: 'consensus', signal: 'disagreement', agentId: 'loser', taskId: 't3', counterpartId: 'winner', evidence: '', timestamp: new Date().toISOString() },
     ]);
     const reader = new PerformanceReader(TEST_DIR);
-    // Loser: base 0.5 - 3 * 0.15 = 0.05
+    // Loser: ratio = 0/3 = 0 (3 disagreements add to total but not correct)
     const loserScore = reader.getAgentScore('loser')!;
-    expect(loserScore.accuracy).toBeCloseTo(0.05, 2);
+    expect(loserScore.accuracy).toBe(0);
     expect(loserScore.totalSignals).toBe(3);
-    // Winner: base 0.5 + 3 * 0.1 = 0.8 (counterpart bonus)
+    // Winner: ratio = 3/3 = 1.0 (counterpart bonus adds to both correct & total)
     const winnerScore = reader.getAgentScore('winner')!;
-    expect(winnerScore.accuracy).toBeCloseTo(0.8, 2);
-    expect(winnerScore.totalSignals).toBe(3); // FIX: now counted
+    expect(winnerScore.accuracy).toBeCloseTo(1.0, 1);
+    expect(winnerScore.totalSignals).toBe(3);
     // Winner should get boosted dispatch weight (>= 3 signals, high accuracy)
     expect(reader.getDispatchWeight('winner')).toBeGreaterThan(1.0);
   });
