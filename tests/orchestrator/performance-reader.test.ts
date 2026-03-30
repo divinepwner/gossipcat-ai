@@ -205,4 +205,48 @@ describe('PerformanceReader', () => {
     expect(scoreA.uniqueness).toBeLessThan(0.65);
     expect(scoreA.accuracy).toBe(0.5);
   });
+
+  it('time decay reduces good agent reliability toward 0.5', () => {
+    const threeWeeksAgo = new Date(Date.now() - 21 * 86400000).toISOString();
+    writeSignals([
+      { type: 'consensus', signal: 'agreement', agentId: 'good', taskId: 't1', evidence: '', timestamp: threeWeeksAgo },
+      { type: 'consensus', signal: 'agreement', agentId: 'good', taskId: 't2', evidence: '', timestamp: threeWeeksAgo },
+      { type: 'consensus', signal: 'agreement', agentId: 'good', taskId: 't3', evidence: '', timestamp: threeWeeksAgo },
+    ]);
+    const reader = new PerformanceReader(TEST_DIR);
+    const score = reader.getAgentScore('good')!;
+    // 3 agreements = perfect accuracy, but 21 days old
+    // Should decay toward 0.5 (lower than the raw ~1.0 reliability)
+    expect(score.reliability).toBeGreaterThan(0.5);
+    expect(score.reliability).toBeLessThan(0.8);
+  });
+
+  it('time decay does NOT rehabilitate bad agents', () => {
+    const threeWeeksAgo = new Date(Date.now() - 21 * 86400000).toISOString();
+    writeSignals([
+      { type: 'consensus', signal: 'hallucination_caught', agentId: 'bad', taskId: 't1', evidence: '', timestamp: threeWeeksAgo },
+      { type: 'consensus', signal: 'hallucination_caught', agentId: 'bad', taskId: 't2', evidence: '', timestamp: threeWeeksAgo },
+      { type: 'consensus', signal: 'hallucination_caught', agentId: 'bad', taskId: 't3', evidence: '', timestamp: threeWeeksAgo },
+    ]);
+    const reader = new PerformanceReader(TEST_DIR);
+    const score = reader.getAgentScore('bad')!;
+    // 3 hallucinations = low reliability. Time decay should NOT pull it up toward 0.5.
+    // Reliability should stay below 0.5 regardless of how old the signals are.
+    expect(score.reliability).toBeLessThan(0.5);
+  });
+
+  it('neutral agent (0.5) is unaffected by time decay', () => {
+    // An agent with no signals defaults to no score (null).
+    // An agent with equal positive/negative should hover near 0.5.
+    const threeWeeksAgo = new Date(Date.now() - 21 * 86400000).toISOString();
+    writeSignals([
+      { type: 'consensus', signal: 'agreement', agentId: 'neutral', taskId: 't1', evidence: '', timestamp: threeWeeksAgo },
+      { type: 'consensus', signal: 'disagreement', agentId: 'neutral', taskId: 't2', evidence: '', timestamp: threeWeeksAgo },
+    ]);
+    const reader = new PerformanceReader(TEST_DIR);
+    const score = reader.getAgentScore('neutral')!;
+    // ~0.5 accuracy, time decay should not push it below 0.5 (since it's ~0.5 already)
+    expect(score.reliability).toBeGreaterThanOrEqual(0.3);
+    expect(score.reliability).toBeLessThanOrEqual(0.55);
+  });
 });
