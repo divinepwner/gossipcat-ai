@@ -38,7 +38,7 @@ export interface CrossReviewEntry {
 /** Full consensus report */
 export interface ConsensusReport {
   agentCount: number;
-  rounds: number;        // always 2 for MVP (phase 1 + phase 2)
+  rounds: number;        // 2 = cross-review only, 3 = with orchestrator verification
   confirmed: ConsensusFinding[];
   disputed: ConsensusFinding[];
   unverified: ConsensusFinding[];

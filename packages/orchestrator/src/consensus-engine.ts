@@ -91,7 +91,16 @@ export class ConsensusEngine {
     process.stderr.write(`[consensus] Cross-review complete: ${crossReviewEntries.length} entries\n`);
 
     const report = await this.synthesize(results, crossReviewEntries);
-    process.stderr.write(`[consensus] ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unique.length} unique, ${report.newFindings.length} new\n`);
+    process.stderr.write(`[consensus] ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unverified.length} unverified, ${report.unique.length} unique, ${report.newFindings.length} new\n`);
+
+    // Phase 3: Orchestrator verification of UNVERIFIED findings
+    if (report.unverified.length > 0) {
+      process.stderr.write(`[consensus] Phase 3: verifying ${report.unverified.length} unverified findings\n`);
+      await this.verifyUnverified(report);
+      process.stderr.write(`[consensus] After verification: ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unverified.length} unverified\n`);
+      // Re-generate formatted report with updated tags
+      report.summary = this.formatReport(report.confirmed, report.disputed, report.unverified, report.unique, report.newFindings, successful.length);
+    }
 
     return report;
   }
@@ -481,6 +490,146 @@ Return only valid JSON.` },
   }
 
   /**
+   * Phase 3: Orchestrator verifies UNVERIFIED findings by reading actual code.
+   * Single batch LLM call with ±10 lines of context per finding.
+   * Promotes findings to CONFIRMED or DISPUTED; remaining stay UNVERIFIED.
+   * Mutates the report in place.
+   */
+  private async verifyUnverified(report: ConsensusReport): Promise<void> {
+    if (!this.config.projectRoot || report.unverified.length === 0) return;
+
+    const citationPattern = /((?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,6})):(\d+)/;
+    const VERIFY_CONTEXT = 10; // ±10 lines for deeper context than cross-review anchors
+    const MAX_VERIFY = 20; // cap findings per batch to bound prompt size
+    const MAX_SNIPPET_CHARS = 3000; // per-finding snippet cap
+
+    // Build finding blocks with code context
+    const findingBlocks: Array<{ idx: number; finding: ConsensusFinding; block: string }> = [];
+
+    for (let i = 0; i < Math.min(report.unverified.length, MAX_VERIFY); i++) {
+      const f = report.unverified[i];
+      const match = citationPattern.exec(f.finding);
+
+      let codeBlock = '';
+      if (match) {
+        const fullRef = match[1];
+        const bareFile = match[2];
+        const lineNum = parseInt(match[3], 10);
+
+        try {
+          const filePath = await this.cachedResolve(fullRef) ?? await this.cachedResolve(bareFile);
+          if (filePath) {
+            const content = await this.cachedRead(filePath);
+            if (content) {
+              const fileLines = content.split('\n');
+              if (lineNum <= fileLines.length) {
+                const start = Math.max(0, lineNum - 1 - VERIFY_CONTEXT);
+                const end = Math.min(fileLines.length, lineNum + VERIFY_CONTEXT);
+                let snippet = fileLines.slice(start, end)
+                  .map((l, j) => `  ${start + j + 1}: ${l}`)
+                  .join('\n');
+                if (snippet.length > MAX_SNIPPET_CHARS) {
+                  snippet = snippet.slice(0, MAX_SNIPPET_CHARS) + '\n  [truncated]';
+                }
+                codeBlock = `\n<code src="${fullRef}:${lineNum}">\n${snippet}\n</code>`;
+              }
+            }
+          }
+        } catch { /* skip code context on error */ }
+      }
+
+      findingBlocks.push({
+        idx: i,
+        finding: f,
+        block: `Finding ${i + 1} (by ${f.originalAgentId}):\n"${f.finding}"${codeBlock}`,
+      });
+    }
+
+    if (findingBlocks.length === 0) return;
+
+    const messages: LLMMessage[] = [
+      {
+        role: 'system',
+        content: `You are a senior code verification agent. Your task is to verify findings that peer reviewers could not verify during cross-review.
+
+For each finding:
+- If the code is shown and the finding is FACTUALLY CORRECT based on the code, respond CONFIRMED
+- If the code is shown and the finding is FACTUALLY WRONG (the code contradicts the claim), respond DISPUTED with evidence
+- If you cannot determine correctness (no code shown, claim is subjective, or insufficient context), respond UNVERIFIED
+
+Be strict: only CONFIRMED if you can see the evidence in the code. Only DISPUTED if the code clearly contradicts the claim.
+
+Return ONLY a JSON array:
+[{ "index": 1, "verdict": "CONFIRMED"|"DISPUTED"|"UNVERIFIED", "evidence": "brief explanation" }]`,
+      },
+      {
+        role: 'user',
+        content: `Verify these ${findingBlocks.length} unverified findings:\n\n${findingBlocks.map(fb => fb.block).join('\n\n---\n\n')}`,
+      },
+    ];
+
+    try {
+      const response = await this.config.llm.generate(messages, { temperature: 0 });
+
+      // Parse response
+      const text = response.text.replace(/```json\s*\n?/g, '').replace(/```\s*$/g, '').trim();
+      const verdicts: Array<{ index: number; verdict: string; evidence: string }> = JSON.parse(text);
+      if (!Array.isArray(verdicts)) return;
+
+      const consensusId = report.signals[0]?.consensusId ?? randomUUID().slice(0, 12);
+      const now = new Date().toISOString();
+
+      // Process verdicts in reverse order so splicing doesn't shift indices
+      const toRemove: number[] = [];
+      for (const v of verdicts) {
+        const fbIdx = v.index - 1; // 1-indexed from LLM
+        const fb = findingBlocks[fbIdx];
+        if (!fb || !v.verdict) continue;
+
+        const verdict = v.verdict.toUpperCase();
+        if (verdict === 'CONFIRMED') {
+          fb.finding.tag = 'confirmed';
+          fb.finding.confirmedBy = [...fb.finding.confirmedBy, '_orchestrator'];
+          report.confirmed.push(fb.finding);
+          toRemove.push(fb.idx);
+          report.signals.push({
+            type: 'consensus', signal: 'unique_confirmed', consensusId,
+            agentId: fb.finding.originalAgentId,
+            evidence: `Phase 3 orchestrator verified: ${(v.evidence || '').slice(0, 200)}`,
+            timestamp: now, taskId: '',
+          });
+        } else if (verdict === 'DISPUTED') {
+          fb.finding.tag = 'disputed';
+          fb.finding.disputedBy = [{
+            agentId: '_orchestrator',
+            reason: (v.evidence || 'Orchestrator verification found the claim incorrect').slice(0, 300),
+            evidence: (v.evidence || '').slice(0, 300),
+          }];
+          report.disputed.push(fb.finding);
+          toRemove.push(fb.idx);
+          report.signals.push({
+            type: 'consensus', signal: 'hallucination_caught', consensusId,
+            agentId: fb.finding.originalAgentId,
+            evidence: `Phase 3 orchestrator disputed: ${(v.evidence || '').slice(0, 200)}`,
+            timestamp: now, taskId: '',
+          });
+        }
+        // UNVERIFIED stays in place
+      }
+
+      // Remove promoted findings from unverified (reverse order to preserve indices)
+      toRemove.sort((a, b) => b - a);
+      for (const idx of toRemove) {
+        report.unverified.splice(idx, 1);
+      }
+
+      report.rounds = 3;
+    } catch {
+      // Phase 3 is best-effort — don't fail the entire consensus on verification error
+    }
+  }
+
+  /**
    * Inline short code anchors into a peer summary. For each finding that cites file:line,
    * append a 5-line snippet (cited line ±2) so cross-reviewers can verify without bulk code blocks.
    * Cap: 15 anchors per summary to bound token growth (~105 extra lines max).
@@ -804,7 +953,7 @@ Return only valid JSON.` },
     const lines: string[] = [];
 
     lines.push(bar);
-    lines.push(`CONSENSUS REPORT (${agentCount} agents, 2 rounds)`);
+    lines.push(`CONSENSUS REPORT (${agentCount} agents, ${unverified.length === 0 ? 2 : 3} rounds)`);
     lines.push(bar);
     lines.push('');
 
