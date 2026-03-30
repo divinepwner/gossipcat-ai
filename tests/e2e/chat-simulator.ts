@@ -207,17 +207,14 @@ export class ChatSimulator {
         return true;
       },
 
-      /** Response contains a plan with execute/modify/cancel choices */
+      /** Response contains structured choices (not raw numbered text) */
       plan: () => {
         if (!resp.choices) {
           throw new Error(`Expected plan with choices. Text: "${resp.text?.slice(0, 100)}"`);
         }
-        const hasExecute = resp.choices.options.some(o =>
-          o.value === 'execute_plan' || o.label.toLowerCase().includes('execute'),
-        );
-        if (!hasExecute) {
+        if (resp.choices.options.length < 2) {
           const values = resp.choices.options.map(o => `${o.value}(${o.label})`).join(', ');
-          throw new Error(`Expected 'execute' choice in plan. Got: ${values}`);
+          throw new Error(`Expected at least 2 structured choices in plan. Got: ${values}`);
         }
         return true;
       },

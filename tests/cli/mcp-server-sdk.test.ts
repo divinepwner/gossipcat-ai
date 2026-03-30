@@ -49,13 +49,13 @@ describe('gossip_setup merge logic', () => {
         };
 
         // Act: Simulate the core logic of the merge
-        let finalAgents = {};
+        let finalAgents: Record<string, { provider: string; model: string }> = {};
         if ('merge' === 'merge') {
             finalAgents = existingConfig.agents || {};
         }
         const finalConfig = {
             main_agent: { provider: newMainProvider, model: newMainModel },
-            agents: { ...finalAgents, ...newAgents },
+            agents: { ...finalAgents, ...newAgents } as Record<string, { provider: string; model: string }>,
         };
 
         // Assert
