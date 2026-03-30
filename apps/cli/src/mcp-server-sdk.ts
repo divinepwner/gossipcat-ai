@@ -217,7 +217,7 @@ function persistNativeTaskMap(): void {
     const slimResults: Record<string, any> = {};
     for (const [id, info] of nativeResultMap) {
       slimResults[id] = {
-        id: info.id, agentId: info.agentId, task: info.task,
+        id: info.id, agentId: info.agentId, task: info.task.slice(0, 5000), // cap on-disk only — full task stays in memory
         status: info.status, startedAt: info.startedAt, completedAt: info.completedAt,
       };
     }
@@ -1806,7 +1806,7 @@ server.tool(
 
       // Inject scope restriction for scoped write mode
       const scopePrefix = (write_mode === 'scoped' && scope)
-        ? `SCOPE RESTRICTION: Only modify files within ${scope}. Do not edit files outside this directory.\\n\\n`
+        ? `SCOPE RESTRICTION: Only modify files within ${scope}. Do not edit files outside this directory.\n\n`
         : '';
 
       return {
@@ -2536,7 +2536,7 @@ server.tool(
       { name: 'gossip_tools', desc: 'List available tools (this command)' },
       { name: 'gossip_bootstrap', desc: 'Generate team context prompt with live agent state' },
       { name: 'gossip_setup', desc: 'Create or update team configuration' },
-      { name: 'gossip_retract_signal', desc: 'Retract a previously recorded signal (e.g., wrong severity). Append-only — excluded from scoring.' },
+      { name: 'gossip_retract_signal', desc: 'Retract a previously recorded signal (e.g., hallucination_caught for a minor citation error). Append-only — excluded from scoring.' },
     ];
     const list = tools.map(t => `- ${t.name}: ${t.desc}`).join('\n');
     return { content: [{ type: 'text' as const, text: `Gossipcat Tools (${tools.length}):\n\n${list}` }] };
