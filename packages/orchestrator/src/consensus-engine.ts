@@ -96,10 +96,10 @@ export class ConsensusEngine {
     // Phase 3: Orchestrator verification of UNVERIFIED findings
     if (report.unverified.length > 0) {
       process.stderr.write(`[consensus] Phase 3: verifying ${report.unverified.length} unverified findings\n`);
-      await this.verifyUnverified(report);
+      await this.verifyUnverified(report, successful);
       process.stderr.write(`[consensus] After verification: ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unverified.length} unverified\n`);
       // Re-generate formatted report with updated tags
-      report.summary = this.formatReport(report.confirmed, report.disputed, report.unverified, report.unique, report.newFindings, successful.length);
+      report.summary = this.formatReport(report.confirmed, report.disputed, report.unverified, report.unique, report.newFindings, successful.length, report.rounds);
     }
 
     return report;
@@ -495,8 +495,17 @@ Return only valid JSON.` },
    * Promotes findings to CONFIRMED or DISPUTED; remaining stay UNVERIFIED.
    * Mutates the report in place.
    */
-  private async verifyUnverified(report: ConsensusReport): Promise<void> {
+  private async verifyUnverified(report: ConsensusReport, results: TaskEntry[]): Promise<void> {
     if (!this.config.projectRoot || report.unverified.length === 0) return;
+
+    // Build agent → taskId map (same as synthesize)
+    const agentTaskIds = new Map<string, string>();
+    for (const r of results) agentTaskIds.set(r.agentId, r.id);
+    const getTaskId = (agentId: string): string => {
+      const id = agentTaskIds.get(agentId);
+      if (id && id.length > 0) return id;
+      return `phase3-${agentId}-${Date.now()}`;
+    };
 
     const citationPattern = /((?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,6})):(\d+)/;
     const VERIFY_CONTEXT = 10; // ±10 lines for deeper context than cross-review anchors
@@ -579,12 +588,15 @@ Return ONLY a JSON array:
       const consensusId = report.signals[0]?.consensusId ?? randomUUID().slice(0, 12);
       const now = new Date().toISOString();
 
-      // Process verdicts in reverse order so splicing doesn't shift indices
+      // Process verdicts — deduplicate by index to prevent double-promotion
       const toRemove: number[] = [];
+      const processed = new Set<number>();
       for (const v of verdicts) {
         const fbIdx = v.index - 1; // 1-indexed from LLM
+        if (processed.has(fbIdx)) continue;
         const fb = findingBlocks[fbIdx];
         if (!fb || !v.verdict) continue;
+        processed.add(fbIdx);
 
         const verdict = v.verdict.toUpperCase();
         if (verdict === 'CONFIRMED') {
@@ -596,7 +608,7 @@ Return ONLY a JSON array:
             type: 'consensus', signal: 'unique_confirmed', consensusId,
             agentId: fb.finding.originalAgentId,
             evidence: `Phase 3 orchestrator verified: ${(v.evidence || '').slice(0, 200)}`,
-            timestamp: now, taskId: '',
+            timestamp: now, taskId: getTaskId(fb.finding.originalAgentId),
           });
         } else if (verdict === 'DISPUTED') {
           fb.finding.tag = 'disputed';
@@ -611,15 +623,15 @@ Return ONLY a JSON array:
             type: 'consensus', signal: 'hallucination_caught', consensusId,
             agentId: fb.finding.originalAgentId,
             evidence: `Phase 3 orchestrator disputed: ${(v.evidence || '').slice(0, 200)}`,
-            timestamp: now, taskId: '',
+            timestamp: now, taskId: getTaskId(fb.finding.originalAgentId),
           });
         }
         // UNVERIFIED stays in place
       }
 
-      // Remove promoted findings from unverified (reverse order to preserve indices)
-      toRemove.sort((a, b) => b - a);
-      for (const idx of toRemove) {
+      // Remove promoted findings from unverified (deduplicate + reverse order to preserve indices)
+      const uniqueToRemove = [...new Set(toRemove)].sort((a, b) => b - a);
+      for (const idx of uniqueToRemove) {
         report.unverified.splice(idx, 1);
       }
 
@@ -948,12 +960,13 @@ Return ONLY a JSON array:
     unique: ConsensusFinding[],
     newFindings: ConsensusNewFinding[],
     agentCount: number,
+    rounds = 2,
   ): string {
     const bar = '═══════════════════════════════════════════';
     const lines: string[] = [];
 
     lines.push(bar);
-    lines.push(`CONSENSUS REPORT (${agentCount} agents, ${unverified.length === 0 ? 2 : 3} rounds)`);
+    lines.push(`CONSENSUS REPORT (${agentCount} agents, ${rounds} rounds)`);
     lines.push(bar);
     lines.push('');
 
