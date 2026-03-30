@@ -108,22 +108,20 @@ export class ConsensusEngine {
   ): Promise<CrossReviewEntry[]> {
     const ownSummary = summaries.get(agent.agentId) ?? '';
 
-    // Build peer findings section with per-agent code context
+    // Build peer findings section with per-finding inline code anchors
     const peerLines: string[] = [];
     for (const [peerId, peerSummary] of summaries) {
       if (peerId === agent.agentId) continue;
       const peerConfig = this.config.registryGet(peerId);
       const preset = peerConfig?.preset ?? 'unknown';
-      // SECURITY: Wrap external LLM output in <data> tags to prevent prompt injection.
-      let peerBlock = `Agent "${peerId}" (${preset}):\n<data>${peerSummary}</data>`;
 
-      // Extract code snippets cited by THIS agent's findings (cap 5 per agent)
-      if (this.config.projectRoot) {
-        const snippets = await this.extractCodeSnippets(peerSummary, 5);
-        if (snippets) {
-          peerBlock += `\n<code cited by ${peerId}>\n${snippets}\n</code>`;
-        }
-      }
+      // Inline short code anchors into each finding so cross-reviewers can verify
+      const annotated = this.config.projectRoot
+        ? await this.inlineCodeAnchors(peerSummary)
+        : peerSummary;
+
+      // SECURITY: Wrap external LLM output in <data> tags to prevent prompt injection.
+      const peerBlock = `Agent "${peerId}" (${preset}):\n<data>${annotated}</data>`;
       peerLines.push(peerBlock);
     }
 
@@ -132,11 +130,11 @@ export class ConsensusEngine {
 YOUR FINDINGS (Phase 1):
 <data>${ownSummary}</data>
 
-PEER FINDINGS (each agent's findings are followed by the code they cited):
+PEER FINDINGS (each finding with a file:line citation has a short code anchor inline):
 ${peerLines.join('\n\n')}
 
 For each peer finding, you MUST:
-1. If the finding cites a file:line, check the <code> block right after that agent's findings to verify the claim
+1. If the finding has an inline <anchor> block, use it to verify the claim against actual code
 2. Only AGREE if the claim is factually accurate based on the actual code
 3. DISAGREE if the code contradicts the claim (e.g., finding says "no validation" but code has validation)
 
@@ -157,7 +155,7 @@ Return ONLY a JSON array:
       { role: 'system', content: `You are a code reviewer performing cross-review. Your job is to verify peer findings against actual code — catch errors, but also confirm good work.
 
 VERIFICATION RULES:
-- If a finding cites a specific file:line, check the REFERENCED CODE section to verify the claim
+- If a finding has an <anchor> block, use the code shown to verify the claim
 - AGREE only if you can confirm the claim is factually correct — cite your evidence
 - DISAGREE only if you have concrete evidence the finding is WRONG — the code contradicts the claim
 - UNVERIFIED if the cited code is not in the snippets, the line number is wrong, or you lack context to check. First try to reason about the claim's plausibility from what you CAN see. Only use UNVERIFIED as a last resort when you truly cannot assess the claim.
@@ -462,21 +460,33 @@ Return only valid JSON.` },
   }
 
   /**
-   * Extract code snippets for file:line references found in text.
-   * Returns formatted snippets for inclusion in cross-review prompts.
+   * Inline short code anchors into a peer summary. For each finding that cites file:line,
+   * append a 5-line snippet (cited line ±2) so cross-reviewers can verify without bulk code blocks.
+   * Cap: 15 anchors per summary to bound token growth (~75 lines of code max).
    */
-  private async extractCodeSnippets(text: string, maxSnippets = 15): Promise<string | null> {
-    if (!this.config.projectRoot) return null;
-
-    const citationPattern = /(?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,4}):(\d+)/g;
+  private async inlineCodeAnchors(summary: string): Promise<string> {
+    const citationPattern = /(?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,4}):(\d+)/;
+    const lines = summary.split('\n');
+    const result: string[] = [];
     const seen = new Set<string>();
-    const snippets: string[] = [];
-    let match;
+    let anchorCount = 0;
+    const MAX_ANCHORS = 15;
+    const CONTEXT_LINES = 2; // ±2 lines around the cited line = 5 lines total
 
-    while ((match = citationPattern.exec(text)) !== null) {
+    for (const line of lines) {
+      result.push(line);
+      if (anchorCount >= MAX_ANCHORS) continue;
+
+      // Only process lines that look like finding bullets
+      const trimmed = line.trimStart();
+      if (!trimmed.startsWith('-') && !trimmed.startsWith('*') && !trimmed.startsWith('•')) continue;
+
+      const match = citationPattern.exec(line);
+      if (!match) continue;
+
       const file = match[1];
-      const line = parseInt(match[2], 10);
-      const key = `${file}:${line}`;
+      const lineNum = parseInt(match[2], 10);
+      const key = `${file}:${lineNum}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
@@ -484,21 +494,20 @@ Return only valid JSON.` },
         const filePath = await this.resolveFilePath(file);
         if (!filePath) continue;
         const content = await readFile(filePath, 'utf-8');
-        const lines = content.split('\n');
-        if (line > lines.length) continue;
+        const fileLines = content.split('\n');
+        if (lineNum > fileLines.length) continue;
 
-        const start = Math.max(0, line - 4);
-        const end = Math.min(lines.length, line + 6);
-        const snippet = lines.slice(start, end)
+        const start = Math.max(0, lineNum - 1 - CONTEXT_LINES);
+        const end = Math.min(fileLines.length, lineNum + CONTEXT_LINES);
+        const snippet = fileLines.slice(start, end)
           .map((l, i) => `  ${start + i + 1}: ${l}`)
           .join('\n');
-        snippets.push(`${file}:${line}:\n${snippet}`);
-      } catch { continue; }
-
-      if (snippets.length >= maxSnippets) break;
+        result.push(`<anchor src="${file}:${lineNum}">\n${snippet}\n</anchor>`);
+        anchorCount++;
+      } catch { /* file unreadable, skip */ }
     }
 
-    return snippets.length > 0 ? snippets.join('\n\n') : null;
+    return result.join('\n');
   }
 
   /**
