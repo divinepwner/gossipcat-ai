@@ -28,9 +28,30 @@ export interface ConsensusEngineConfig {
 
 export class ConsensusEngine {
   protected readonly config: ConsensusEngineConfig;
+  private fileCache = new Map<string, string | null>();
+  private pathCache = new Map<string, string | null>();
 
   constructor(config: ConsensusEngineConfig) {
     this.config = config;
+  }
+
+  private async cachedResolve(fileRef: string): Promise<string | null> {
+    if (this.pathCache.has(fileRef)) return this.pathCache.get(fileRef)!;
+    const resolved = await this.resolveFilePath(fileRef);
+    this.pathCache.set(fileRef, resolved);
+    return resolved;
+  }
+
+  private async cachedRead(filePath: string): Promise<string | null> {
+    if (this.fileCache.has(filePath)) return this.fileCache.get(filePath)!;
+    try {
+      const content = await readFile(filePath, 'utf-8');
+      this.fileCache.set(filePath, content);
+      return content;
+    } catch {
+      this.fileCache.set(filePath, null);
+      return null;
+    }
   }
 
   extractSummary(result: string): string {
@@ -141,7 +162,7 @@ For each peer finding, you MUST:
 Respond with one of:
 - AGREE: The finding is factually correct — you verified it against the code. Cite your evidence.
 - DISAGREE: The finding is factually incorrect — the code shows otherwise. Cite file:line and what the code actually does.
-- UNVERIFIED: You cannot verify or refute this finding — the cited code is not in the snippets, the line number is wrong, or you lack sufficient context. This is NOT disagreement — it means "I can't confirm or deny."
+- UNVERIFIED: You cannot verify or refute this finding — no anchor is present, the line number is wrong, or you lack sufficient context. This is NOT disagreement — it means "I can't confirm or deny."
 - NEW: Something ALL agents missed that you now realize after seeing peer work.
 
 IMPORTANT: Use DISAGREE only when you have evidence the finding is WRONG. Use UNVERIFIED when you simply cannot check it. "I can't find line 172" is UNVERIFIED, not DISAGREE.
@@ -158,7 +179,7 @@ VERIFICATION RULES:
 - If a finding has an <anchor> block, use the code shown to verify the claim
 - AGREE only if you can confirm the claim is factually correct — cite your evidence
 - DISAGREE only if you have concrete evidence the finding is WRONG — the code contradicts the claim
-- UNVERIFIED if the cited code is not in the snippets, the line number is wrong, or you lack context to check. First try to reason about the claim's plausibility from what you CAN see. Only use UNVERIFIED as a last resort when you truly cannot assess the claim.
+- UNVERIFIED if an anchor is missing for a cited file, the line number is wrong, or the code in the anchor is insufficient to verify the claim. First try to reason about the claim's plausibility from what you CAN see. Only use UNVERIFIED as a last resort when you truly cannot assess the claim.
 - Do NOT agree with a finding just because it sounds plausible — verify it
 - Agreeing without verification is WORSE than disagreeing — a false confirmation poisons the system
 
@@ -462,38 +483,43 @@ Return only valid JSON.` },
   /**
    * Inline short code anchors into a peer summary. For each finding that cites file:line,
    * append a 5-line snippet (cited line ±2) so cross-reviewers can verify without bulk code blocks.
-   * Cap: 15 anchors per summary to bound token growth (~75 lines of code max).
+   * Cap: 15 anchors per summary to bound token growth (~105 extra lines max).
    */
   private async inlineCodeAnchors(summary: string): Promise<string> {
-    const citationPattern = /(?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,4}):(\d+)/;
+    // Capture full path (group 1) + bare filename (group 2) + line number (group 3)
+    const citationPattern = /((?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,6})):(\d+)/;
     const lines = summary.split('\n');
     const result: string[] = [];
     const seen = new Set<string>();
     let anchorCount = 0;
     const MAX_ANCHORS = 15;
     const CONTEXT_LINES = 2; // ±2 lines around the cited line = 5 lines total
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB — skip generated/dist files
 
     for (const line of lines) {
       result.push(line);
       if (anchorCount >= MAX_ANCHORS) continue;
 
-      // Only process lines that look like finding bullets
-      const trimmed = line.trimStart();
-      if (!trimmed.startsWith('-') && !trimmed.startsWith('*') && !trimmed.startsWith('•')) continue;
-
+      // Process any line with a file:line citation (bullets, numbered lists, prose)
       const match = citationPattern.exec(line);
       if (!match) continue;
 
-      const file = match[1];
-      const lineNum = parseInt(match[2], 10);
-      const key = `${file}:${lineNum}`;
+      const fullRef = match[1];  // e.g. "packages/orchestrator/src/index.ts"
+      const bareFile = match[2]; // e.g. "index.ts"
+      const lineNum = parseInt(match[3], 10);
+      // Dedup on full reference to avoid cross-package collisions (index.ts in different packages)
+      const key = `${fullRef}:${lineNum}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
       try {
-        const filePath = await this.resolveFilePath(file);
+        // Try full path first, fall back to bare filename for resolution
+        const filePath = await this.cachedResolve(fullRef) ?? await this.cachedResolve(bareFile);
         if (!filePath) continue;
-        const content = await readFile(filePath, 'utf-8');
+        const fileStat = await stat(filePath);
+        if (fileStat.size > MAX_FILE_SIZE) continue;
+        const content = await this.cachedRead(filePath);
+        if (!content) continue;
         const fileLines = content.split('\n');
         if (lineNum > fileLines.length) continue;
 
@@ -502,7 +528,9 @@ Return only valid JSON.` },
         const snippet = fileLines.slice(start, end)
           .map((l, i) => `  ${start + i + 1}: ${l}`)
           .join('\n');
-        result.push(`<anchor src="${file}:${lineNum}">\n${snippet}\n</anchor>`);
+        // Sanitize snippet to prevent </data> fence escape
+        const safeSnippet = snippet.replace(/<\/?data>/gi, '');
+        result.push(`<anchor src="${fullRef}:${lineNum}">\n${safeSnippet}\n</anchor>`);
         anchorCount++;
       } catch { /* file unreadable, skip */ }
     }
