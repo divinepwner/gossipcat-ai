@@ -193,51 +193,31 @@ body::after {
 .agent-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .ag {
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-  padding: 14px 16px; cursor: pointer; transition: all 0.2s; position: relative;
-  color: var(--text);
+  padding: 16px 12px; cursor: pointer; transition: all 0.2s; position: relative;
+  color: var(--text); text-align: center;
 }
 .ag:hover {
   border-color: var(--border-active); background: var(--surface-raised);
   transform: translateY(-1px); box-shadow: 0 4px 20px rgba(0,0,0,0.25);
 }
-.ag.idle { opacity: 0.35; }
-.ag.idle:hover { opacity: 0.5; }
 .ag::before {
   content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px;
   border-radius: 0 2px 2px 0; background: var(--card-color, var(--text-3));
   opacity: 0.5; transition: opacity 0.2s;
 }
 .ag:hover::before { opacity: 1; }
-.ag-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
-.ag-name { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
-.ag-role { font-size: 11px; color: var(--text-3); margin-top: 1px; }
-.ag-status { display: flex; align-items: center; gap: 4px; font-size: 10px; font-family: var(--mono); font-weight: 500; }
-.ag-dot { width: 6px; height: 6px; border-radius: 50%; }
-.ag-metrics { display: flex; gap: 2px; }
-.ag-m { flex: 1; background: var(--surface-raised); border-radius: 6px; padding: 7px 8px; text-align: center; }
-.ag-m-val { font-family: var(--mono); font-size: 14px; font-weight: 600; letter-spacing: -0.02em; }
-.ag-m-lbl { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 1px; }
 
-/* Overflow card */
-.ag-more {
-  background: var(--surface); border: 1px dashed rgba(255,255,255,0.08); border-radius: 12px;
-  padding: 14px 16px; cursor: pointer; transition: all 0.2s;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 6px; min-height: 120px; color: var(--text);
-}
-.ag-more:hover { border-color: var(--accent); background: var(--surface-raised); }
+/* Trust ring */
+.ag-ring-wrap { position: relative; width: 48px; height: 48px; margin: 0 auto 8px; }
+.ag-ring { width: 48px; height: 48px; }
+.ag-initials { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; font-family: var(--mono); }
+.ag-last { font-size: 11px; color: var(--text-3); line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 4px; text-align: center; }
+.ag-time { opacity: 0.7; }
+.ag-name { font-size: 12px; font-weight: 600; display: block; margin-top: 2px; }
+.ag-overflow { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; min-height: 100px; border-style: dashed; }
+.ag-overflow:hover { border-color: var(--accent); }
 .ag-more-count { font-family: var(--mono); font-size: 20px; font-weight: 600; color: var(--text-2); }
 .ag-more-label { font-size: 12px; color: var(--text-3); }
-.ag-more-avatars { display: flex; margin-bottom: 2px; }
-.ag-more-pip {
-  width: 22px; height: 22px; border-radius: 5px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 8px; font-family: var(--mono); font-weight: 600;
-  border: 1.5px solid var(--bg); margin-left: -6px;
-}
-.ag-more-pip:first-child { margin-left: 0; }
-.ag-more-names { display: flex; flex-direction: column; gap: 1px; margin: 2px 0; }
-.ag-more-name { font-size: 11px; font-family: var(--mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; text-align: center; }
 
 /* ── Panels ─────────────────────────────────────── */
 .panel {
@@ -446,7 +426,6 @@ body::after {
   .page { padding: 16px; }
   .agent-grid { grid-template-columns: 1fr; }
   .three-col { grid-template-columns: 1fr; }
-  .ag-metrics { flex-wrap: wrap; }
 }
 
 </style>
@@ -841,85 +820,68 @@ function renderOverviewSection(data) {
   return section;
 }
 
-// packages/dashboard/src/hub/team.js — Agent cards (3 + overflow)
+// packages/dashboard/src/hub/team.js — Trust ring agent cards
 
 function renderTeamSection(agents) {
-  const { escapeHtml: e, navigate, formatTokens, agentInitials, agentColor, makeSection } = window._dash;
-  const section = makeSection('Team', agents.length + ' agents', 'manage →', '#/team');
-
-  if (agents.length === 0) {
-    section.innerHTML += '<div class="empty-state">No agents configured. Run gossip_setup to create your team.</div>';
-    return section;
-  }
+  const { escapeHtml: e, navigate, makeSection, timeAgo, agentInitials } = window._dash;
+  const online = agents.filter(a => a.online).length;
+  const section = makeSection('Team', online + '/' + agents.length + ' online', 'all agents →', '#/team');
 
   const grid = document.createElement('div');
   grid.className = 'agent-grid';
 
-  // Sort by dispatch weight descending, show top 3
-  const sorted = [...agents].sort((a, b) => (b.scores?.dispatchWeight || 0) - (a.scores?.dispatchWeight || 0));
-  const shown = sorted.slice(0, 3);
-  const overflow = sorted.slice(3);
+  // Sort by dispatch weight descending
+  const sorted = [...agents].sort((a, b) =>
+    (b.scores?.dispatchWeight || 0) - (a.scores?.dispatchWeight || 0)
+  );
 
-  for (const agent of shown) {
-    const s = agent.scores || {};
-    const isIdle = !agent.online && s.signals === 0;
-    const color = agentColor(agent);
+  const show = sorted.slice(0, 6);
+  const rest = sorted.length - show.length;
 
-    const card = document.createElement('button');
-    card.className = 'ag' + (isIdle ? ' idle' : '');
-    card.style.setProperty('--card-color', color);
-    card.setAttribute('role', 'link');
-    card.setAttribute('aria-label', 'View ' + agent.id);
-    card.addEventListener('click', () => navigate('#/team/' + encodeURIComponent(agent.id)));
+  for (const agent of show) {
+    const btn = document.createElement('button');
+    btn.className = 'ag';
+    btn.addEventListener('click', () => navigate('#/team/' + encodeURIComponent(agent.id)));
 
-    const statusColor = agent.online ? 'var(--green)' : 'var(--text-3)';
-    const statusText = agent.online ? 'online' : 'idle';
-    const dotStyle = agent.online ? 'background:var(--green);box-shadow:0 0 6px rgba(52,211,153,0.4)' : 'background:var(--text-3)';
+    const w = agent.scores?.dispatchWeight ?? 1;
+    const signals = agent.scores?.signals ?? 0;
+    const accuracy = agent.scores?.accuracy ?? 0.5;
+    const ringColor = signals === 0 ? 'var(--text-3)'
+      : w >= 1.5 ? 'var(--green)'
+      : w >= 0.8 ? 'var(--amber)'
+      : 'var(--red)';
+    const ringOpacity = signals === 0 ? '0.35' : '1';
+    const arcLength = 132 * Math.min(1, accuracy);
 
-    const provider = (agent.provider || '').replace(/^anthropic$/, 'Anthropic').replace(/^google$/, 'Google');
-    const preset = (agent.preset || '').charAt(0).toUpperCase() + (agent.preset || '').slice(1);
+    const lastTask = agent.lastTask;
+    const lastText = lastTask
+      ? e((lastTask.task || '').replace(/\n.*/s, '').slice(0, 55))
+      : 'idle';
+    const lastTime = lastTask?.timestamp ? timeAgo(lastTask.timestamp) : '';
 
-    card.innerHTML =
-      '<div class="ag-top"><div>' +
-        '<div class="ag-name">' + e(agent.id) + '</div>' +
-        '<div class="ag-role">' + e(provider) + ' &middot; ' + e(preset) + '</div>' +
+    btn.innerHTML =
+      '<div class="ag-ring-wrap">' +
+        '<svg class="ag-ring" viewBox="0 0 48 48" style="opacity:' + ringOpacity + '">' +
+          '<circle cx="24" cy="24" r="21" fill="none" stroke="' + ringColor + '" stroke-width="3" opacity="0.2"/>' +
+          '<circle cx="24" cy="24" r="21" fill="none" stroke="' + ringColor + '" stroke-width="3"' +
+            ' stroke-dasharray="' + arcLength + ' 132"' +
+            ' transform="rotate(-90 24 24)"/>' +
+        '</svg>' +
+        '<span class="ag-initials" style="color:' + ringColor + '">' + agentInitials(agent.id) + '</span>' +
       '</div>' +
-      '<div class="ag-status" style="color:' + statusColor + '">' +
-        '<span class="ag-dot" style="' + dotStyle + '"></span>' + statusText +
-      '</div></div>' +
-      '<div class="ag-metrics">' +
-        '<div class="ag-m"><div class="ag-m-val" style="color:var(--accent)">' + (isIdle ? '&mdash;' : Math.round(s.accuracy * 100) + '%') + '</div><div class="ag-m-lbl">Accuracy</div></div>' +
-        '<div class="ag-m"><div class="ag-m-val" style="color:var(--blue)">' + (isIdle ? '&mdash;' : Math.round(s.uniqueness * 100) + '%') + '</div><div class="ag-m-lbl">Unique</div></div>' +
-        '<div class="ag-m"><div class="ag-m-val">' + (s.signals || 0) + '</div><div class="ag-m-lbl">Signals</div></div>' +
-        '<div class="ag-m"><div class="ag-m-val" style="color:var(--green)">' + formatTokens(agent.totalTokens) + '</div><div class="ag-m-lbl">Tokens</div></div>' +
-      '</div>';
+      '<span class="ag-name">' + e(agent.id) + '</span>' +
+      '<span class="ag-last">' + lastText +
+        (lastTime ? ' <span class="ag-time">' + lastTime + '</span>' : '') +
+      '</span>';
 
-    grid.appendChild(card);
+    grid.appendChild(btn);
   }
 
-  // Overflow card
-  if (overflow.length > 0) {
+  if (rest > 0) {
     const more = document.createElement('button');
-    more.className = 'ag-more';
-    more.setAttribute('role', 'link');
-    more.setAttribute('aria-label', 'View all agents');
+    more.className = 'ag ag-overflow';
     more.addEventListener('click', () => navigate('#/team'));
-
-    const avatars = overflow.slice(0, 4).map(a => {
-      const c = agentColor(a);
-      return '<div class="ag-more-pip" style="background:' + c.replace('var(--', 'rgba(').replace(')', ',0.12)') + ';color:' + c + '">' + agentInitials(a.id) + '</div>';
-    }).join('');
-
-    const names = overflow.map(a => {
-      return '<div class="ag-more-name">' + e(a.id) + '</div>';
-    }).join('');
-
-    more.innerHTML =
-      '<div class="ag-more-avatars">' + avatars + '</div>' +
-      '<div class="ag-more-names">' + names + '</div>' +
-      '<div class="ag-more-count">+' + overflow.length + '</div>' +
-      '<div class="ag-more-label">more agents</div>';
-
+    more.innerHTML = '<span class="ag-more-count">+' + rest + '</span><span class="ag-more-label">more</span>';
     grid.appendChild(more);
   }
 
