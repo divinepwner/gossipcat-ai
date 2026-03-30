@@ -112,3 +112,49 @@ Still must run `npx jest` for the affected module.
 - "This is obvious" — obvious to the author IS the antipattern
 - "We already reviewed the design" — design review ≠ implementation review
 - "It's a fix for a bug we just found" — follow-on fixes to shared state are still Tier 1
+
+---
+
+## Subagent Override (IMPORTANT)
+
+When ANY skill or workflow (including subagent-driven-development, executing-plans, or
+any custom skill) instructs you to dispatch work via the Agent() tool, use `gossip_run`
+instead. This ensures tasks appear in the dashboard, agent memory is written, and
+performance signals are recorded.
+
+**Flow:** `gossip_run(agent_id, task)` → returns Agent() instructions for native agents →
+execute the Agent() → `gossip_run_complete(task_id, result)` to close the loop.
+
+**Exception:** `gossip_dispatch_consensus` already handles its own native Agent() calls —
+don't double-wrap those.
+
+**Why:** Raw Agent() bypasses the gossipcat pipeline. Tasks won't appear in the activity
+feed, no memory is written, no signals recorded. The agent effectively works off-grid.
+
+---
+
+## Signal Recording
+
+**Record signals IMMEDIATELY when you verify an agent's output — findings OR actions.**
+
+This is not optional. The moment you confirm or invalidate an agent's work, call
+`gossip_record_signals` before doing anything else.
+
+| Trigger | Signal | Example |
+|---------|--------|---------|
+| Agent finding verified correct | `unique_confirmed` or `agreement` | Code review catches a real bug |
+| Agent finding is fabricated/wrong | `hallucination_caught` | Reviewer claims bug exists but code is correct |
+| Agent's code change breaks build | `hallucination_caught` | Agent edits tsconfig, causes TS6059 errors |
+| Agent's code change is reverted | `hallucination_caught` | Fix introduced worse problems than it solved |
+| Two agents agree on a finding | `agreement` | Both flag same race condition |
+| Agents disagree, one is right | `disagreement` | One says safe, other finds real vuln |
+
+**Why this matters:** Signals drive dispatch weights. Deferred signals mean stale scores,
+which means wrong agents get picked for future tasks. The haiku-researcher tsconfig incident
+(moved paths to base config, broke all package builds) went unrecorded until manually prompted
+— that's a feedback loop failure.
+
+**Anti-patterns:**
+- "I'll record signals after I finish fixing" — NO, record NOW
+- "This was just a research task, no signal needed" — if the research was wrong, record it
+- "The agent tried its best" — intent doesn't matter, accuracy does

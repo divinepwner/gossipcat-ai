@@ -141,6 +141,22 @@ Memory persists across sessions automatically:
 
 Use \`gossip_status()\` for URL and key. Tabs: Overview, Agents, Consensus, Skills, Memory.
 
+## Subagent Override (IMPORTANT)
+
+When ANY skill or workflow (including subagent-driven-development, executing-plans, or
+any custom skill) instructs you to dispatch work via the Agent() tool, use \`gossip_run\`
+instead. This ensures tasks appear in the dashboard, agent memory is written, and
+performance signals are recorded.
+
+**Flow:** \`gossip_run(agent_id, task)\` → returns Agent() instructions for native agents →
+execute the Agent() → \`gossip_run_complete(task_id, result)\` to close the loop.
+
+**Exception:** \`gossip_dispatch_consensus\` already handles its own native Agent() calls —
+don't double-wrap those.
+
+**Why:** Raw Agent() bypasses the gossipcat pipeline. Tasks won't appear in the activity
+feed, no memory is written, no signals recorded. The agent effectively works off-grid.
+
 ## Native Agent Relay Rule
 
 When dispatching native agents: gossip_dispatch → Agent() → gossip_relay_result. Never skip the relay call.
