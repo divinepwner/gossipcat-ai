@@ -112,6 +112,11 @@ Keep entries concise (5-10 lines each). Update existing files rather than creati
 End your response with a section titled "## Consensus Summary".
 List one line per finding with file:line references where applicable.
 Format: "- <finding description> (file:line)"
+
+IMPORTANT: Only list actual issues — bugs, security concerns, design problems.
+Do NOT include confirmations like "X is correct", "Y works as expected", or
+"no bug found". These cannot be cross-verified and waste review capacity.
+
 This section will be used for cross-review with peer agents.
 --- END CONSENSUS OUTPUT FORMAT ---`);
   }

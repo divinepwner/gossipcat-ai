@@ -540,7 +540,8 @@ Return only valid JSON.` },
                 if (snippet.length > MAX_SNIPPET_CHARS) {
                   snippet = snippet.slice(0, MAX_SNIPPET_CHARS) + '\n  [truncated]';
                 }
-                codeBlock = `\n<code src="${fullRef}:${lineNum}">\n${snippet}\n</code>`;
+                const safeSnippet = snippet.replace(/<\/?(data|code)>/gi, '');
+                codeBlock = `\n<code src="${fullRef}:${lineNum}">\n${safeSnippet}\n</code>`;
               }
             }
           }
@@ -612,7 +613,7 @@ Return ONLY a JSON array:
           });
         } else if (verdict === 'DISPUTED') {
           fb.finding.tag = 'disputed';
-          fb.finding.disputedBy = [{
+          fb.finding.disputedBy = [...fb.finding.disputedBy, {
             agentId: '_orchestrator',
             reason: (v.evidence || 'Orchestrator verification found the claim incorrect').slice(0, 300),
             evidence: (v.evidence || '').slice(0, 300),
@@ -690,7 +691,7 @@ Return ONLY a JSON array:
           .map((l, i) => `  ${start + i + 1}: ${l}`)
           .join('\n');
         // Sanitize snippet to prevent </data> fence escape
-        const safeSnippet = snippet.replace(/<\/?data>/gi, '');
+        const safeSnippet = snippet.replace(/<\/?(data|anchor)>/gi, '');
         result.push(`<anchor src="${fullRef}:${lineNum}">\n${safeSnippet}\n</anchor>`);
         anchorCount++;
       } catch { /* file unreadable, skip */ }
@@ -715,7 +716,7 @@ Return ONLY a JSON array:
     }
 
     // Extract file:line patterns like "task-dispatcher.ts:146" or "consensus-engine.ts:113"
-    const citationPattern = /(?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,4}):(\d+)/g;
+    const citationPattern = /(?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,6}):(\d+)/g;
     const citations: Array<{ file: string; line: number }> = [];
     let match;
     while ((match = citationPattern.exec(evidence)) !== null) {
@@ -729,10 +730,11 @@ Return ONLY a JSON array:
     let failed = 0;
     for (const citation of citations) {
       try {
-        const filePath = await this.resolveFilePath(citation.file);
+        const filePath = await this.cachedResolve(citation.file);
         if (!filePath) { failed++; continue; }
 
-        const content = await readFile(filePath, 'utf-8');
+        const content = await this.cachedRead(filePath);
+        if (!content) { failed++; continue; }
         const lines = content.split('\n');
 
         if (citation.line > lines.length) { failed++; continue; }
@@ -884,7 +886,7 @@ Return ONLY a JSON array:
 
     // Extract file references from a finding
     const extractFile = (text: string): string | null => {
-      const match = text.match(/([a-zA-Z][\w.-]+\.[a-z]{1,4})/);
+      const match = text.match(/([a-zA-Z][\w.-]+\.[a-z]{1,6})/);
       return match ? match[1].toLowerCase() : null;
     };
 
