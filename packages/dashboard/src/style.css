@@ -262,39 +262,10 @@ body::after {
 .finding-text { font-size: 13px; color: var(--text); line-height: 1.4; }
 .finding-attr { font-size: 11px; color: var(--text-3); margin-top: 2px; font-family: var(--mono); }
 
-/* ── Knowledge ──────────────────────────────────── */
-.know-agents { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 16px; }
-.ka {
-  display: flex; align-items: center; gap: 8px;
-  background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px;
-  padding: 8px 12px; cursor: pointer; transition: all 0.15s;
-  flex: 1; min-width: 200px;
-}
-.ka:hover { border-color: var(--border-active); background: var(--surface-hover); }
-.ka-avatar {
-  width: 24px; height: 24px; border-radius: 5px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 9px; font-family: var(--mono); font-weight: 600; flex-shrink: 0;
-}
-.ka-info { flex: 1; min-width: 0; }
-.ka-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ka-stats { font-size: 10px; color: var(--text-3); font-family: var(--mono); }
-
-.learn-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 16px; font-size: 12px;
-  transition: background 0.1s; border-bottom: 1px solid rgba(255,255,255,0.02); cursor: pointer;
-}
-.learn-row:last-child { border-bottom: none; }
-.learn-row:hover { background: rgba(255,255,255,0.012); }
-.learn-avatar {
-  width: 20px; height: 20px; border-radius: 4px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 8px; font-family: var(--mono); font-weight: 600; flex-shrink: 0;
-}
-.learn-text { flex: 1; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.learn-type { font-size: 9px; font-family: var(--mono); color: var(--text-3); flex-shrink: 0; }
-.learn-when { font-size: 10px; font-family: var(--mono); color: var(--text-3); flex-shrink: 0; min-width: 32px; }
+/* ── Knowledge ─────────────────────────────────── */
+.know-list { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 4px; }
+.know-item { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-size: 12px; font-family: var(--mono); color: var(--text-2); cursor: pointer; transition: all 0.15s; }
+.know-item:hover { background: var(--surface-raised); color: var(--text); border-color: var(--accent); }
 
 /* ── Memory Browser (detail view) ───────────────── */
 .memory-md { padding: 1rem; font-size: 13px; line-height: 1.6; color: var(--text-2); }
@@ -366,7 +337,6 @@ body::after {
 
 /* ── Layout Grids ───────────────────────────────── */
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.know-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
 /* ── Empty / Loading / Error States ─────────────── */
 .empty-state { text-align: center; padding: 3rem; color: var(--text-3); font-size: 13px; }
@@ -392,7 +362,6 @@ body::after {
 }
 @media (max-width: 900px) {
   .two-col { grid-template-columns: 1fr; }
-  .know-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 600px) {
   .topbar { padding: 0 16px; }
