@@ -361,6 +361,14 @@ body::after {
 .section:nth-child(4) { animation: fadeUp 0.35s ease-out 0.12s both; }
 .section:nth-child(5) { animation: fadeUp 0.35s ease-out 0.16s both; }
 
+/* ── Task Rows ─────────────────────────────────── */
+.task-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+.task-row:last-child { border-bottom: none; }
+.task-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.task-agent { color: var(--accent); font-weight: 500; font-family: var(--mono); font-size: 12px; min-width: 140px; }
+.task-desc { color: var(--text-2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-meta { color: var(--text-3); font-family: var(--mono); font-size: 11px; min-width: 50px; text-align: right; }
+
 /* ── Live Task Strip ───────────────────────────────────────────────────── */
 .live-strip { padding: 8px 20px !important; background: rgba(251,191,36,0.04); border: 1px solid rgba(251,191,36,0.12); border-radius: 10px; margin-bottom: 12px; }
 .live-strip .sh { display: none; }
@@ -1009,7 +1017,7 @@ function renderKnowledgeSection(agents) {
 // packages/dashboard/src/detail/agent.js — Agent detail view
 
 async function renderAgentDetail(app, agentId) {
-  const { api, escapeHtml: e, formatTokens, agentInitials, agentColor, navigate, makeSection } = window._dash;
+  const { api, escapeHtml: e, formatTokens, agentInitials, navigate, makeSection } = window._dash;
   app.innerHTML = '<div class="loading">Loading agent...</div>';
 
   try {
@@ -1018,35 +1026,42 @@ async function renderAgentDetail(app, agentId) {
     if (!agent) { app.innerHTML = '<div class="empty-state">Agent not found: ' + e(agentId) + '</div>'; return; }
 
     const s = agent.scores || {};
-    const color = agentColor(agent);
     app.innerHTML = '';
 
-    // Header
+    // Trust ring header
+    const w = s.dispatchWeight ?? 1;
+    const signals = s.signals ?? 0;
+    const accuracy = s.accuracy ?? 0.5;
+    const ringColor = signals === 0 ? 'var(--text-3)'
+      : w >= 1.5 ? 'var(--green)'
+      : w >= 0.8 ? 'var(--amber)'
+      : 'var(--red)';
+    const ringOpacity = signals === 0 ? '0.35' : '1';
+    const arcLength = 132 * Math.min(1, accuracy);
+
     const header = document.createElement('div');
     header.className = 'detail-header';
     header.innerHTML =
-      '<div class="detail-avatar" style="background:' + color.replace('var(--', 'rgba(').replace(')', ',0.12)') + ';color:' + color + '">' + agentInitials(agentId) + '</div>' +
-      '<div><div class="detail-title">' + e(agentId) + '</div>' +
-      '<div class="detail-subtitle">' + e(agent.provider || '') + ' &middot; ' + e(agent.model || '') + (agent.preset ? ' &middot; ' + e(agent.preset) : '') + '</div></div>';
+      '<div class="ag-ring-wrap" style="width:56px;height:56px;flex-shrink:0">' +
+        '<svg class="ag-ring" viewBox="0 0 48 48" style="width:56px;height:56px;opacity:' + ringOpacity + '">' +
+          '<circle cx="24" cy="24" r="21" fill="none" stroke="' + ringColor + '" stroke-width="3" opacity="0.2"/>' +
+          '<circle cx="24" cy="24" r="21" fill="none" stroke="' + ringColor + '" stroke-width="3"' +
+            ' stroke-dasharray="' + arcLength + ' 132" transform="rotate(-90 24 24)"/>' +
+        '</svg>' +
+        '<span class="ag-initials" style="color:' + ringColor + ';font-size:16px">' + agentInitials(agentId) + '</span>' +
+      '</div>' +
+      '<div style="flex:1">' +
+        '<div class="detail-title">' + e(agentId) + '</div>' +
+        '<div class="detail-subtitle">' + e(agent.provider || '') + ' &middot; ' + e(agent.model || '') + (agent.preset ? ' &middot; ' + e(agent.preset) : '') + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:20px;text-align:right">' +
+        '<div><div style="font-family:var(--mono);font-size:18px;font-weight:600;color:var(--accent)">' + Math.round(accuracy * 100) + '%</div><div style="font-size:11px;color:var(--text-3)">Accuracy</div></div>' +
+        '<div><div style="font-family:var(--mono);font-size:18px;font-weight:600;color:var(--blue)">' + Math.round((s.uniqueness || 0) * 100) + '%</div><div style="font-size:11px;color:var(--text-3)">Unique</div></div>' +
+        '<div><div style="font-family:var(--mono);font-size:18px;font-weight:600">' + (signals || 0) + '</div><div style="font-size:11px;color:var(--text-3)">Signals</div></div>' +
+        '<div><div style="font-family:var(--mono);font-size:18px;font-weight:600;color:var(--green)">' + formatTokens(agent.totalTokens) + '</div><div style="font-size:11px;color:var(--text-3)">Tokens</div></div>' +
+        '<div><div style="font-family:var(--mono);font-size:18px;font-weight:600">' + w.toFixed(2) + '</div><div style="font-size:11px;color:var(--text-3)">Weight</div></div>' +
+      '</div>';
     app.appendChild(header);
-
-    // Stats
-    const stats = document.createElement('div');
-    stats.className = 'detail-stats';
-    const metrics = [
-      { label: 'Accuracy', value: Math.round(s.accuracy * 100) + '%', color: 'var(--accent)' },
-      { label: 'Uniqueness', value: Math.round(s.uniqueness * 100) + '%', color: 'var(--blue)' },
-      { label: 'Signals', value: String(s.signals || 0) },
-      { label: 'Tokens', value: formatTokens(agent.totalTokens), color: 'var(--green)' },
-      { label: 'Weight', value: (s.dispatchWeight || 1).toFixed(2) },
-    ];
-    for (const m of metrics) {
-      const stat = document.createElement('div');
-      stat.className = 'detail-stat';
-      stat.innerHTML = '<div class="detail-stat-val"' + (m.color ? ' style="color:' + m.color + '"' : '') + '>' + m.value + '</div><div class="detail-stat-lbl">' + m.label + '</div>';
-      stats.appendChild(stat);
-    }
-    app.appendChild(stats);
 
     // Memory section
     if (memData.knowledge && memData.knowledge.length > 0) {
@@ -1082,7 +1097,7 @@ async function renderAgentDetail(app, agentId) {
 // packages/dashboard/src/detail/tasks.js — Full task list with filters + search + tokens
 
 async function renderTasksDetail(app) {
-  const { api, escapeHtml: e, formatTokens, makeSection } = window._dash;
+  const { api, escapeHtml: e, formatTokens, makeSection, timeAgo } = window._dash;
   app.innerHTML = '<div class="loading">Loading tasks...</div>';
 
   try {
@@ -1140,21 +1155,24 @@ async function renderTasksDetail(app) {
       }
 
       for (const t of filtered) {
-        const time = t.timestamp ? new Date(t.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-        const color = t.status === 'completed' ? 'var(--green)' : t.status === 'failed' ? 'var(--red)' : t.status === 'cancelled' ? 'var(--amber)' : 'var(--accent)';
+        const dotColor = t.status === 'completed' ? 'var(--green)'
+          : t.status === 'failed' ? 'var(--red)'
+          : t.status === 'cancelled' ? 'var(--amber)'
+          : 'var(--accent)';
         const dur = t.duration > 0 ? (t.duration / 1000).toFixed(1) + 's' : '—';
         const tokens = (t.inputTokens || t.outputTokens) ? formatTokens((t.inputTokens || 0) + (t.outputTokens || 0)) : '—';
         const desc = e((t.task || '').replace(/\n.*/s, '').slice(0, 80));
+        const time = t.timestamp ? timeAgo(t.timestamp) : '';
 
         const row = document.createElement('div');
-        row.className = 'fr';
+        row.className = 'task-row';
         row.innerHTML =
-          '<span class="fr-dot" style="background:' + color + '"></span>' +
-          '<span class="fr-time" style="min-width:80px">' + time + '</span>' +
-          '<span class="fr-agent" style="min-width:120px">' + e(t.agentId) + '</span>' +
-          '<span style="color:var(--text-2);flex:1">' + desc + '</span>' +
-          '<span class="fr-dur" style="min-width:45px">' + dur + '</span>' +
-          '<span class="fr-dur" style="min-width:45px">' + tokens + '</span>';
+          '<span class="task-dot" style="background:' + dotColor + '"></span>' +
+          '<span class="task-agent">' + e(t.agentId) + '</span>' +
+          '<span class="task-desc">' + desc + '</span>' +
+          '<span class="task-meta">' + dur + '</span>' +
+          '<span class="task-meta">' + tokens + '</span>' +
+          '<span class="task-meta">' + time + '</span>';
         body.appendChild(row);
       }
     }
@@ -1180,49 +1198,53 @@ async function renderConsensusDetail(app, taskId) {
     app.innerHTML = '';
     const section = makeSection('Consensus Run', run.agents.length + ' agents');
 
-    // Run info
-    const info = document.createElement('div');
-    info.className = 'detail-stats';
+    // Summary pills
     const c = run.counts || {};
-    const statItems = [
-      { label: 'Agreements', value: c.agreement || 0, color: 'var(--green)' },
-      { label: 'Disagreements', value: c.disagreement || 0, color: 'var(--red)' },
-      { label: 'Hallucinations', value: c.hallucination || 0, color: 'var(--red)' },
-      { label: 'Unverified', value: c.unverified || 0, color: 'var(--amber)' },
-      { label: 'Unique', value: c.unique || 0, color: 'var(--blue)' },
+    const pills = document.createElement('div');
+    pills.style.cssText = 'display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap';
+    const pillDefs = [
+      { label: 'agreements', value: c.agreement || 0, cls: 'pill-g' },
+      { label: 'disagreements', value: c.disagreement || 0, cls: 'pill-r' },
+      { label: 'hallucinations', value: c.hallucination || 0, cls: 'pill-r' },
+      { label: 'unverified', value: c.unverified || 0, cls: 'pill-y' },
+      { label: 'unique', value: c.unique || 0, cls: 'pill-b' },
     ];
-    for (const s of statItems) {
-      const stat = document.createElement('div');
-      stat.className = 'detail-stat';
-      stat.innerHTML = '<div class="detail-stat-val" style="color:' + s.color + '">' + s.value + '</div><div class="detail-stat-lbl">' + s.label + '</div>';
-      info.appendChild(stat);
+    for (const p of pillDefs) {
+      const pill = document.createElement('span');
+      pill.className = 'pill ' + p.cls;
+      pill.textContent = p.value + ' ' + p.label;
+      pills.appendChild(pill);
     }
-    section.appendChild(info);
+    section.appendChild(pills);
 
-    // Signals list
+    // Finding rows
     const panel = document.createElement('div');
     panel.className = 'panel';
     panel.innerHTML = '<div class="panel-head"><span class="panel-title">Signals</span></div>';
     const body = document.createElement('div');
-    body.className = 'panel-body';
+    body.className = 'panel-body run-findings';
     body.style.maxHeight = '500px';
 
     for (const s of (run.signals || [])) {
-      const typeClass = (s.signal || '').includes('agreement') ? 'agreement'
-        : (s.signal || '').includes('hallucination') ? 'hallucination'
-        : (s.signal || '').includes('unique') ? 'unique'
-        : (s.signal || '').includes('disagree') ? 'disagreement' : 'unique';
-      const typeLabel = (s.signal || '').replace(/_/g, ' ').replace(/caught$/, '').trim();
-      const arrow = s.counterpartId ? '<span class="sig-arrow">→</span><span class="sig-agent">' + e(s.counterpartId) + '</span>' : '';
-      const evidence = s.evidence ? '<div style="color:var(--text-3);font-size:11px;margin-top:4px;padding-left:72px">' + e(s.evidence.slice(0, 200)) + '</div>' : '';
+      const signal = s.signal || '';
+      let tc = 'tag-b';
+      if (signal.includes('agreement')) tc = 'tag-g';
+      else if (signal.includes('hallucination') || signal.includes('disagree')) tc = 'tag-r';
+      else if (signal.includes('unverified')) tc = 'tag-y';
+
+      const typeLabel = signal.replace(/_/g, ' ').replace(/caught$/, '').trim().toUpperCase();
+      const agentPart = e(s.agentId || '');
+      const counterPart = s.counterpartId ? ' → ' + e(s.counterpartId) : '';
+      const evidence = e((s.evidence || '').slice(0, 200));
 
       const row = document.createElement('div');
-      row.className = 'sig-row';
-      row.style.flexWrap = 'wrap';
+      row.className = 'finding-row';
       row.innerHTML =
-        '<span class="sig-type ' + typeClass + '">' + e(typeLabel) + '</span>' +
-        '<span class="sig-agent">' + e(s.agentId || '') + '</span>' +
-        arrow + evidence;
+        '<span class="finding-tag ' + tc + '">' + e(typeLabel) + '</span>' +
+        '<div class="finding-body">' +
+          '<div class="finding-text">' + evidence + '</div>' +
+          '<div class="finding-attr">' + agentPart + counterPart + '</div>' +
+        '</div>';
       body.appendChild(row);
     }
 
@@ -1237,7 +1259,7 @@ async function renderConsensusDetail(app, taskId) {
 // packages/dashboard/src/detail/signals.js — Full signal feed with type/agent filters
 
 async function renderSignalsDetail(app) {
-  const { api, escapeHtml: e, makeSection } = window._dash;
+  const { api, escapeHtml: e, makeSection, timeAgo } = window._dash;
   app.innerHTML = '<div class="loading">Loading signals...</div>';
 
   try {
@@ -1266,50 +1288,64 @@ async function renderSignalsDetail(app) {
     }
     section.appendChild(filters);
 
-    const panel = document.createElement('div');
-    panel.className = 'panel';
-    panel.innerHTML = '<div class="panel-body" style="max-height:600px"></div>';
-    const body = panel.querySelector('.panel-body');
-    section.appendChild(panel);
+    const list = document.createElement('div');
+    list.className = 'run-list';
+    section.appendChild(list);
+
+    function tagClass(signal) {
+      if ((signal || '').includes('agreement')) return 'tag-g';
+      if ((signal || '').includes('hallucination')) return 'tag-r';
+      if ((signal || '').includes('disagree')) return 'tag-r';
+      if ((signal || '').includes('unique')) return 'tag-b';
+      return 'tag-b';
+    }
 
     function renderRows() {
-      body.innerHTML = '';
+      list.innerHTML = '';
       const filtered = (data.signals || []).filter(s => {
         if (activeType === 'all') return true;
         return (s.signal || '').includes(activeType);
       });
 
       if (filtered.length === 0) {
-        body.innerHTML = '<div class="empty-state">No matching signals</div>';
+        list.innerHTML = '<div class="empty-state">No matching signals</div>';
         return;
       }
 
+      const panel = document.createElement('div');
+      panel.className = 'panel';
+      const body = document.createElement('div');
+      body.className = 'panel-body run-findings';
+      body.style.maxHeight = '600px';
+
       for (const s of filtered) {
-        const typeClass = (s.signal || '').includes('agreement') ? 'agreement'
-          : (s.signal || '').includes('hallucination') ? 'hallucination'
-          : (s.signal || '').includes('unique') ? 'unique'
-          : (s.signal || '').includes('disagree') ? 'disagreement' : 'unique';
-        const typeLabel = (s.signal || '').replace(/_/g, ' ').replace(/caught$/, '').trim();
-        const finding = e((s.evidence || s.finding || '').slice(0, 120));
-        const arrow = s.counterpartId ? '<span class="sig-arrow">→</span><span class="sig-agent">' + e(s.counterpartId) + '</span>' : '';
-        const time = s.timestamp ? new Date(s.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+        const typeLabel = (s.signal || '').replace(/_/g, ' ').replace(/caught$/, '').trim().toUpperCase();
+        const tc = tagClass(s.signal);
+        const finding = e((s.evidence || s.finding || '').slice(0, 160));
+        const agentPart = e(s.agentId || '');
+        const counterPart = s.counterpartId ? ' → ' + e(s.counterpartId) : '';
+        const time = s.timestamp ? timeAgo(s.timestamp) : '';
+        const attrText = agentPart + counterPart + (time ? ' · ' + time : '');
 
         const row = document.createElement('div');
-        row.className = 'sig-row';
+        row.className = 'finding-row';
         row.innerHTML =
-          '<span class="fr-time">' + time + '</span>' +
-          '<span class="sig-type ' + typeClass + '">' + e(typeLabel) + '</span>' +
-          '<span class="sig-agent">' + e(s.agentId || '') + '</span>' +
-          arrow +
-          '<span class="sig-finding">' + finding + '</span>';
+          '<span class="finding-tag ' + tc + '">' + e(typeLabel) + '</span>' +
+          '<div class="finding-body">' +
+            '<div class="finding-text">' + finding + '</div>' +
+            '<div class="finding-attr">' + attrText + '</div>' +
+          '</div>';
         body.appendChild(row);
       }
+
+      panel.appendChild(body);
+      list.appendChild(panel);
     }
 
     renderRows();
     app.appendChild(section);
   } catch (err) {
-    app.innerHTML = '<div class="empty-state">Failed to load signals: ' + e(err.message) + '</div>';
+    app.innerHTML = '<div class="empty-state">Failed to load signals: ' + err.message + '</div>';
   }
 }
 
@@ -1406,7 +1442,7 @@ async function renderKnowledgeDetail(app, agentId) {
 
 // All agents view (team detail)
 async function renderAllAgents(app) {
-  const { api, escapeHtml: e, navigate, formatTokens, agentInitials, agentColor, makeSection } = window._dash;
+  const { api, escapeHtml: e, navigate, agentInitials, makeSection, timeAgo } = window._dash;
   app.innerHTML = '<div class="loading">Loading agents...</div>';
 
   try {
@@ -1422,40 +1458,45 @@ async function renderAllAgents(app) {
 
     const grid = document.createElement('div');
     grid.className = 'agent-grid';
-    grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(260px, 1fr))';
 
     const sorted = [...agents].sort((a, b) => (b.scores?.dispatchWeight || 0) - (a.scores?.dispatchWeight || 0));
     for (const agent of sorted) {
-      const s = agent.scores || {};
-      const isIdle = !agent.online && s.signals === 0;
-      const color = agentColor(agent);
+      const btn = document.createElement('button');
+      btn.className = 'ag';
+      btn.addEventListener('click', () => navigate('#/team/' + encodeURIComponent(agent.id)));
 
-      const card = document.createElement('button');
-      card.className = 'ag' + (isIdle ? ' idle' : '');
-      card.style.setProperty('--card-color', color);
-      card.addEventListener('click', () => navigate('#/team/' + encodeURIComponent(agent.id)));
+      const w = agent.scores?.dispatchWeight ?? 1;
+      const signals = agent.scores?.signals ?? 0;
+      const accuracy = agent.scores?.accuracy ?? 0.5;
+      const ringColor = signals === 0 ? 'var(--text-3)'
+        : w >= 1.5 ? 'var(--green)'
+        : w >= 0.8 ? 'var(--amber)'
+        : 'var(--red)';
+      const ringOpacity = signals === 0 ? '0.35' : '1';
+      const arcLength = 132 * Math.min(1, accuracy);
 
-      const statusColor = agent.online ? 'var(--green)' : 'var(--text-3)';
-      const statusText = agent.online ? 'online' : 'idle';
-      const dotStyle = agent.online ? 'background:var(--green);box-shadow:0 0 6px rgba(52,211,153,0.4)' : 'background:var(--text-3)';
-      const provider = (agent.provider || '').replace(/^anthropic$/, 'Anthropic').replace(/^google$/, 'Google');
-      const preset = (agent.preset || '').charAt(0).toUpperCase() + (agent.preset || '').slice(1);
+      const lastTask = agent.lastTask;
+      const lastText = lastTask
+        ? e((lastTask.task || '').replace(/\n.*/s, '').slice(0, 55))
+        : 'idle';
+      const lastTime = lastTask?.timestamp ? timeAgo(lastTask.timestamp) : '';
 
-      card.innerHTML =
-        '<div class="ag-top"><div>' +
-          '<div class="ag-name">' + e(agent.id) + '</div>' +
-          '<div class="ag-role">' + e(provider) + ' &middot; ' + e(preset) + '</div>' +
-        '</div><div class="ag-status" style="color:' + statusColor + '">' +
-          '<span class="ag-dot" style="' + dotStyle + '"></span>' + statusText +
-        '</div></div>' +
-        '<div class="ag-metrics">' +
-          '<div class="ag-m"><div class="ag-m-val" style="color:var(--accent)">' + (isIdle ? '&mdash;' : Math.round(s.accuracy * 100) + '%') + '</div><div class="ag-m-lbl">Accuracy</div></div>' +
-          '<div class="ag-m"><div class="ag-m-val" style="color:var(--blue)">' + (isIdle ? '&mdash;' : Math.round(s.uniqueness * 100) + '%') + '</div><div class="ag-m-lbl">Unique</div></div>' +
-          '<div class="ag-m"><div class="ag-m-val">' + (s.signals || 0) + '</div><div class="ag-m-lbl">Signals</div></div>' +
-          '<div class="ag-m"><div class="ag-m-val" style="color:var(--green)">' + formatTokens(agent.totalTokens) + '</div><div class="ag-m-lbl">Tokens</div></div>' +
-        '</div>';
+      btn.innerHTML =
+        '<div class="ag-ring-wrap">' +
+          '<svg class="ag-ring" viewBox="0 0 48 48" style="opacity:' + ringOpacity + '">' +
+            '<circle cx="24" cy="24" r="21" fill="none" stroke="' + ringColor + '" stroke-width="3" opacity="0.2"/>' +
+            '<circle cx="24" cy="24" r="21" fill="none" stroke="' + ringColor + '" stroke-width="3"' +
+              ' stroke-dasharray="' + arcLength + ' 132"' +
+              ' transform="rotate(-90 24 24)"/>' +
+          '</svg>' +
+          '<span class="ag-initials" style="color:' + ringColor + '">' + agentInitials(agent.id) + '</span>' +
+        '</div>' +
+        '<span class="ag-name">' + e(agent.id) + '</span>' +
+        '<span class="ag-last">' + lastText +
+          (lastTime ? ' <span class="ag-time">' + lastTime + '</span>' : '') +
+        '</span>';
 
-      grid.appendChild(card);
+      grid.appendChild(btn);
     }
 
     section.appendChild(grid);

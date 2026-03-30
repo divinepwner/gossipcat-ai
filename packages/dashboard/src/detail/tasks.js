@@ -1,7 +1,7 @@
 // packages/dashboard/src/detail/tasks.js — Full task list with filters + search + tokens
 
 async function renderTasksDetail(app) {
-  const { api, escapeHtml: e, formatTokens, makeSection } = window._dash;
+  const { api, escapeHtml: e, formatTokens, makeSection, timeAgo } = window._dash;
   app.innerHTML = '<div class="loading">Loading tasks...</div>';
 
   try {
@@ -59,21 +59,24 @@ async function renderTasksDetail(app) {
       }
 
       for (const t of filtered) {
-        const time = t.timestamp ? new Date(t.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-        const color = t.status === 'completed' ? 'var(--green)' : t.status === 'failed' ? 'var(--red)' : t.status === 'cancelled' ? 'var(--amber)' : 'var(--accent)';
+        const dotColor = t.status === 'completed' ? 'var(--green)'
+          : t.status === 'failed' ? 'var(--red)'
+          : t.status === 'cancelled' ? 'var(--amber)'
+          : 'var(--accent)';
         const dur = t.duration > 0 ? (t.duration / 1000).toFixed(1) + 's' : '—';
         const tokens = (t.inputTokens || t.outputTokens) ? formatTokens((t.inputTokens || 0) + (t.outputTokens || 0)) : '—';
         const desc = e((t.task || '').replace(/\n.*/s, '').slice(0, 80));
+        const time = t.timestamp ? timeAgo(t.timestamp) : '';
 
         const row = document.createElement('div');
-        row.className = 'fr';
+        row.className = 'task-row';
         row.innerHTML =
-          '<span class="fr-dot" style="background:' + color + '"></span>' +
-          '<span class="fr-time" style="min-width:80px">' + time + '</span>' +
-          '<span class="fr-agent" style="min-width:120px">' + e(t.agentId) + '</span>' +
-          '<span style="color:var(--text-2);flex:1">' + desc + '</span>' +
-          '<span class="fr-dur" style="min-width:45px">' + dur + '</span>' +
-          '<span class="fr-dur" style="min-width:45px">' + tokens + '</span>';
+          '<span class="task-dot" style="background:' + dotColor + '"></span>' +
+          '<span class="task-agent">' + e(t.agentId) + '</span>' +
+          '<span class="task-desc">' + desc + '</span>' +
+          '<span class="task-meta">' + dur + '</span>' +
+          '<span class="task-meta">' + tokens + '</span>' +
+          '<span class="task-meta">' + time + '</span>';
         body.appendChild(row);
       }
     }

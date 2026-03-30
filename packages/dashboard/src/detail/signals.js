@@ -1,7 +1,7 @@
 // packages/dashboard/src/detail/signals.js — Full signal feed with type/agent filters
 
 async function renderSignalsDetail(app) {
-  const { api, escapeHtml: e, makeSection } = window._dash;
+  const { api, escapeHtml: e, makeSection, timeAgo } = window._dash;
   app.innerHTML = '<div class="loading">Loading signals...</div>';
 
   try {
@@ -30,49 +30,63 @@ async function renderSignalsDetail(app) {
     }
     section.appendChild(filters);
 
-    const panel = document.createElement('div');
-    panel.className = 'panel';
-    panel.innerHTML = '<div class="panel-body" style="max-height:600px"></div>';
-    const body = panel.querySelector('.panel-body');
-    section.appendChild(panel);
+    const list = document.createElement('div');
+    list.className = 'run-list';
+    section.appendChild(list);
+
+    function tagClass(signal) {
+      if ((signal || '').includes('agreement')) return 'tag-g';
+      if ((signal || '').includes('hallucination')) return 'tag-r';
+      if ((signal || '').includes('disagree')) return 'tag-r';
+      if ((signal || '').includes('unique')) return 'tag-b';
+      return 'tag-b';
+    }
 
     function renderRows() {
-      body.innerHTML = '';
+      list.innerHTML = '';
       const filtered = (data.signals || []).filter(s => {
         if (activeType === 'all') return true;
         return (s.signal || '').includes(activeType);
       });
 
       if (filtered.length === 0) {
-        body.innerHTML = '<div class="empty-state">No matching signals</div>';
+        list.innerHTML = '<div class="empty-state">No matching signals</div>';
         return;
       }
 
+      const panel = document.createElement('div');
+      panel.className = 'panel';
+      const body = document.createElement('div');
+      body.className = 'panel-body run-findings';
+      body.style.maxHeight = '600px';
+
       for (const s of filtered) {
-        const typeClass = (s.signal || '').includes('agreement') ? 'agreement'
-          : (s.signal || '').includes('hallucination') ? 'hallucination'
-          : (s.signal || '').includes('unique') ? 'unique'
-          : (s.signal || '').includes('disagree') ? 'disagreement' : 'unique';
-        const typeLabel = (s.signal || '').replace(/_/g, ' ').replace(/caught$/, '').trim();
-        const finding = e((s.evidence || s.finding || '').slice(0, 120));
-        const arrow = s.counterpartId ? '<span class="sig-arrow">→</span><span class="sig-agent">' + e(s.counterpartId) + '</span>' : '';
-        const time = s.timestamp ? new Date(s.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+        const typeLabel = (s.signal || '').replace(/_/g, ' ').replace(/caught$/, '').trim().toUpperCase();
+        const tc = tagClass(s.signal);
+        const finding = e((s.evidence || s.finding || '').slice(0, 160));
+        const agentPart = e(s.agentId || '');
+        const counterPart = s.counterpartId ? ' → ' + e(s.counterpartId) : '';
+        const time = s.timestamp ? timeAgo(s.timestamp) : '';
+        const attrText = agentPart + counterPart + (time ? ' · ' + time : '');
 
         const row = document.createElement('div');
-        row.className = 'sig-row';
+        row.className = 'finding-row';
         row.innerHTML =
-          '<span class="fr-time">' + time + '</span>' +
-          '<span class="sig-type ' + typeClass + '">' + e(typeLabel) + '</span>' +
-          '<span class="sig-agent">' + e(s.agentId || '') + '</span>' +
-          arrow +
-          '<span class="sig-finding">' + finding + '</span>';
+          '<span class="finding-tag ' + tc + '">' + e(typeLabel) + '</span>' +
+          '<div class="finding-body">' +
+            '<div class="finding-text">' + finding + '</div>' +
+            '<div class="finding-attr">' + attrText + '</div>' +
+          '</div>';
         body.appendChild(row);
       }
+
+      panel.appendChild(body);
+      list.appendChild(panel);
     }
 
     renderRows();
     app.appendChild(section);
   } catch (err) {
-    app.innerHTML = '<div class="empty-state">Failed to load signals: ' + e(err.message) + '</div>';
+    app.innerHTML = '<div class="empty-state">Failed to load signals: ' + err.message + '</div>';
   }
 }

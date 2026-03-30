@@ -12,49 +12,53 @@ async function renderConsensusDetail(app, taskId) {
     app.innerHTML = '';
     const section = makeSection('Consensus Run', run.agents.length + ' agents');
 
-    // Run info
-    const info = document.createElement('div');
-    info.className = 'detail-stats';
+    // Summary pills
     const c = run.counts || {};
-    const statItems = [
-      { label: 'Agreements', value: c.agreement || 0, color: 'var(--green)' },
-      { label: 'Disagreements', value: c.disagreement || 0, color: 'var(--red)' },
-      { label: 'Hallucinations', value: c.hallucination || 0, color: 'var(--red)' },
-      { label: 'Unverified', value: c.unverified || 0, color: 'var(--amber)' },
-      { label: 'Unique', value: c.unique || 0, color: 'var(--blue)' },
+    const pills = document.createElement('div');
+    pills.style.cssText = 'display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap';
+    const pillDefs = [
+      { label: 'agreements', value: c.agreement || 0, cls: 'pill-g' },
+      { label: 'disagreements', value: c.disagreement || 0, cls: 'pill-r' },
+      { label: 'hallucinations', value: c.hallucination || 0, cls: 'pill-r' },
+      { label: 'unverified', value: c.unverified || 0, cls: 'pill-y' },
+      { label: 'unique', value: c.unique || 0, cls: 'pill-b' },
     ];
-    for (const s of statItems) {
-      const stat = document.createElement('div');
-      stat.className = 'detail-stat';
-      stat.innerHTML = '<div class="detail-stat-val" style="color:' + s.color + '">' + s.value + '</div><div class="detail-stat-lbl">' + s.label + '</div>';
-      info.appendChild(stat);
+    for (const p of pillDefs) {
+      const pill = document.createElement('span');
+      pill.className = 'pill ' + p.cls;
+      pill.textContent = p.value + ' ' + p.label;
+      pills.appendChild(pill);
     }
-    section.appendChild(info);
+    section.appendChild(pills);
 
-    // Signals list
+    // Finding rows
     const panel = document.createElement('div');
     panel.className = 'panel';
     panel.innerHTML = '<div class="panel-head"><span class="panel-title">Signals</span></div>';
     const body = document.createElement('div');
-    body.className = 'panel-body';
+    body.className = 'panel-body run-findings';
     body.style.maxHeight = '500px';
 
     for (const s of (run.signals || [])) {
-      const typeClass = (s.signal || '').includes('agreement') ? 'agreement'
-        : (s.signal || '').includes('hallucination') ? 'hallucination'
-        : (s.signal || '').includes('unique') ? 'unique'
-        : (s.signal || '').includes('disagree') ? 'disagreement' : 'unique';
-      const typeLabel = (s.signal || '').replace(/_/g, ' ').replace(/caught$/, '').trim();
-      const arrow = s.counterpartId ? '<span class="sig-arrow">→</span><span class="sig-agent">' + e(s.counterpartId) + '</span>' : '';
-      const evidence = s.evidence ? '<div style="color:var(--text-3);font-size:11px;margin-top:4px;padding-left:72px">' + e(s.evidence.slice(0, 200)) + '</div>' : '';
+      const signal = s.signal || '';
+      let tc = 'tag-b';
+      if (signal.includes('agreement')) tc = 'tag-g';
+      else if (signal.includes('hallucination') || signal.includes('disagree')) tc = 'tag-r';
+      else if (signal.includes('unverified')) tc = 'tag-y';
+
+      const typeLabel = signal.replace(/_/g, ' ').replace(/caught$/, '').trim().toUpperCase();
+      const agentPart = e(s.agentId || '');
+      const counterPart = s.counterpartId ? ' → ' + e(s.counterpartId) : '';
+      const evidence = e((s.evidence || '').slice(0, 200));
 
       const row = document.createElement('div');
-      row.className = 'sig-row';
-      row.style.flexWrap = 'wrap';
+      row.className = 'finding-row';
       row.innerHTML =
-        '<span class="sig-type ' + typeClass + '">' + e(typeLabel) + '</span>' +
-        '<span class="sig-agent">' + e(s.agentId || '') + '</span>' +
-        arrow + evidence;
+        '<span class="finding-tag ' + tc + '">' + e(typeLabel) + '</span>' +
+        '<div class="finding-body">' +
+          '<div class="finding-text">' + evidence + '</div>' +
+          '<div class="finding-attr">' + agentPart + counterPart + '</div>' +
+        '</div>';
       body.appendChild(row);
     }
 

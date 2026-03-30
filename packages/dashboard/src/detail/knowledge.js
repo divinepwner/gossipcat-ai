@@ -91,7 +91,7 @@ async function renderKnowledgeDetail(app, agentId) {
 
 // All agents view (team detail)
 async function renderAllAgents(app) {
-  const { api, escapeHtml: e, navigate, formatTokens, agentInitials, agentColor, makeSection } = window._dash;
+  const { api, escapeHtml: e, navigate, agentInitials, makeSection, timeAgo } = window._dash;
   app.innerHTML = '<div class="loading">Loading agents...</div>';
 
   try {
@@ -107,40 +107,45 @@ async function renderAllAgents(app) {
 
     const grid = document.createElement('div');
     grid.className = 'agent-grid';
-    grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(260px, 1fr))';
 
     const sorted = [...agents].sort((a, b) => (b.scores?.dispatchWeight || 0) - (a.scores?.dispatchWeight || 0));
     for (const agent of sorted) {
-      const s = agent.scores || {};
-      const isIdle = !agent.online && s.signals === 0;
-      const color = agentColor(agent);
+      const btn = document.createElement('button');
+      btn.className = 'ag';
+      btn.addEventListener('click', () => navigate('#/team/' + encodeURIComponent(agent.id)));
 
-      const card = document.createElement('button');
-      card.className = 'ag' + (isIdle ? ' idle' : '');
-      card.style.setProperty('--card-color', color);
-      card.addEventListener('click', () => navigate('#/team/' + encodeURIComponent(agent.id)));
+      const w = agent.scores?.dispatchWeight ?? 1;
+      const signals = agent.scores?.signals ?? 0;
+      const accuracy = agent.scores?.accuracy ?? 0.5;
+      const ringColor = signals === 0 ? 'var(--text-3)'
+        : w >= 1.5 ? 'var(--green)'
+        : w >= 0.8 ? 'var(--amber)'
+        : 'var(--red)';
+      const ringOpacity = signals === 0 ? '0.35' : '1';
+      const arcLength = 132 * Math.min(1, accuracy);
 
-      const statusColor = agent.online ? 'var(--green)' : 'var(--text-3)';
-      const statusText = agent.online ? 'online' : 'idle';
-      const dotStyle = agent.online ? 'background:var(--green);box-shadow:0 0 6px rgba(52,211,153,0.4)' : 'background:var(--text-3)';
-      const provider = (agent.provider || '').replace(/^anthropic$/, 'Anthropic').replace(/^google$/, 'Google');
-      const preset = (agent.preset || '').charAt(0).toUpperCase() + (agent.preset || '').slice(1);
+      const lastTask = agent.lastTask;
+      const lastText = lastTask
+        ? e((lastTask.task || '').replace(/\n.*/s, '').slice(0, 55))
+        : 'idle';
+      const lastTime = lastTask?.timestamp ? timeAgo(lastTask.timestamp) : '';
 
-      card.innerHTML =
-        '<div class="ag-top"><div>' +
-          '<div class="ag-name">' + e(agent.id) + '</div>' +
-          '<div class="ag-role">' + e(provider) + ' &middot; ' + e(preset) + '</div>' +
-        '</div><div class="ag-status" style="color:' + statusColor + '">' +
-          '<span class="ag-dot" style="' + dotStyle + '"></span>' + statusText +
-        '</div></div>' +
-        '<div class="ag-metrics">' +
-          '<div class="ag-m"><div class="ag-m-val" style="color:var(--accent)">' + (isIdle ? '&mdash;' : Math.round(s.accuracy * 100) + '%') + '</div><div class="ag-m-lbl">Accuracy</div></div>' +
-          '<div class="ag-m"><div class="ag-m-val" style="color:var(--blue)">' + (isIdle ? '&mdash;' : Math.round(s.uniqueness * 100) + '%') + '</div><div class="ag-m-lbl">Unique</div></div>' +
-          '<div class="ag-m"><div class="ag-m-val">' + (s.signals || 0) + '</div><div class="ag-m-lbl">Signals</div></div>' +
-          '<div class="ag-m"><div class="ag-m-val" style="color:var(--green)">' + formatTokens(agent.totalTokens) + '</div><div class="ag-m-lbl">Tokens</div></div>' +
-        '</div>';
+      btn.innerHTML =
+        '<div class="ag-ring-wrap">' +
+          '<svg class="ag-ring" viewBox="0 0 48 48" style="opacity:' + ringOpacity + '">' +
+            '<circle cx="24" cy="24" r="21" fill="none" stroke="' + ringColor + '" stroke-width="3" opacity="0.2"/>' +
+            '<circle cx="24" cy="24" r="21" fill="none" stroke="' + ringColor + '" stroke-width="3"' +
+              ' stroke-dasharray="' + arcLength + ' 132"' +
+              ' transform="rotate(-90 24 24)"/>' +
+          '</svg>' +
+          '<span class="ag-initials" style="color:' + ringColor + '">' + agentInitials(agent.id) + '</span>' +
+        '</div>' +
+        '<span class="ag-name">' + e(agent.id) + '</span>' +
+        '<span class="ag-last">' + lastText +
+          (lastTime ? ' <span class="ag-time">' + lastTime + '</span>' : '') +
+        '</span>';
 
-      grid.appendChild(card);
+      grid.appendChild(btn);
     }
 
     section.appendChild(grid);
