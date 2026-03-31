@@ -335,6 +335,10 @@ export class DispatchPipeline {
       }).catch((err: Error) => {
         entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
         this.toolServer?.releaseAgent(agentId);
+        // Clean up worktree on failure to prevent leaked FS paths and git branches
+        if (entry.worktreeInfo) {
+          this.worktreeManager.cleanup(taskId, entry.worktreeInfo.path).catch(() => {});
+        }
         throw err;
       });
     } else {

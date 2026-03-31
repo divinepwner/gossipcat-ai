@@ -233,6 +233,33 @@ describe('DispatchPipeline', () => {
     });
   });
 
+  describe('worktree error cleanup', () => {
+    it('cleans up worktree when executeTask fails', async () => {
+      const cleanupMock = jest.fn().mockResolvedValue(undefined);
+      const createMock = jest.fn().mockResolvedValue({ path: '/tmp/wt-fail', branch: 'gossip-fail' });
+      const failWorker = {
+        executeTask: jest.fn().mockRejectedValue(new Error('exec failed')),
+        subscribeToBatch: jest.fn().mockResolvedValue(undefined),
+        unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
+      };
+      const ws = new Map([['fail-agent', failWorker]]);
+      const p = new DispatchPipeline({
+        projectRoot: '/tmp/gossip-wt-fail-test-' + Date.now(),
+        workers: ws,
+        registryGet: (id) => ({ id, provider: 'local' as const, model: 'mock', skills: [] }),
+      });
+      // Inject mock worktreeManager BEFORE dispatching
+      (p as any).worktreeManager = { cleanup: cleanupMock, create: createMock, merge: jest.fn(), pruneOrphans: jest.fn() };
+
+      const { taskId, promise } = p.dispatch('fail-agent', 'doomed task', { writeMode: 'worktree' });
+      await promise.catch(() => {}); // swallow rejection
+
+      const task = p.getTask(taskId);
+      expect(task?.status).toBe('failed');
+      expect(cleanupMock).toHaveBeenCalledWith(taskId, '/tmp/wt-fail');
+    });
+  });
+
   describe('task progress callback', () => {
     it('fires progress events during task execution', async () => {
       const events: Array<{ taskId: string; toolCalls: number }> = [];
