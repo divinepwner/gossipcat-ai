@@ -63,9 +63,11 @@ function renderActivitySection(consensusData) {
     for (const sig of run.signals) {
       if (sig.signal === 'signal_retracted') continue;
       let tag = '', tagClass = '';
-      if (sig.signal === 'agreement' || sig.signal === 'unique_confirmed') { tag = 'CONFIRMED'; tagClass = 'tag-g'; }
+      if (sig.signal === 'agreement' || sig.signal === 'consensus_verified') { tag = 'CONFIRMED'; tagClass = 'tag-g'; }
       else if (sig.signal === 'disagreement' || sig.signal === 'hallucination_caught') { tag = 'DISPUTED'; tagClass = 'tag-r'; }
-      else if (sig.signal === 'unverified' || sig.signal === 'unique_unconfirmed') { tag = 'UNVERIFIED'; tagClass = 'tag-y'; }
+      else if (sig.signal === 'unverified') { tag = 'UNVERIFIED'; tagClass = 'tag-y'; }
+      else if (sig.signal === 'unique_confirmed') { tag = 'UNIQUE ✓'; tagClass = 'tag-u'; }
+      else if (sig.signal === 'unique_unconfirmed') { tag = 'UNIQUE'; tagClass = 'tag-u'; }
       else if (sig.signal === 'new_finding') { tag = 'NEW'; tagClass = 'tag-b'; }
       else continue;
 
