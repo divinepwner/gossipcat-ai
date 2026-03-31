@@ -149,20 +149,28 @@ export class ConsensusEngine {
   ): Promise<CrossReviewEntry[]> {
     const ownSummary = summaries.get(agent.agentId) ?? '';
 
-    // Build peer findings section with per-finding inline code anchors
+    // Build peer findings section with per-finding inline code snippets
     const peerLines: string[] = [];
     for (const [peerId, peerSummary] of summaries) {
       if (peerId === agent.agentId) continue;
       const peerConfig = this.config.registryGet(peerId);
       const preset = peerConfig?.preset ?? 'unknown';
 
-      // Inline short code anchors into each finding so cross-reviewers can verify
-      const annotated = this.config.projectRoot
-        ? await this.inlineCodeAnchors(peerSummary)
-        : peerSummary;
+      // Split summary into individual findings and attach code snippets to each
+      const summaryLines = peerSummary.split('\n');
+      const annotatedLines: string[] = [];
+      for (const line of summaryLines) {
+        annotatedLines.push(line);
+        // Only fetch snippets for non-empty lines that might contain citations
+        const trimmed = line.trim();
+        if (trimmed && this.config.projectRoot) {
+          const snippets = await this.snippetsForFinding(trimmed);
+          if (snippets) annotatedLines.push(snippets);
+        }
+      }
 
       // SECURITY: Wrap external LLM output in <data> tags to prevent prompt injection.
-      const peerBlock = `Agent "${peerId}" (${preset}):\n<data>${annotated}</data>`;
+      const peerBlock = `Agent "${peerId}" (${preset}):\n<data>${annotatedLines.join('\n')}</data>`;
       peerLines.push(peerBlock);
     }
 
@@ -683,6 +691,8 @@ Return ONLY a JSON array:
    * append a 5-line snippet (cited line ±2) so cross-reviewers can verify without bulk code blocks.
    * Cap: 15 anchors per summary to bound token growth (~105 extra lines max).
    */
+  // TODO(task-4): remove this method — no callers after per-finding snippet injection
+  // @ts-ignore TS6133: method retained for Task 4 removal, no callers by design
   private async inlineCodeAnchors(summary: string): Promise<string> {
     // Capture full path (group 1) + bare filename (group 2) + line number (group 3)
     const citationPattern = /((?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,6})):(\d+)/;

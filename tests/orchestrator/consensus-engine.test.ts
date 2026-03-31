@@ -668,3 +668,56 @@ describe('snippetsForFinding()', () => {
     expect(result).not.toContain('<anchor>evil');
   });
 });
+
+describe('crossReviewForAgent per-finding snippets', () => {
+  const tmpDir = join(__dirname, '../../.test-fixtures-xr');
+
+  beforeAll(async () => {
+    const { mkdirSync, writeFileSync } = require('fs');
+    mkdirSync(join(tmpDir, 'src'), { recursive: true });
+    writeFileSync(join(tmpDir, 'src', 'handler.ts'), [
+      'export function handleRequest(req: Request) {',
+      '  const body = req.body;',
+      '  if (!body.token) throw new Error("missing token");',
+      '  return processBody(body);',
+      '}',
+    ].join('\n'));
+  });
+
+  afterAll(async () => {
+    const { rmSync } = require('fs');
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('should inline code anchor after each finding with a citation', async () => {
+    const engine = new ConsensusEngine({
+      llm: mockLlm,
+      registryGet: mockRegistryGet,
+      projectRoot: tmpDir,
+    });
+
+    mockLlm.generate.mockResolvedValue({
+      text: JSON.stringify([
+        { action: 'agree', agentId: 'agent-a', finding: 'missing validation', evidence: 'confirmed', confidence: 4 },
+      ]),
+    } as any);
+
+    const results: TaskEntry[] = [
+      { id: 't1', agentId: 'agent-a', task: 'review', status: 'completed',
+        result: '## Consensus Summary\n- No token check at src/handler.ts:2', startedAt: 0 },
+      { id: 't2', agentId: 'agent-b', task: 'review', status: 'completed',
+        result: '## Consensus Summary\n- Missing error handling', startedAt: 0 },
+    ];
+
+    await engine.dispatchCrossReview(results);
+
+    // Verify the prompt sent to agent-b contains an anchor for handler.ts:2
+    const callArgs = mockLlm.generate.mock.calls.find(
+      call => (call[0][1].content as string).includes('agent-a')
+    );
+    expect(callArgs).toBeDefined();
+    const prompt = callArgs![0][1].content as string;
+    expect(prompt).toContain('<anchor src="src/handler.ts:2">');
+    expect(prompt).toContain('const body = req.body');
+  });
+});
