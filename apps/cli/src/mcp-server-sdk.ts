@@ -71,8 +71,8 @@ gossip_run(agent_id: "<id>", task: "Implement X")
 \`gossip_run\` is the preferred dispatch. Do NOT use raw Agent() for gossipcat tasks.
 
 **Write modes:** \`gossip_run(agent_id, task, write_mode: "scoped", scope: "./src")\`
-**Parallel:** \`gossip_dispatch_parallel(tasks) → gossip_collect(task_ids)\`
-**Plan → Execute:** \`gossip_plan(task) → gossip_dispatch_parallel(plan) → gossip_collect(ids)\`
+**Parallel:** \`gossip_dispatch(mode:"parallel", tasks) → gossip_collect(task_ids)\`
+**Plan → Execute:** \`gossip_plan(task) → gossip_dispatch(mode:"parallel", tasks) → gossip_collect(ids)\`
 
 ## Available Agents
 ${agentList}
@@ -94,7 +94,7 @@ ${agentList}
 
 ### Step 1: Dispatch
 \`\`\`
-gossip_dispatch_consensus(tasks: [
+gossip_dispatch(mode: "consensus", tasks: [
   { agent_id: "<reviewer>", task: "Review X for security" },
   { agent_id: "<researcher>", task: "Review X for architecture" },
   { agent_id: "<tester>", task: "Review X for test coverage" },
@@ -105,7 +105,7 @@ gossip_dispatch_consensus(tasks: [
 \`gossip_relay(task_id: "<id>", result: "<agent output>")\`
 
 ### Step 3: Collect with cross-review
-\`gossip_collect_consensus(task_ids, timeout_ms: 300000)\`
+\`gossip_collect(task_ids, consensus: true, timeout_ms: 300000)\`
 Returns: CONFIRMED, DISPUTED, UNIQUE, UNVERIFIED, NEW tagged findings.
 
 ### Step 4: Verify and record signals IMMEDIATELY
@@ -151,7 +151,7 @@ performance signals are recorded.
 **Flow:** \`gossip_run(agent_id, task)\` → returns Agent() instructions for native agents →
 execute the Agent() → \`gossip_relay(task_id, result)\` to close the loop.
 
-**Exception:** \`gossip_dispatch_consensus\` already handles its own native Agent() calls —
+**Exception:** \`gossip_dispatch(mode:"consensus")\` already handles its own native Agent() calls —
 don't double-wrap those.
 
 **Why:** Raw Agent() bypasses the gossipcat pipeline. Tasks won't appear in the activity
@@ -645,27 +645,10 @@ const server = new McpServer({
   version: '0.1.0',
 });
 
-// ── High-level tool ───────────────────────────────────────────────────────
-server.tool(
-  'gossip_orchestrate',
-  'Submit a task to the Gossip Mesh orchestrator for multi-agent execution',
-  { task: z.string().describe('The task to execute') },
-  async ({ task }) => {
-    await boot();
-    try {
-      const response = await mainAgent.handleMessage(task, { mode: 'decompose' });
-      const suffix = response.agents?.length ? `\n\n[Agents: ${response.agents.join(', ')}]` : '';
-      return { content: [{ type: 'text' as const, text: response.text + suffix }] };
-    } catch (err: any) {
-      return { content: [{ type: 'text' as const, text: `Error: ${err.message}` }] };
-    }
-  }
-);
-
 // ── Plan: decompose with write-mode classification ────────────────────────
 server.tool(
   'gossip_plan',
-  'Plan a task with write-mode suggestions. Decomposes into sub-tasks, assigns agents, and classifies each as read or write with suggested write mode. Returns dispatch-ready JSON for approval before execution. Use this before gossip_dispatch_parallel for implementation tasks.',
+  'Plan a task with write-mode suggestions. Decomposes into sub-tasks, assigns agents, and classifies each as read or write with suggested write mode. Returns dispatch-ready JSON for approval before execution. Use this before gossip_dispatch(mode:"parallel") for implementation tasks.',
   {
     task: z.string().describe('Task description (e.g. "fix the scope validation bug in packages/tools/")'),
     strategy: z.enum(['parallel', 'sequential', 'single']).optional()
@@ -783,8 +766,8 @@ server.tool(
         });
         dispatchBlock = `Execute sequentially:\n${steps.join('\n\n')}`;
       } else {
-        // Parallel: output gossip_dispatch_parallel payload
-        dispatchBlock = `PLAN_JSON (pass to gossip_dispatch_parallel):\n${JSON.stringify(planJson)}`;
+        // Parallel: output gossip_dispatch payload
+        dispatchBlock = `PLAN_JSON (pass to gossip_dispatch with mode:"parallel"):\n${JSON.stringify(planJson)}`;
       }
 
       const text = `Plan: "${task}"\nPlan ID: ${planId}\n\nStrategy: ${plan.strategy}\n\nTasks:\n${taskLines}\n${warnings}\n---\n${dispatchBlock}`;
@@ -796,181 +779,275 @@ server.tool(
   }
 );
 
+// ── Dispatch handler functions ───────────────────────────────────────────
+
+async function handleDispatchSingle(
+  agent_id: string, task: string,
+  write_mode?: 'sequential' | 'scoped' | 'worktree',
+  scope?: string, timeout_ms?: number,
+  plan_id?: string, step?: number,
+) {
+  await boot();
+  await syncWorkersViaKeychain();
+
+  if (!/^[a-zA-Z0-9_-]+$/.test(agent_id)) {
+    return { content: [{ type: 'text' as const, text: `Invalid agent ID format: "${agent_id}"` }] };
+  }
+
+  const options: Record<string, unknown> = {};
+  if (write_mode) {
+    options.writeMode = write_mode as 'sequential' | 'scoped' | 'worktree';
+    if (scope) options.scope = scope;
+    if (timeout_ms) options.timeoutMs = timeout_ms;
+  }
+  if (plan_id) {
+    if (!step) {
+      return { content: [{ type: 'text' as const, text: 'plan_id requires step (1-indexed step number in the plan).' }] };
+    }
+    options.planId = plan_id;
+    options.step = step;
+  }
+  const dispatchOptions = Object.keys(options).length > 0 ? options : undefined;
+
+  // Native agent bridge: return Agent tool instructions instead of relay dispatch
+  const nativeConfig = nativeAgentConfigs.get(agent_id);
+  if (nativeConfig) {
+    evictStaleNativeTasks();
+    const taskId = randomUUID().slice(0, 8);
+    nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), planId: plan_id, step });
+    persistNativeTaskMap();
+
+    // Fix: register in TaskGraph so native tasks are visible to CLI/sync
+    try { mainAgent.recordNativeTask(taskId, agent_id, task); } catch { /* best-effort */ }
+
+    // Inject chain context from prior plan steps (same as relay agents get)
+    let chainContext = '';
+    if (plan_id && step && step > 1) {
+      chainContext = mainAgent.getChainContext(plan_id, step);
+    }
+
+    const agentPrompt = [
+      nativeConfig.instructions || '',
+      chainContext ? `\n${chainContext}\n` : '',
+      `\n---\n\nTask: ${task}`,
+    ].filter(Boolean).join('').trim();
+
+    // Only use worktree if explicitly requested AND project is a git repo
+    let useWorktree = write_mode === 'worktree';
+    if (useWorktree) {
+      try {
+        const { execSync } = require('child_process');
+        execSync('git rev-parse --git-dir', { cwd: process.cwd(), stdio: 'ignore' });
+      } catch {
+        useWorktree = false; // not a git repo, skip worktree
+      }
+    }
+
+    return { content: [{ type: 'text' as const, text:
+      `NATIVE_DISPATCH: Execute this via Claude Code Agent tool, then relay the result.\n\n` +
+      `Task ID: ${taskId}\n` +
+      `Agent: ${agent_id}\n` +
+      `Model: ${nativeConfig.model}\n\n` +
+      `Step 1 — Run:\n` +
+      `Agent(model: "${nativeConfig.model}", prompt: ${JSON.stringify(agentPrompt)}${useWorktree ? ', isolation: "worktree"' : ''}, run_in_background: true)\n\n` +
+      `Step 2 — REQUIRED after agent completes:\n` +
+      `gossip_relay(task_id: "${taskId}", result: "<agent output>")\n\n` +
+      `⚠️ You MUST call gossip_relay for every native dispatch. Without it, the result is lost — no memory, no gossip, no consensus. Never skip this step.`
+    }] };
+  }
+
+  try {
+    const { taskId } = mainAgent.dispatch(agent_id, task, dispatchOptions as any);
+    const modeLabel = write_mode ? ` [${write_mode}${scope ? `:${scope}` : ''}]` : '';
+    return { content: [{ type: 'text' as const, text: `Dispatched to ${agent_id}${modeLabel}. Task ID: ${taskId}` }] };
+  } catch (err: any) {
+    process.stderr.write(`[gossipcat] dispatch failed: ${err.message}\n`);
+    return { content: [{ type: 'text' as const, text: err.message }] };
+  }
+}
+
+async function handleDispatchParallel(
+  taskDefs: Array<{ agent_id: string; task: string; write_mode?: string; scope?: string }>,
+  consensus: boolean,
+) {
+  await boot();
+  await syncWorkersViaKeychain();
+
+  // Validate all agent IDs before dispatching
+  for (const def of taskDefs) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(def.agent_id)) {
+      return { content: [{ type: 'text' as const, text: `Invalid agent ID format: "${def.agent_id}"` }] };
+    }
+  }
+
+  // [C2 fix] Split native vs custom tasks — native agents have no relay worker
+  const nativeTasks: Array<{ agent_id: string; task: string; write_mode?: string }> = [];
+  const relayTasks: Array<{ agent_id: string; task: string; write_mode?: string; scope?: string }> = [];
+  for (const def of taskDefs) {
+    if (nativeAgentConfigs.has(def.agent_id)) {
+      nativeTasks.push(def);
+    } else {
+      relayTasks.push(def);
+    }
+  }
+
+  const lines: string[] = [];
+
+  // Dispatch relay tasks normally
+  if (relayTasks.length > 0) {
+    const { taskIds, errors } = await mainAgent.dispatchParallel(
+      relayTasks.map((d: any) => ({
+        agentId: d.agent_id,
+        task: d.task,
+        options: d.write_mode ? { writeMode: d.write_mode, scope: d.scope } : undefined,
+      })),
+      consensus ? { consensus: true } : undefined,
+    );
+    for (const tid of taskIds) {
+      const t = mainAgent.getTask(tid);
+      lines.push(`  ${tid} → ${t?.agentId || 'unknown'} (relay)`);
+    }
+    if (errors.length) lines.push(`Relay errors: ${errors.join(', ')}`);
+  }
+
+  // Create native dispatch instructions for Claude Code Agent tool
+  const nativeInstructions: string[] = [];
+  for (const def of nativeTasks) {
+    const nativeConfig = nativeAgentConfigs.get(def.agent_id)!;
+    const taskId = randomUUID().slice(0, 8);
+    nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now() });
+    try { mainAgent.recordNativeTask(taskId, def.agent_id, def.task); } catch { /* best-effort */ }
+    persistNativeTaskMap();
+
+    const agentPrompt = nativeConfig.instructions
+      ? `${nativeConfig.instructions}\n\n---\n\nTask: ${def.task}`
+      : def.task;
+
+    lines.push(`  ${taskId} → ${def.agent_id} (native — dispatch via Agent tool)`);
+    nativeInstructions.push(
+      `Agent(model: "${nativeConfig.model}", prompt: ${JSON.stringify(agentPrompt)}${def.write_mode === 'worktree' ? ', isolation: "worktree"' : ''}, run_in_background: true)` +
+      `\n  → then: gossip_relay(task_id: "${taskId}", result: "<output>")`
+    );
+  }
+
+  let msg = `Dispatched ${taskDefs.length} tasks:\n${lines.join('\n')}`;
+  if (consensus) msg += '\n\n📋 Consensus mode enabled.';
+  if (nativeInstructions.length > 0) {
+    msg += `\n\nNATIVE_DISPATCH: Execute these ${nativeInstructions.length} Agent calls in parallel, then relay ALL results:\n\n${nativeInstructions.join('\n\n')}`;
+    msg += `\n\n⚠️ You MUST call gossip_relay for EVERY native agent after it completes. Without it, results are lost — no memory, no gossip, no consensus.`;
+  }
+  return { content: [{ type: 'text' as const, text: msg }] };
+}
+
+async function handleDispatchConsensus(
+  taskDefs: Array<{ agent_id: string; task: string }>,
+) {
+  await boot();
+  await syncWorkersViaKeychain();
+
+  for (const def of taskDefs) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(def.agent_id)) {
+      return { content: [{ type: 'text' as const, text: `Invalid agent ID format: "${def.agent_id}"` }] };
+    }
+  }
+
+  // Split native vs custom tasks (same pattern as parallel)
+  const nativeTasks: Array<{ agent_id: string; task: string }> = [];
+  const relayTasks: Array<{ agent_id: string; task: string }> = [];
+  for (const def of taskDefs) {
+    if (nativeAgentConfigs.has(def.agent_id)) {
+      nativeTasks.push(def);
+    } else {
+      relayTasks.push(def);
+    }
+  }
+
+  const lines: string[] = [];
+  const allTaskIds: string[] = [];
+
+  // Dispatch relay tasks with consensus
+  if (relayTasks.length > 0) {
+    const { taskIds, errors } = await mainAgent.dispatchParallel(
+      relayTasks.map((d: any) => ({ agentId: d.agent_id, task: d.task })),
+      { consensus: true },
+    );
+    for (const tid of taskIds) {
+      const t = mainAgent.getTask(tid);
+      lines.push(`  ${tid} → ${t?.agentId || 'unknown'} (relay)`);
+      allTaskIds.push(tid);
+    }
+    if (errors.length) lines.push(`Relay errors: ${errors.join(', ')}`);
+  }
+
+  // Native tasks — inject consensus instruction into the prompt
+  const consensusInstruction = '\n\n## Required Output Format\nInclude a "## Consensus Summary" section at the end with:\n- Key findings (bulleted)\n- Confidence level (high/medium/low) for each\n- Areas of uncertainty';
+  const nativeInstructions: string[] = [];
+  for (const def of nativeTasks) {
+    const nativeConfig = nativeAgentConfigs.get(def.agent_id)!;
+    const taskId = randomUUID().slice(0, 8);
+    nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now() });
+    try { mainAgent.recordNativeTask(taskId, def.agent_id, def.task); } catch { /* best-effort */ }
+    allTaskIds.push(taskId);
+    persistNativeTaskMap();
+
+    const agentPrompt = (nativeConfig.instructions || '') + consensusInstruction + `\n\n---\n\nTask: ${def.task}`;
+    lines.push(`  ${taskId} → ${def.agent_id} (native — dispatch via Agent tool)`);
+    nativeInstructions.push(
+      `Agent(model: "${nativeConfig.model}", prompt: ${JSON.stringify(agentPrompt)}, run_in_background: true)` +
+      `\n  → then: gossip_relay(task_id: "${taskId}", result: "<output>")`
+    );
+  }
+
+  let msg = `Dispatched ${taskDefs.length} tasks with consensus:\n${lines.join('\n')}`;
+  msg += '\n\nAgents will include ## Consensus Summary in output.';
+  msg += `\nCall gossip_collect with task IDs: [${allTaskIds.map(id => `"${id}"`).join(', ')}] and consensus: true`;
+  if (nativeInstructions.length > 0) {
+    msg += `\n\nNATIVE_DISPATCH: Execute these ${nativeInstructions.length} Agent calls, then relay ALL results:\n\n${nativeInstructions.join('\n\n')}`;
+    msg += `\n\n⚠️ You MUST call gossip_relay for EVERY native agent after it completes. Without it, results are lost — no memory, no consensus cross-review.`;
+  }
+  return { content: [{ type: 'text' as const, text: msg }] };
+}
+
 // ── Low-level: dispatch to specific agent ─────────────────────────────────
 server.tool(
   'gossip_dispatch',
-  'Send a task to a specific agent. Returns task ID for collecting results. For implementation tasks that modify files, use gossip_plan first to get a write-mode-aware dispatch plan, or pass write_mode explicitly. Without write_mode, agents can only read files. Skills are auto-injected — pass file paths in the task, not contents.',
+  'Dispatch tasks to agents. mode:"single" (default) sends to one agent. mode:"parallel" fans out to multiple agents. mode:"consensus" dispatches with cross-review instructions. Returns task IDs for collecting results.',
   {
-    agent_id: z.string().describe('Agent ID (e.g. "gemini-reviewer")'),
-    task: z.string().describe('Task description. Reference file paths — the agent will read them via Tool Server.'),
-    write_mode: z.enum(['sequential', 'scoped', 'worktree']).optional().describe('Write mode: "sequential" (queued), "scoped" (directory-locked), "worktree" (git worktree isolation)'),
-    scope: z.string().optional().describe('Directory scope for "scoped" write mode (e.g. "packages/relay/")'),
-    timeout_ms: z.number().optional().describe('Write task timeout in ms. Default 300000.'),
-    plan_id: z.string().optional().describe('Plan ID from gossip_plan. Enables chain context from prior steps.'),
-    step: z.number().optional().describe('Step number in the plan (1-indexed).'),
-  },
-  async ({ agent_id, task, write_mode, scope, timeout_ms, plan_id, step }) => {
-    await boot();
-    await syncWorkersViaKeychain();
-
-    if (!/^[a-zA-Z0-9_-]+$/.test(agent_id)) {
-      return { content: [{ type: 'text' as const, text: `Invalid agent ID format: "${agent_id}"` }] };
-    }
-
-    const options: Record<string, unknown> = {};
-    if (write_mode) {
-      options.writeMode = write_mode as 'sequential' | 'scoped' | 'worktree';
-      if (scope) options.scope = scope;
-      if (timeout_ms) options.timeoutMs = timeout_ms;
-    }
-    if (plan_id) {
-      if (!step) {
-        return { content: [{ type: 'text' as const, text: 'plan_id requires step (1-indexed step number in the plan).' }] };
-      }
-      options.planId = plan_id;
-      options.step = step;
-    }
-    const dispatchOptions = Object.keys(options).length > 0 ? options : undefined;
-
-    // Native agent bridge: return Agent tool instructions instead of relay dispatch
-    const nativeConfig = nativeAgentConfigs.get(agent_id);
-    if (nativeConfig) {
-      evictStaleNativeTasks();
-      const taskId = randomUUID().slice(0, 8);
-      nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), planId: plan_id, step });
-      persistNativeTaskMap();
-
-      // Fix: register in TaskGraph so native tasks are visible to CLI/sync
-      try { mainAgent.recordNativeTask(taskId, agent_id, task); } catch { /* best-effort */ }
-
-      // Inject chain context from prior plan steps (same as relay agents get)
-      let chainContext = '';
-      if (plan_id && step && step > 1) {
-        chainContext = mainAgent.getChainContext(plan_id, step);
-      }
-
-      const agentPrompt = [
-        nativeConfig.instructions || '',
-        chainContext ? `\n${chainContext}\n` : '',
-        `\n---\n\nTask: ${task}`,
-      ].filter(Boolean).join('').trim();
-
-      // Only use worktree if explicitly requested AND project is a git repo
-      let useWorktree = write_mode === 'worktree';
-      if (useWorktree) {
-        try {
-          const { execSync } = require('child_process');
-          execSync('git rev-parse --git-dir', { cwd: process.cwd(), stdio: 'ignore' });
-        } catch {
-          useWorktree = false; // not a git repo, skip worktree
-        }
-      }
-
-      return { content: [{ type: 'text' as const, text:
-        `NATIVE_DISPATCH: Execute this via Claude Code Agent tool, then relay the result.\n\n` +
-        `Task ID: ${taskId}\n` +
-        `Agent: ${agent_id}\n` +
-        `Model: ${nativeConfig.model}\n\n` +
-        `Step 1 — Run:\n` +
-        `Agent(model: "${nativeConfig.model}", prompt: ${JSON.stringify(agentPrompt)}${useWorktree ? ', isolation: "worktree"' : ''}, run_in_background: true)\n\n` +
-        `Step 2 — REQUIRED after agent completes:\n` +
-        `gossip_relay(task_id: "${taskId}", result: "<agent output>")\n\n` +
-        `⚠️ You MUST call gossip_relay for every native dispatch. Without it, the result is lost — no memory, no gossip, no consensus. Never skip this step.`
-      }] };
-    }
-
-    try {
-      const { taskId } = mainAgent.dispatch(agent_id, task, dispatchOptions as any);
-      const modeLabel = write_mode ? ` [${write_mode}${scope ? `:${scope}` : ''}]` : '';
-      return { content: [{ type: 'text' as const, text: `Dispatched to ${agent_id}${modeLabel}. Task ID: ${taskId}` }] };
-    } catch (err: any) {
-      process.stderr.write(`[gossipcat] dispatch failed: ${err.message}\n`);
-      return { content: [{ type: 'text' as const, text: err.message }] };
-    }
-  }
-);
-
-// ── Low-level: parallel dispatch ──────────────────────────────────────────
-server.tool(
-  'gossip_dispatch_parallel',
-  'Fan out tasks to multiple agents simultaneously. Use consensus: true to enable cross-review when collecting. For tasks involving file modifications, use gossip_plan first to get a pre-built task array with write modes, then pass it here.',
-  {
+    mode: z.enum(['single', 'parallel', 'consensus']).default('single').describe('Dispatch mode: "single" (one agent), "parallel" (fan-out), "consensus" (cross-review)'),
+    agent_id: z.string().optional().describe('Agent ID — required for mode:"single"'),
+    task: z.string().optional().describe('Task description — required for mode:"single"'),
     tasks: z.array(z.object({
       agent_id: z.string(),
       task: z.string(),
       write_mode: z.enum(['sequential', 'scoped', 'worktree']).optional(),
       scope: z.string().optional(),
-    })).describe('Array of { agent_id, task, write_mode?, scope? }'),
-    consensus: z.boolean().default(false).describe('Enable consensus summary format in agent output. Pass consensus: true to gossip_collect later.'),
+    })).optional().describe('Task array — required for mode:"parallel" and mode:"consensus"'),
+    write_mode: z.enum(['sequential', 'scoped', 'worktree']).optional().describe('Write mode for single dispatch'),
+    scope: z.string().optional().describe('Directory scope for "scoped" write mode'),
+    timeout_ms: z.number().optional().describe('Write task timeout in ms. Default 300000.'),
+    plan_id: z.string().optional().describe('Plan ID from gossip_plan. Enables chain context from prior steps.'),
+    step: z.number().optional().describe('Step number in the plan (1-indexed).'),
   },
-  async ({ tasks: taskDefs, consensus }) => {
-    await boot();
-    await syncWorkersViaKeychain();
-
-    // Validate all agent IDs before dispatching
-    for (const def of taskDefs) {
-      if (!/^[a-zA-Z0-9_-]+$/.test(def.agent_id)) {
-        return { content: [{ type: 'text' as const, text: `Invalid agent ID format: "${def.agent_id}"` }] };
+  async ({ mode, agent_id, task, tasks, write_mode, scope, timeout_ms, plan_id, step }) => {
+    if (mode === 'single') {
+      if (!agent_id || !task) {
+        return { content: [{ type: 'text' as const, text: 'Error: mode:"single" requires agent_id and task.' }] };
       }
+      return handleDispatchSingle(agent_id, task, write_mode, scope, timeout_ms, plan_id, step);
     }
-
-    // [C2 fix] Split native vs custom tasks — native agents have no relay worker
-    const nativeTasks: Array<{ agent_id: string; task: string; write_mode?: string }> = [];
-    const relayTasks: Array<{ agent_id: string; task: string; write_mode?: string; scope?: string }> = [];
-    for (const def of taskDefs) {
-      if (nativeAgentConfigs.has(def.agent_id)) {
-        nativeTasks.push(def);
-      } else {
-        relayTasks.push(def);
+    if (mode === 'parallel') {
+      if (!tasks || tasks.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'Error: mode:"parallel" requires a non-empty tasks array.' }] };
       }
+      return handleDispatchParallel(tasks, false);
     }
-
-    const lines: string[] = [];
-
-    // Dispatch relay tasks normally
-    if (relayTasks.length > 0) {
-      const { taskIds, errors } = await mainAgent.dispatchParallel(
-        relayTasks.map((d: any) => ({
-          agentId: d.agent_id,
-          task: d.task,
-          options: d.write_mode ? { writeMode: d.write_mode, scope: d.scope } : undefined,
-        })),
-        consensus ? { consensus: true } : undefined,
-      );
-      for (const tid of taskIds) {
-        const t = mainAgent.getTask(tid);
-        lines.push(`  ${tid} → ${t?.agentId || 'unknown'} (relay)`);
+    if (mode === 'consensus') {
+      if (!tasks || tasks.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'Error: mode:"consensus" requires a non-empty tasks array.' }] };
       }
-      if (errors.length) lines.push(`Relay errors: ${errors.join(', ')}`);
+      return handleDispatchConsensus(tasks);
     }
-
-    // Create native dispatch instructions for Claude Code Agent tool
-    const nativeInstructions: string[] = [];
-    for (const def of nativeTasks) {
-      const nativeConfig = nativeAgentConfigs.get(def.agent_id)!;
-      const taskId = randomUUID().slice(0, 8);
-      nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now() });
-      try { mainAgent.recordNativeTask(taskId, def.agent_id, def.task); } catch { /* best-effort */ }
-      persistNativeTaskMap();
-
-      const agentPrompt = nativeConfig.instructions
-        ? `${nativeConfig.instructions}\n\n---\n\nTask: ${def.task}`
-        : def.task;
-
-      lines.push(`  ${taskId} → ${def.agent_id} (native — dispatch via Agent tool)`);
-      nativeInstructions.push(
-        `Agent(model: "${nativeConfig.model}", prompt: ${JSON.stringify(agentPrompt)}${def.write_mode === 'worktree' ? ', isolation: "worktree"' : ''}, run_in_background: true)` +
-        `\n  → then: gossip_relay(task_id: "${taskId}", result: "<output>")`
-      );
-    }
-
-    let msg = `Dispatched ${taskDefs.length} tasks:\n${lines.join('\n')}`;
-    if (consensus) msg += '\n\n📋 Consensus mode enabled.';
-    if (nativeInstructions.length > 0) {
-      msg += `\n\nNATIVE_DISPATCH: Execute these ${nativeInstructions.length} Agent calls in parallel, then relay ALL results:\n\n${nativeInstructions.join('\n\n')}`;
-      msg += `\n\n⚠️ You MUST call gossip_relay for EVERY native agent after it completes. Without it, results are lost — no memory, no gossip, no consensus.`;
-    }
-    return { content: [{ type: 'text' as const, text: msg }] };
+    return { content: [{ type: 'text' as const, text: `Unknown mode: ${mode}` }] };
   }
 );
 
@@ -985,6 +1062,11 @@ server.tool(
   },
   async ({ task_ids, timeout_ms, consensus }) => {
     await boot();
+
+    // Consensus mode requires explicit task IDs
+    if (consensus && (!task_ids || task_ids.length === 0)) {
+      return { content: [{ type: 'text' as const, text: 'Error: consensus mode requires explicit task_ids. Pass the IDs returned by gossip_dispatch.' }] };
+    }
 
     const requestedIds = task_ids.length > 0 ? task_ids : undefined;
     // Split requested IDs into relay vs native
@@ -1113,6 +1195,14 @@ server.tool(
 
     if (consensusReport?.summary) {
       output += '\n\n' + consensusReport.summary;
+    } else if (consensus) {
+      const completedCount = allResults.filter((r: any) => r.status === 'completed' && r.result).length;
+      if (completedCount >= 2) {
+        // No automated cross-review — Claude Code will synthesize
+        output += '\n\n---\n\nCross-reference the findings above. Identify: CONFIRMED (both agents agree), DISPUTED (they disagree), UNIQUE (only one found it), and any NEW insights from comparing their perspectives.';
+      } else {
+        output += '\n\n⚠️ Need ≥2 successful agents for consensus.';
+      }
     }
 
     try {
@@ -1138,188 +1228,6 @@ server.tool(
       const consensusCount = mainAgent.getSessionConsensusHistory().length;
       if (gossipCount >= 5 || consensusCount >= 1) {
         output += `\n\n💡 Active session (${gossipCount} tasks, ${consensusCount} consensus runs). Call gossip_session_save() before ending to preserve what you've learned.`;
-      }
-    } catch { /* best-effort */ }
-
-    return { content: [{ type: 'text' as const, text: output }] };
-  }
-);
-
-// ── Consensus: dispatch with summary instruction ─────────────────────────
-server.tool(
-  'gossip_dispatch_consensus',
-  'Dispatch tasks to multiple agents with consensus summary instruction injected. Agents will include a ## Consensus Summary section in their output. Returns task IDs — call gossip_collect_consensus to collect results with cross-review.',
-  {
-    tasks: z.array(z.object({
-      agent_id: z.string(),
-      task: z.string(),
-    })).describe('Array of { agent_id, task } — all agents review the same or related work'),
-  },
-  async ({ tasks: taskDefs }) => {
-    await boot();
-    await syncWorkersViaKeychain();
-
-    for (const def of taskDefs) {
-      if (!/^[a-zA-Z0-9_-]+$/.test(def.agent_id)) {
-        return { content: [{ type: 'text' as const, text: `Invalid agent ID format: "${def.agent_id}"` }] };
-      }
-    }
-
-    // Split native vs custom tasks (same pattern as gossip_dispatch_parallel)
-    const nativeTasks: Array<{ agent_id: string; task: string }> = [];
-    const relayTasks: Array<{ agent_id: string; task: string }> = [];
-    for (const def of taskDefs) {
-      if (nativeAgentConfigs.has(def.agent_id)) {
-        nativeTasks.push(def);
-      } else {
-        relayTasks.push(def);
-      }
-    }
-
-    const lines: string[] = [];
-    const allTaskIds: string[] = [];
-
-    // Dispatch relay tasks with consensus
-    if (relayTasks.length > 0) {
-      const { taskIds, errors } = await mainAgent.dispatchParallel(
-        relayTasks.map((d: any) => ({ agentId: d.agent_id, task: d.task })),
-        { consensus: true },
-      );
-      for (const tid of taskIds) {
-        const t = mainAgent.getTask(tid);
-        lines.push(`  ${tid} → ${t?.agentId || 'unknown'} (relay)`);
-        allTaskIds.push(tid);
-      }
-      if (errors.length) lines.push(`Relay errors: ${errors.join(', ')}`);
-    }
-
-    // Native tasks — inject consensus instruction into the prompt
-    const consensusInstruction = '\n\n## Required Output Format\nInclude a "## Consensus Summary" section at the end with:\n- Key findings (bulleted)\n- Confidence level (high/medium/low) for each\n- Areas of uncertainty';
-    const nativeInstructions: string[] = [];
-    for (const def of nativeTasks) {
-      const nativeConfig = nativeAgentConfigs.get(def.agent_id)!;
-      const taskId = randomUUID().slice(0, 8);
-      nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now() });
-      try { mainAgent.recordNativeTask(taskId, def.agent_id, def.task); } catch { /* best-effort */ }
-      allTaskIds.push(taskId);
-      persistNativeTaskMap();
-
-      const agentPrompt = (nativeConfig.instructions || '') + consensusInstruction + `\n\n---\n\nTask: ${def.task}`;
-      lines.push(`  ${taskId} → ${def.agent_id} (native — dispatch via Agent tool)`);
-      nativeInstructions.push(
-        `Agent(model: "${nativeConfig.model}", prompt: ${JSON.stringify(agentPrompt)}, run_in_background: true)` +
-        `\n  → then: gossip_relay(task_id: "${taskId}", result: "<output>")`
-      );
-    }
-
-    let msg = `Dispatched ${taskDefs.length} tasks with consensus:\n${lines.join('\n')}`;
-    msg += '\n\nAgents will include ## Consensus Summary in output.';
-    msg += `\nCall gossip_collect_consensus with task IDs: [${allTaskIds.map(id => `"${id}"`).join(', ')}]`;
-    if (nativeInstructions.length > 0) {
-      msg += `\n\nNATIVE_DISPATCH: Execute these ${nativeInstructions.length} Agent calls, then relay ALL results:\n\n${nativeInstructions.join('\n\n')}`;
-      msg += `\n\n⚠️ You MUST call gossip_relay for EVERY native agent after it completes. Without it, results are lost — no memory, no consensus cross-review.`;
-    }
-    return { content: [{ type: 'text' as const, text: msg }] };
-  }
-);
-
-// ── Consensus: collect with cross-review ─────────────────────────────────
-server.tool(
-  'gossip_collect_consensus',
-  'Collect results and run consensus cross-review. Each agent reviews peer findings, producing agree/disagree/new judgments. Returns agent results + tagged consensus report (CONFIRMED/DISPUTED/UNIQUE/NEW). Writes signals to agent-performance.jsonl.',
-  {
-    task_ids: z.array(z.string()).describe('Task IDs from gossip_dispatch_consensus'),
-    timeout_ms: z.number().default(300000).describe('Max wait time in ms. Default 300000 (5min).'),
-  },
-  async ({ task_ids, timeout_ms }) => {
-    await boot();
-
-    // Split relay vs native task IDs
-    const relayIds = task_ids.filter(id => !nativeResultMap.has(id) && !nativeTaskMap.has(id));
-    const nativeIds = task_ids.filter(id => nativeResultMap.has(id) || nativeTaskMap.has(id));
-
-    // Step 1: Collect relay results WITHOUT consensus
-    let relayResults: any[] = [];
-    try {
-      if (relayIds.length > 0) {
-        const collected = await mainAgent.collect(relayIds, timeout_ms);
-        relayResults = collected.results || [];
-      }
-    } catch (err) {
-      process.stderr.write(`[gossipcat] consensus collect failed: ${(err as Error).message}\n`);
-    }
-
-    // Step 2: Wait for pending native tasks before consensus
-    const pendingNativeIds = nativeIds.filter(id => nativeTaskMap.has(id) && !nativeResultMap.has(id));
-    if (pendingNativeIds.length > 0) {
-      const POLL_INTERVAL = 2000;
-      const nativeTimeout = timeout_ms;
-      const deadline = Date.now() + nativeTimeout;
-      process.stderr.write(`[gossipcat] Waiting for ${pendingNativeIds.length} native agent(s) before consensus...\n`);
-
-      while (Date.now() < deadline) {
-        const stillPending = pendingNativeIds.filter(id => !nativeResultMap.has(id) && nativeTaskMap.has(id));
-        if (stillPending.length === 0) break;
-        await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
-      }
-
-      const arrived = pendingNativeIds.filter(id => nativeResultMap.has(id)).length;
-      const timedOut = pendingNativeIds.length - arrived;
-      if (timedOut > 0) {
-        process.stderr.write(`[gossipcat] ${timedOut} native agent(s) timed out, proceeding with ${arrived} arrived\n`);
-      } else {
-        process.stderr.write(`[gossipcat] All ${arrived} native agent(s) arrived\n`);
-      }
-    }
-
-    // Step 3: Merge relay + native results
-    const allResults = [...relayResults];
-    for (const id of nativeIds) {
-      const nr = nativeResultMap.get(id);
-      if (nr) {
-        allResults.push(nr);
-        nativeResultMap.delete(id);
-      } else if (nativeTaskMap.has(id)) {
-        allResults.push({ id, agentId: nativeTaskMap.get(id)!.agentId, task: nativeTaskMap.get(id)!.task, status: 'running' as const });
-      }
-    }
-
-    if (allResults.length === 0) {
-      return { content: [{ type: 'text' as const, text: 'No matching tasks. Native agents may still be running — call gossip_relay first.' }] };
-    }
-
-    // Step 4: Run full consensus pipeline (engine + judge + signals + cross-agent learning)
-    let consensusReport: any = undefined;
-    const completedResults = allResults.filter((t: any) => t.status === 'completed' && t.result);
-    if (completedResults.length >= 2) {
-      consensusReport = await mainAgent.runConsensus(allResults);
-    }
-
-    // Step 5: Format output
-    const resultTexts = allResults.map((t: any) => {
-      const dur = t.completedAt && t.startedAt ? `${t.completedAt - t.startedAt}ms` : 'running';
-      const nativeTag = nativeAgentConfigs.has(t.agentId) ? ' (native)' : '';
-      if (t.status === 'completed') return `[${t.id}] ${t.agentId}${nativeTag} (${dur}):\n${t.result}`;
-      if (t.status === 'failed') return `[${t.id}] ${t.agentId}${nativeTag} (${dur}): ERROR: ${t.error}`;
-      return `[${t.id}] ${t.agentId}${nativeTag}: still running...`;
-    });
-
-    let output = resultTexts.join('\n\n---\n\n');
-
-    if (consensusReport?.summary) {
-      output += '\n\n' + consensusReport.summary;
-    } else if (completedResults.length >= 2) {
-      // No automated cross-review — Claude Code will synthesize
-      output += '\n\n---\n\nCross-reference the findings above. Identify: CONFIRMED (both agents agree), DISPUTED (they disagree), UNIQUE (only one found it), and any NEW insights from comparing their perspectives.';
-    } else {
-      output += '\n\n⚠️ Need ≥2 successful agents for consensus.';
-    }
-
-    // Auto skill gap suggestions
-    try {
-      const suggestions = mainAgent.getSkillGapSuggestions();
-      if (suggestions.length > 0) {
-        output += `\n\n📊 Skill gap detected:\n${suggestions.map(s => `  - ${s}`).join('\n')}`;
       }
     } catch { /* best-effort */ }
 
@@ -1766,15 +1674,22 @@ server.tool(
 // ── gossip_run — single-call dispatch (reduces friction) ─────────────────
 server.tool(
   'gossip_run',
-  'Run a task on a single agent and return the result. For relay agents (Gemini), this is a single call — dispatches, waits, returns. For native agents (Sonnet/Haiku), returns dispatch instructions with gossip_relay callback.',
+  'Run a task on a single agent and return the result. For relay agents (Gemini), this is a single call — dispatches, waits, returns. For native agents (Sonnet/Haiku), returns dispatch instructions with gossip_relay callback. Use agent_id:"auto" to let the orchestrator decompose and assign agents automatically.',
   {
-    agent_id: z.string().describe('Agent to run the task on'),
+    agent_id: z.string().describe('Agent to run the task on, or "auto" for orchestrator-driven decomposition'),
     task: z.string().describe('Task description. Reference file paths — the agent will read them.'),
     write_mode: z.enum(['sequential', 'scoped', 'worktree']).optional().describe('Write mode for implementation tasks'),
     scope: z.string().optional().describe('Directory scope for scoped write mode'),
   },
   async ({ agent_id, task, write_mode, scope }) => {
     await boot();
+
+    // Auto mode: orchestrator decomposes and assigns agents
+    if (agent_id === 'auto') {
+      const result = await mainAgent.handleMessage(task, { mode: 'decompose' });
+      return { content: [{ type: 'text' as const, text: typeof result === 'string' ? result : JSON.stringify(result) }] };
+    }
+
     const isNative = nativeAgentConfigs.has(agent_id);
     const options: any = {};
     if (write_mode) options.writeMode = write_mode;
@@ -1961,7 +1876,7 @@ server.tool(
       const scores = reader.getScores();
 
       if (scores.size === 0) {
-        return { content: [{ type: 'text' as const, text: 'No performance data yet. Run gossip_dispatch_consensus + gossip_signals to generate signals.' }] };
+        return { content: [{ type: 'text' as const, text: 'No performance data yet. Run gossip_dispatch(mode:"consensus") + gossip_signals to generate signals.' }] };
       }
 
       const lines = Array.from(scores.values())
@@ -2413,15 +2328,11 @@ server.tool(
   async () => {
     const tools = [
       { name: 'gossip_plan', desc: 'Plan a task with write-mode suggestions. Returns dispatch-ready JSON for approval before execution.' },
-      { name: 'gossip_dispatch', desc: 'Send task to a specific agent (skills auto-injected)' },
-      { name: 'gossip_dispatch_parallel', desc: 'Fan out tasks to multiple agents simultaneously' },
-      { name: 'gossip_collect', desc: 'Collect results from dispatched tasks' },
-      { name: 'gossip_dispatch_consensus', desc: 'Dispatch with consensus summary instruction. Returns task IDs.' },
-      { name: 'gossip_collect_consensus', desc: 'Collect + cross-review. Returns tagged CONFIRMED/DISPUTED/UNIQUE/NEW report.' },
-      { name: 'gossip_orchestrate', desc: 'Submit task for multi-agent execution via MainAgent' },
+      { name: 'gossip_dispatch', desc: 'Dispatch tasks — mode:"single" (one agent), "parallel" (fan-out), "consensus" (cross-review)' },
+      { name: 'gossip_collect', desc: 'Collect results from dispatched tasks. Use consensus:true for cross-review.' },
       { name: 'gossip_status', desc: 'Check system status, agents, relay, workers, and dashboard URL/key' },
       { name: 'gossip_update_instructions', desc: 'Update agent instructions (single or batch). Modes: append/replace' },
-      { name: 'gossip_run', desc: 'Single-call dispatch — run a task on one agent and get the result (1 call for relay, 2 for native)' },
+      { name: 'gossip_run', desc: 'Single-call dispatch — run a task on one agent (or "auto" for orchestrator decomposition)' },
       { name: 'gossip_relay', desc: 'Feed native Agent tool result back into relay for consensus + memory + gossip' },
       { name: 'gossip_signals', desc: 'Record or retract consensus signals after cross-referencing' },
       { name: 'gossip_scores', desc: 'View agent performance scores and dispatch weights' },
