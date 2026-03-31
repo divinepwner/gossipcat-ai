@@ -172,6 +172,67 @@ describe('DispatchPipeline', () => {
     });
   });
 
+  describe('cancelRunningTasks()', () => {
+    it('releases scoped task resources on cancel', async () => {
+      const releaseAgent = jest.fn();
+      const hangingWorker = {
+        executeTask: jest.fn().mockReturnValue(new Promise(() => {})),
+        subscribeToBatch: jest.fn().mockResolvedValue(undefined),
+        unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
+      };
+      const ws = new Map([['hang-agent', hangingWorker]]);
+      const p = new DispatchPipeline({
+        projectRoot: '/tmp/gossip-cancel-test-' + Date.now(),
+        workers: ws,
+        registryGet: (id) => ({ id, provider: 'local' as const, model: 'mock', skills: [] }),
+        toolServer: { assignScope: jest.fn(), assignRoot: jest.fn(), releaseAgent },
+      });
+
+      p.dispatch('hang-agent', 'scoped task', { writeMode: 'scoped', scope: 'packages/relay/' });
+      const cancelled = p.cancelRunningTasks();
+      expect(cancelled).toBe(1);
+      expect(releaseAgent).toHaveBeenCalledWith('hang-agent');
+
+      // Scope should be released — dispatching to same scope should not throw
+      const freshWorker = {
+        executeTask: jest.fn().mockResolvedValue({ result: 'ok', inputTokens: 0, outputTokens: 0 }),
+        subscribeToBatch: jest.fn().mockResolvedValue(undefined),
+        unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
+      };
+      ws.set('fresh-agent', freshWorker);
+      expect(() =>
+        p.dispatch('fresh-agent', 'new scoped task', { writeMode: 'scoped', scope: 'packages/relay/' })
+      ).not.toThrow();
+    });
+
+    it('cleans up worktree task resources on cancel', async () => {
+      const cleanupMock = jest.fn().mockResolvedValue(undefined);
+      const releaseAgent = jest.fn();
+      const hangingWorker = {
+        executeTask: jest.fn().mockReturnValue(new Promise(() => {})),
+        subscribeToBatch: jest.fn().mockResolvedValue(undefined),
+        unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
+      };
+      const ws = new Map([['hang-agent', hangingWorker]]);
+      const p = new DispatchPipeline({
+        projectRoot: '/tmp/gossip-cancel-wt-test-' + Date.now(),
+        workers: ws,
+        registryGet: (id) => ({ id, provider: 'local' as const, model: 'mock', skills: [] }),
+        toolServer: { assignScope: jest.fn(), assignRoot: jest.fn(), releaseAgent },
+      });
+
+      const { taskId } = p.dispatch('hang-agent', 'worktree task');
+      const task = p.getTask(taskId)!;
+      (task as any).writeMode = 'worktree';
+      (task as any).worktreeInfo = { path: '/tmp/wt-test', branch: 'gossip-test' };
+      (p as any).worktreeManager = { cleanup: cleanupMock, create: jest.fn(), merge: jest.fn(), pruneOrphans: jest.fn() };
+
+      p.cancelRunningTasks();
+      expect(cleanupMock).toHaveBeenCalledWith(taskId, '/tmp/wt-test');
+      expect(releaseAgent).toHaveBeenCalledWith('hang-agent');
+    });
+  });
+
   describe('task progress callback', () => {
     it('fires progress events during task execution', async () => {
       const events: Array<{ taskId: string; toolCalls: number }> = [];

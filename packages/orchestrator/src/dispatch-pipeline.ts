@@ -387,17 +387,7 @@ export class DispatchPipeline {
   }
 
   getTask(taskId: string): TaskEntry | undefined {
-    const t = this.tasks.get(taskId);
-    if (!t) return undefined;
-    return {
-      id: t.id, agentId: t.agentId, task: t.task,
-      status: t.status, result: t.result, error: t.error,
-      startedAt: t.startedAt, completedAt: t.completedAt,
-      skillWarnings: t.skillWarnings,
-      writeMode: t.writeMode, scope: t.scope, worktreeInfo: t.worktreeInfo,
-      planId: t.planId, planStep: t.planStep,
-      inputTokens: t.inputTokens, outputTokens: t.outputTokens,
-    };
+    return this.tasks.get(taskId);
   }
 
   /** Get a health summary of all active tasks — for diagnostics when user asks "is it working?" */
@@ -428,6 +418,15 @@ export class DispatchPipeline {
         task.status = 'failed';
         task.error = 'Cancelled by user';
         task.completedAt = Date.now();
+        // Release resources held by cancelled tasks
+        if (task.writeMode === 'scoped') {
+          this.scopeTracker.release(task.id);
+          this.toolServer?.releaseAgent(task.agentId);
+        }
+        if (task.writeMode === 'worktree' && task.worktreeInfo) {
+          this.worktreeManager.cleanup(task.id, task.worktreeInfo.path).catch(() => {});
+          this.toolServer?.releaseAgent(task.agentId);
+        }
         cancelled++;
       }
     }
