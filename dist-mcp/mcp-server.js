@@ -29092,6 +29092,37 @@ Relay may be down. Check gossip_status() for connection state.` }] };
   if (consensus && allResults.filter((r) => r.status === "completed").length >= 2) {
     consensusReport = await ctx.mainAgent.runConsensus(allResults);
   }
+  if (consensusReport) {
+    try {
+      const { appendFileSync: af, mkdirSync: md } = require("fs");
+      const { join: j } = require("path");
+      const findingsPath = j(process.cwd(), ".gossip", "implementation-findings.jsonl");
+      md(j(process.cwd(), ".gossip"), { recursive: true });
+      const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+      const findingsToSave = [
+        ...consensusReport.confirmed || [],
+        ...(consensusReport.unique || []).filter((f) => f.confidence >= 3)
+      ];
+      for (const f of findingsToSave) {
+        const entry = {
+          timestamp,
+          taskId: f.id || null,
+          originalAgentId: f.originalAgentId,
+          confirmedBy: f.confirmedBy || [],
+          finding: f.finding,
+          tag: f.tag || "confirmed",
+          confidence: f.confidence || 0,
+          status: "open"
+        };
+        af(findingsPath, JSON.stringify(entry) + "\n");
+      }
+      if (findingsToSave.length > 0) {
+        process.stderr.write(`[gossipcat] Auto-persisted ${findingsToSave.length} consensus findings to implementation-findings.jsonl
+`);
+      }
+    } catch {
+    }
+  }
   const resultTexts = allResults.map((t) => {
     const dur = t.completedAt && t.startedAt ? `${t.completedAt - t.startedAt}ms` : "running";
     const modeTag = t.writeMode ? ` [${t.writeMode}${t.scope ? `:${t.scope}` : ""}]` : "";
@@ -30526,6 +30557,67 @@ server.tool(
       }
     } catch {
     }
+    if (gitLog) {
+      try {
+        const { readFileSync: rf, writeFileSync: wf } = require("fs");
+        const { join: j } = require("path");
+        const findingsPath = j(process.cwd(), ".gossip", "implementation-findings.jsonl");
+        const lines = rf(findingsPath, "utf-8").trim().split("\n").filter(Boolean);
+        let changed = false;
+        const updated = lines.map((line) => {
+          try {
+            const f = JSON.parse(line);
+            if (f.status === "open" && f.file && gitLog.includes(f.file.split("/").pop())) {
+              f.status = "resolved";
+              f.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
+              changed = true;
+            }
+            return JSON.stringify(f);
+          } catch {
+            return line;
+          }
+        });
+        if (changed) {
+          wf(findingsPath, updated.join("\n") + "\n");
+          process.stderr.write(`[gossipcat] Auto-resolved findings matching recent commits
+`);
+        }
+      } catch {
+      }
+    }
+    let findingsTable = "";
+    try {
+      const { existsSync: ex, readFileSync: rf } = require("fs");
+      const { join: j } = require("path");
+      const findingsPath = j(process.cwd(), ".gossip", "implementation-findings.jsonl");
+      if (ex(findingsPath)) {
+        const lines = rf(findingsPath, "utf-8").trim().split("\n").filter(Boolean);
+        const findings = lines.map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        }).filter(Boolean);
+        const open = findings.filter((f) => f.status === "open");
+        if (open.length > 0) {
+          findingsTable = "\n\n## Open Findings\n\n";
+          findingsTable += "| Finding | Agent | Confidence | Status |\n";
+          findingsTable += "|---------|-------|------------|--------|\n";
+          for (const f of open.slice(0, 20)) {
+            const agent = f.originalAgentId || f.reviewerId || "unknown";
+            const conf = f.confidence ?? "?";
+            findingsTable += `| ${f.finding.slice(0, 120)} | ${agent} | ${conf} | open |
+`;
+          }
+          if (open.length > 20) {
+            findingsTable += `| ... and ${open.length - 20} more | | | |
+`;
+          }
+        }
+      }
+    } catch {
+    }
     const { MemoryWriter: MemoryWriter2 } = await Promise.resolve().then(() => (init_src4(), src_exports3));
     const writer = new MemoryWriter2(process.cwd());
     try {
@@ -30539,6 +30631,14 @@ server.tool(
       gitLog,
       notes
     });
+    if (findingsTable) {
+      try {
+        const { appendFileSync: af } = require("fs");
+        const { join: j } = require("path");
+        af(j(process.cwd(), ".gossip", "next-session.md"), findingsTable);
+      } catch {
+      }
+    }
     try {
       const { writeFileSync: wf } = require("fs");
       const { join: j } = require("path");
@@ -30559,6 +30659,9 @@ server.tool(
     let output = `Session saved to .gossip/agents/_project/memory/
 
 ${summary}`;
+    if (findingsTable) {
+      output += findingsTable;
+    }
     output += "\n\n---\nNext session: bootstrap context will load automatically on MCP connect.";
     return { content: [{ type: "text", text: output }] };
   }

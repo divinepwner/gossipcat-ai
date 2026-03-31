@@ -149,6 +149,40 @@ export async function handleCollect(
     consensusReport = await ctx.mainAgent.runConsensus(allResults);
   }
 
+  // Auto-persist confirmed findings to implementation-findings.jsonl
+  if (consensusReport) {
+    try {
+      const { appendFileSync: af, mkdirSync: md } = require('fs');
+      const { join: j } = require('path');
+      const findingsPath = j(process.cwd(), '.gossip', 'implementation-findings.jsonl');
+      md(j(process.cwd(), '.gossip'), { recursive: true });
+      const timestamp = new Date().toISOString();
+
+      const findingsToSave = [
+        ...(consensusReport.confirmed || []),
+        ...(consensusReport.unique || []).filter((f: any) => f.confidence >= 3),
+      ];
+
+      for (const f of findingsToSave) {
+        const entry = {
+          timestamp,
+          taskId: f.id || null,
+          originalAgentId: f.originalAgentId,
+          confirmedBy: f.confirmedBy || [],
+          finding: f.finding,
+          tag: f.tag || 'confirmed',
+          confidence: f.confidence || 0,
+          status: 'open',
+        };
+        af(findingsPath, JSON.stringify(entry) + '\n');
+      }
+
+      if (findingsToSave.length > 0) {
+        process.stderr.write(`[gossipcat] Auto-persisted ${findingsToSave.length} consensus findings to implementation-findings.jsonl\n`);
+      }
+    } catch { /* best-effort */ }
+  }
+
   // Step 5: Format output
   const resultTexts = allResults.map((t: any) => {
     const dur = t.completedAt && t.startedAt ? `${t.completedAt - t.startedAt}ms` : 'running';
