@@ -109,7 +109,9 @@ export function persistNativeTaskMap(): void {
       results: slimResults,
     };
     wf(j(dir, 'native-tasks.json'), JSON.stringify(data));
-  } catch { /* best-effort */ }
+  } catch (err) {
+    process.stderr.write(`[gossipcat] persistNativeTaskMap failed: ${(err as Error).message}\n`);
+  }
 }
 
 /** Restore nativeTaskMap from disk (called on boot) */
@@ -172,6 +174,13 @@ export async function handleNativeRelay(task_id: string, result: string, error?:
       taskInfo = { agentId: timedOutResult.agentId, task: timedOutResult.task, startedAt: timedOutResult.startedAt };
       lateRelay = true;
       process.stderr.write(`[gossipcat] Late relay for ${task_id} — overwriting timed_out result with real data\n`);
+      // Retract the timeout signal — agent completed successfully, don't penalize
+      try {
+        const { PerformanceWriter } = require('@gossip/orchestrator');
+        const writer = new PerformanceWriter(process.cwd());
+        writer.retractSignal(taskInfo.agentId, task_id, 'Late relay arrived — agent completed successfully after timeout');
+        process.stderr.write(`[gossipcat] Retracted timeout signal for ${taskInfo.agentId} [${task_id}]\n`);
+      } catch { /* best-effort */ }
     } else {
       return { content: [{ type: 'text' as const, text: `Unknown task ID: ${task_id}. Was it dispatched via gossip_dispatch or gossip_run?` }] };
     }

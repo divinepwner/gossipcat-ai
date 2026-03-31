@@ -28578,7 +28578,9 @@ function persistNativeTaskMap() {
       results: slimResults
     };
     wf(j(dir, "native-tasks.json"), JSON.stringify(data));
-  } catch {
+  } catch (err) {
+    process.stderr.write(`[gossipcat] persistNativeTaskMap failed: ${err.message}
+`);
   }
 }
 function restoreNativeTaskMap(projectRoot) {
@@ -28638,6 +28640,14 @@ async function handleNativeRelay(task_id, result, error48) {
       lateRelay = true;
       process.stderr.write(`[gossipcat] Late relay for ${task_id} \u2014 overwriting timed_out result with real data
 `);
+      try {
+        const { PerformanceWriter: PerformanceWriter2 } = (init_src4(), __toCommonJS(src_exports3));
+        const writer = new PerformanceWriter2(process.cwd());
+        writer.retractSignal(taskInfo.agentId, task_id, "Late relay arrived \u2014 agent completed successfully after timeout");
+        process.stderr.write(`[gossipcat] Retracted timeout signal for ${taskInfo.agentId} [${task_id}]
+`);
+      } catch {
+      }
     } else {
       return { content: [{ type: "text", text: `Unknown task ID: ${task_id}. Was it dispatched via gossip_dispatch or gossip_run?` }] };
     }
@@ -29036,7 +29046,7 @@ Relay may be down. Check gossip_status() for connection state.` }] };
         // Use disagreement for empty/timeout (reliability failure), hallucination only for actual errors
         signal: r.status === "failed" ? "disagreement" : "disagreement",
         agentId: r.agentId,
-        evidence: r.status === "failed" ? `Task failed: ${r.error || "unknown error"}` : r.status === "timeout" ? "Task timed out \u2014 no response" : "Empty response \u2014 agent produced no output",
+        evidence: r.status === "failed" ? `Task failed: ${r.error || "unknown error"}` : r.status === "timed_out" ? "Task timed out \u2014 no response" : "Empty response \u2014 agent produced no output",
         timestamp
       }));
       writer.appendSignals(autoSignals);

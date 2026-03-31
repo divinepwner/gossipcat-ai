@@ -115,7 +115,7 @@ export async function handleCollect(
         signal: (r.status === 'failed' ? 'disagreement' : 'disagreement') as const,
         agentId: r.agentId,
         evidence: r.status === 'failed' ? `Task failed: ${r.error || 'unknown error'}`
-          : r.status === 'timeout' ? 'Task timed out — no response'
+          : r.status === 'timed_out' ? 'Task timed out — no response'
           : 'Empty response — agent produced no output',
         timestamp,
       }));
