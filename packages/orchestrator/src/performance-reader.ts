@@ -73,10 +73,12 @@ export class PerformanceReader {
   getDispatchWeight(agentId: string): number {
     const score = this.getAgentScore(agentId);
     if (!score || score.totalSignals < 3) return 1.0; // not enough data, neutral
-    // Circuit breaker: 3+ consecutive failures → minimum weight
     if (score.circuitOpen) return 0.3;
-    // Map reliability (0-1) to weight (0.3-2.0): best agent is ~6.7x worst
-    return clamp(0.3 + score.reliability * 1.7, 0.3, 2.0);
+    // Confidence increases with signal volume: 3 → ~0.26, 10 → ~0.63, 30 → ~0.95
+    const confidence = 1 - Math.exp(-score.totalSignals / 10);
+    // Blend reliability toward neutral (0.5) based on confidence
+    const adjusted = 0.5 + (score.reliability - 0.5) * confidence;
+    return clamp(0.3 + adjusted * 1.7, 0.3, 2.0);
   }
 
   /** Check if an agent's circuit breaker is open (3+ consecutive failures) */
@@ -214,7 +216,6 @@ export class PerformanceReader {
             const wd = Math.pow(0.5, Math.max(0, winner.taskCounter - wi - 1) / DECAY_HALF_LIFE);
             winner.weightedCorrect += wd;
             winner.weightedTotal += wd;
-            winner.totalSignals++;
           }
           break;
         }
@@ -297,11 +298,13 @@ export class PerformanceReader {
       let reliability = clamp(accuracy * 0.8 + uniqueness * 0.2, 0, 1);
 
       // Time-based decay: pull reliability toward neutral (0.5) based on inactivity.
-      // Only applied to GOOD agents (reliability >= 0.5) — they lose their edge over time.
-      // Bad agents (reliability < 0.5) keep their penalty — no free rehab through inactivity.
-      if (a.lastSignalMs > 0 && reliability >= 0.5) {
+      // Good agents (reliability >= 0.5) lose their edge with a 7-day half-life.
+      // Bad agents (reliability < 0.5) slowly rehabilitate with a 21-day half-life —
+      // slower recovery to avoid reinstating unreliable agents too quickly.
+      if (a.lastSignalMs > 0) {
         const daysSinceLastSignal = (now - a.lastSignalMs) / 86400000;
-        const timeFreshness = Math.pow(0.5, daysSinceLastSignal / TIME_DECAY_HALF_LIFE_DAYS);
+        const halfLife = reliability >= 0.5 ? TIME_DECAY_HALF_LIFE_DAYS : TIME_DECAY_HALF_LIFE_DAYS * 3;
+        const timeFreshness = Math.pow(0.5, daysSinceLastSignal / halfLife);
         reliability = 0.5 + (reliability - 0.5) * timeFreshness;
       }
 

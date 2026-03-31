@@ -157,12 +157,13 @@ describe('PerformanceReader', () => {
     const loserScore = reader.getAgentScore('loser')!;
     expect(loserScore.accuracy).toBe(0);
     expect(loserScore.totalSignals).toBe(3);
-    // Winner: ratio = 3/3 = 1.0 (counterpart bonus adds to both correct & total)
+    // Winner: ratio = 3/3 = 1.0 (counterpart bonus adds to weighted correct & total)
+    // totalSignals counts only rows where agentId == winner — here that's 0.
     const winnerScore = reader.getAgentScore('winner')!;
     expect(winnerScore.accuracy).toBeCloseTo(1.0, 1);
-    expect(winnerScore.totalSignals).toBe(3);
-    // Winner should get boosted dispatch weight (>= 3 signals, high accuracy)
-    expect(reader.getDispatchWeight('winner')).toBeGreaterThan(1.0);
+    expect(winnerScore.totalSignals).toBe(0);
+    // Not enough signal rows (< 3) → neutral dispatch weight
+    expect(reader.getDispatchWeight('winner')).toBe(1.0);
   });
 
   it('ignores empty counterpartId', () => {
