@@ -1132,7 +1132,7 @@ export class DispatchPipeline {
         const agentScore = profile.reviewStrengths[cat] ?? 0;
         if (agentScore < 0.3) {
           suggestions.push(
-            `${profile.agentId} needs a skill in "${cat}" (score: ${agentScore.toFixed(2)}, team median: ${median.toFixed(2)}) — call gossip_develop_skill(agent_id: "${profile.agentId}", category: "${cat}")`
+            `${profile.agentId} needs a skill in "${cat}" (score: ${agentScore.toFixed(2)}, team median: ${median.toFixed(2)}) — call gossip_skills(action: "develop", agent_id: "${profile.agentId}", category: "${cat}")`
           );
         }
       }

@@ -156,7 +156,7 @@ describe('BootstrapGenerator — Spec Features', () => {
   });
 
   describe('Bootstrap Tools Table', () => {
-    it('should include gossip_run and gossip_run_complete in the tools table', () => {
+    it('should include gossip_run and gossip_relay in the tools table', () => {
       const dir = join(testDir, 'tools-table');
       mkdirSync(join(dir, '.gossip'), { recursive: true });
       writeFileSync(join(dir, '.gossip', 'config.json'), JSON.stringify({
@@ -165,8 +165,8 @@ describe('BootstrapGenerator — Spec Features', () => {
       const gen = new BootstrapGenerator(dir);
       const result = gen.generate();
 
-      expect(result.prompt).toMatch(/\| `gossip_run\(agent_id, task\)`/);
-      expect(result.prompt).toMatch(/\| `gossip_run_complete\(task_id, result\)`/);
+      expect(result.prompt).toMatch(/gossip_run/);
+      expect(result.prompt).toMatch(/gossip_relay/);
     });
   });
 });

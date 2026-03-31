@@ -260,8 +260,8 @@ This project uses gossipcat for multi-agent orchestration via MCP.
 
 **Non-Claude agents** — gossipcat MCP tools:
 \`\`\`
-gossip_dispatch(agent_id: "<id>", task: "Review file X for security issues")
-gossip_dispatch_parallel(tasks: [{agent_id: "<id>", task: "..."}, ...])
+gossip_dispatch(mode: "single", agent_id: "<id>", task: "Review file X for security issues")
+gossip_dispatch(mode: "parallel", tasks: [{agent_id: "<id>", task: "..."}, ...])
 gossip_collect(task_ids: ["..."])
 \`\`\`
 
@@ -322,7 +322,7 @@ These tasks MUST use parallel multi-agent dispatch. Never use a single agent or 
 
 ### Pattern:
 \`\`\`
-gossip_dispatch_parallel(tasks: [
+gossip_dispatch(mode: "parallel", tasks: [
   {agent_id: "<reviewer>", task: "Review packages/relay/ for <concern>"},
   {agent_id: "<tester>", task: "Review packages/tools/ for <concern>"}
 ])
