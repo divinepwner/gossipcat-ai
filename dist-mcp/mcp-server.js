@@ -6261,12 +6261,21 @@ var init_consensus_engine = __esm({
             summary: "Consensus skipped: insufficient agents (need \u22652 successful)."
           };
         }
+        const consensusStart = Date.now();
         process.stderr.write(`[consensus] Starting cross-review for ${successful.length} agents
 `);
+        const crossReviewStart = Date.now();
         const crossReviewEntries = await this.dispatchCrossReview(results);
-        process.stderr.write(`[consensus] Cross-review complete: ${crossReviewEntries.length} entries
+        const crossReviewMs = Date.now() - crossReviewStart;
+        process.stderr.write(`[consensus] Cross-review complete: ${crossReviewEntries.length} entries (${Math.round(crossReviewMs / 1e3)}s)
 `);
         const report = await this.synthesize(results, crossReviewEntries);
+        const perAgent = successful.map((r) => ({
+          agentId: r.agentId,
+          durationMs: r.completedAt && r.startedAt ? r.completedAt - r.startedAt : 0
+        }));
+        const totalMs = Date.now() - consensusStart;
+        const timing = { totalMs, perAgent, crossReviewMs };
         process.stderr.write(`[consensus] ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unverified.length} unverified, ${report.unique.length} unique, ${report.newFindings.length} new
 `);
         if (report.unverified.length > 0) {
@@ -6275,8 +6284,8 @@ var init_consensus_engine = __esm({
           await this.verifyUnverified(report, successful);
           process.stderr.write(`[consensus] After verification: ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unverified.length} unverified
 `);
-          report.summary = this.formatReport(report.confirmed, report.disputed, report.unverified, report.unique, report.newFindings, successful.length, report.rounds);
         }
+        report.summary = this.formatReport(report.confirmed, report.disputed, report.unverified, report.unique, report.newFindings, successful.length, report.rounds, timing);
         return report;
       }
       /**
@@ -6989,11 +6998,17 @@ ${safeSnippet}
       /**
        * Format the consensus report as a human-readable string.
        */
-      formatReport(confirmed, disputed, unverified, unique, newFindings, agentCount, rounds = 2) {
+      formatReport(confirmed, disputed, unverified, unique, newFindings, agentCount, rounds = 2, timing) {
         const bar = "\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550";
         const lines = [];
         lines.push(bar);
-        lines.push(`CONSENSUS REPORT (${agentCount} agents, ${rounds} rounds)`);
+        const timingStr = timing?.totalMs ? `, ${Math.round(timing.totalMs / 1e3)}s` : "";
+        lines.push(`CONSENSUS REPORT (${agentCount} agents, ${rounds} rounds${timingStr})`);
+        if (timing?.perAgent?.length) {
+          const agentTimes = timing.perAgent.map((a) => `${a.agentId}: ${Math.round(a.durationMs / 1e3)}s`).join(" | ");
+          const crossReview = timing.crossReviewMs ? ` | cross-review: ${Math.round(timing.crossReviewMs / 1e3)}s` : "";
+          lines.push(`  ${agentTimes}${crossReview}`);
+        }
         lines.push(bar);
         lines.push("");
         if (confirmed.length > 0) {
@@ -7024,6 +7039,7 @@ ${safeSnippet}
             const origPreset = this.config.registryGet(f.originalAgentId)?.preset || f.originalAgentId;
             const unvNames = f.unverifiedBy?.map((u) => this.config.registryGet(u.agentId)?.preset || u.agentId).join(", ") || "?";
             lines.push(`  \u25C7 [${origPreset}, unverified by ${unvNames}] "${f.finding}"`);
+            lines.push(`    \u2192 To verify: re-dispatch to a second agent, or read the code directly`);
           }
           lines.push("");
         }
@@ -28994,13 +29010,30 @@ Relay may be down. Check gossip_status() for connection state.` }] };
   }
   if (pendingNativeIds.length > 0 && consensus) {
     const POLL_INTERVAL = 2e3;
+    const HEARTBEAT_INTERVAL = 1e4;
     const nativeTimeout = timeout_ms;
     const deadline = Date.now() + nativeTimeout;
+    const waitStart = Date.now();
+    let lastHeartbeat = 0;
     process.stderr.write(`[gossipcat] Waiting for ${pendingNativeIds.length} native agent(s) before consensus...
 `);
     while (Date.now() < deadline) {
       const stillPending2 = pendingNativeIds.filter((id) => !ctx.nativeResultMap.has(id) && ctx.nativeTaskMap.has(id));
       if (stillPending2.length === 0) break;
+      const elapsed = Date.now() - waitStart;
+      if (elapsed - lastHeartbeat >= HEARTBEAT_INTERVAL) {
+        lastHeartbeat = elapsed;
+        const doneCount = pendingNativeIds.length - stillPending2.length;
+        const agentStatus = pendingNativeIds.map((id) => {
+          const info = ctx.nativeTaskMap.get(id);
+          const agentId = info?.agentId || id;
+          if (ctx.nativeResultMap.has(id)) return `${agentId}: done`;
+          const running = info ? Math.round((Date.now() - info.startedAt) / 1e3) : 0;
+          return `${agentId}: running ${running}s`;
+        }).join(", ");
+        process.stderr.write(`[gossipcat] Consensus: ${doneCount}/${pendingNativeIds.length} agents complete (${agentStatus})
+`);
+      }
       await new Promise((resolve13) => setTimeout(resolve13, POLL_INTERVAL));
     }
     const arrived = pendingNativeIds.filter((id) => ctx.nativeResultMap.has(id)).length;
@@ -29066,7 +29099,8 @@ Relay may be down. Check gossip_status() for connection state.` }] };
     let text;
     if (t.status === "completed") text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag} (${dur}):
 ${t.result}`;
-    else if (t.status === "failed") text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag} (${dur}): ERROR: ${t.error}`;
+    else if (t.status === "failed") text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag} (${dur}): ERROR: ${t.error}
+  \u2192 Re-dispatch with gossip_run, or check agent logs in .gossip/agents/${t.agentId}/`;
     else if (t.status === "timed_out") text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag} (timed out): ${t.error}
   \u2192 Re-dispatch with gossip_run to retry.`;
     else text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag}: still running...`;
