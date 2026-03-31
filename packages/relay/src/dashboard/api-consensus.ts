@@ -66,16 +66,19 @@ export async function consensusHandler(projectRoot: string): Promise<ConsensusRe
       else if (s.signal === 'new_finding') counts.new++;
     }
 
-    runs.push({
-      taskId,
-      timestamp: taskSignals[0].timestamp,
-      agents: [...agents].sort(),
-      signals: taskSignals.map(s => ({
-        signal: s.signal, agentId: s.agentId,
-        counterpartId: s.counterpartId, evidence: s.evidence,
-      })),
-      counts,
-    });
+    // Only show multi-agent consensus runs, not individual manual signal recordings
+    if (agents.size >= 2) {
+      runs.push({
+        taskId,
+        timestamp: taskSignals[0].timestamp,
+        agents: [...agents].sort(),
+        signals: taskSignals.map(s => ({
+          signal: s.signal, agentId: s.agentId,
+          counterpartId: s.counterpartId, evidence: s.evidence,
+        })),
+        counts,
+      });
+    }
   }
 
   // Most recent first
