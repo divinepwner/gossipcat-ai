@@ -55,13 +55,32 @@ export async function handleCollect(
 
   if (pendingNativeIds.length > 0 && consensus) {
     const POLL_INTERVAL = 2000;
+    const HEARTBEAT_INTERVAL = 10000;
     const nativeTimeout = timeout_ms;
     const deadline = Date.now() + nativeTimeout;
+    const waitStart = Date.now();
+    let lastHeartbeat = 0;
     process.stderr.write(`[gossipcat] Waiting for ${pendingNativeIds.length} native agent(s) before consensus...\n`);
 
     while (Date.now() < deadline) {
       const stillPending = pendingNativeIds.filter(id => !ctx.nativeResultMap.has(id) && ctx.nativeTaskMap.has(id));
       if (stillPending.length === 0) break;
+
+      // Heartbeat every 10 seconds with per-agent status
+      const elapsed = Date.now() - waitStart;
+      if (elapsed - lastHeartbeat >= HEARTBEAT_INTERVAL) {
+        lastHeartbeat = elapsed;
+        const doneCount = pendingNativeIds.length - stillPending.length;
+        const agentStatus = pendingNativeIds.map(id => {
+          const info = ctx.nativeTaskMap.get(id);
+          const agentId = info?.agentId || id;
+          if (ctx.nativeResultMap.has(id)) return `${agentId}: done`;
+          const running = info ? Math.round((Date.now() - info.startedAt) / 1000) : 0;
+          return `${agentId}: running ${running}s`;
+        }).join(', ');
+        process.stderr.write(`[gossipcat] Consensus: ${doneCount}/${pendingNativeIds.length} agents complete (${agentStatus})\n`);
+      }
+
       await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
     }
 
