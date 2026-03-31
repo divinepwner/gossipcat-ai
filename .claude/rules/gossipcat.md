@@ -160,3 +160,28 @@ which means wrong agents get picked for future tasks. The haiku-researcher tscon
 - "I'll record signals after I finish fixing" — NO, record NOW
 - "This was just a research task, no signal needed" — if the research was wrong, record it
 - "The agent tried its best" — intent doesn't matter, accuracy does
+
+---
+
+## Closing the Loop: Hallucination → Skill Development
+
+When you record `hallucination_caught` for an agent, check if the error maps to a
+repeatable skill gap. If the agent keeps failing in a specific category (e.g.,
+`resource_exhaustion`, `persistence_semantics`, `scope_lifecycle`), build a skill:
+
+```
+gossip_skills(action: "develop", agent_id: "<agent>", category: "<category>")
+```
+
+This generates a skill file that gets injected into future prompts for that agent,
+preventing the same class of error from recurring. A signal penalizes past mistakes;
+a skill prevents future ones.
+
+**When to develop a skill:**
+- Agent hallucinated about how a subsystem works (e.g., "ScopeTracker persists to disk" when it's in-memory only)
+- Agent repeatedly fails in a category where peers succeed (visible in `gossip_scores()` output)
+- Collect output shows "Skill gap detected" for the same agent/category across multiple sessions
+
+**When NOT to develop a skill:**
+- One-off mistake that won't recur (e.g., wrong line number citation)
+- The agent is already being penalized and will be deprioritized by dispatch weights
