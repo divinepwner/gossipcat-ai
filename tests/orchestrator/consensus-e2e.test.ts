@@ -5,12 +5,15 @@
  * Run: npx jest tests/orchestrator/consensus-e2e.test.ts --testTimeout=600000
  */
 import { createProvider } from '../../packages/orchestrator/src/llm-client';
-import { existsSync, readFileSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { execFileSync } from 'child_process';
 
 const PROJECT_ROOT = process.cwd();
-const PERF_FILE = join(PROJECT_ROOT, '.gossip', 'agent-performance.jsonl');
+// Use a temp directory for performance signals to avoid destroying production data
+// PerformanceWriter(root) writes to root/.gossip/agent-performance.jsonl
+const TEST_PERF_ROOT = '/tmp/gossip-e2e-test-' + process.pid;
+const PERF_FILE = join(TEST_PERF_ROOT, '.gossip', 'agent-performance.jsonl');
 
 function loadConfig() {
   const configPath = join(PROJECT_ROOT, '.gossip', 'config.json');
@@ -38,8 +41,14 @@ describe('Consensus Protocol E2E', () => {
     config = loadConfig();
   });
 
+  afterAll(() => {
+    // Clean up temp perf directory
+    try { require('fs').rmSync(TEST_PERF_ROOT, { recursive: true, force: true }); } catch {}
+  });
+
   it('should run consensus cross-review on mock agent results', async () => {
-    // Remove old performance file
+    // Create temp directory for test signals (avoid destroying production data)
+    mkdirSync(join(TEST_PERF_ROOT, '.gossip'), { recursive: true });
     if (existsSync(PERF_FILE)) unlinkSync(PERF_FILE);
 
     // Instead of dispatching to real agents (which need relay), we'll test
@@ -127,7 +136,7 @@ describe('Consensus Protocol E2E', () => {
     }
 
     // Write signals to performance file
-    const perfWriter = new PerformanceWriter(PROJECT_ROOT);
+    const perfWriter = new PerformanceWriter(TEST_PERF_ROOT);
     perfWriter.appendSignals(report.signals);
 
     // Verify performance file was created
