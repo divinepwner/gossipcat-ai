@@ -3,6 +3,8 @@ import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
+const NOW = new Date().toISOString();
+
 function writeSignals(dir: string, signals: object[]): void {
   const data = signals.map(s => JSON.stringify(s)).join('\n') + '\n';
   writeFileSync(join(dir, '.gossip', 'agent-performance.jsonl'), data);
@@ -24,7 +26,7 @@ describe('CompetencyProfiler', () => {
 
   test('returns neutral profile for agent with < 10 tasks', () => {
     writeSignals(testDir, [
-      { type: 'meta', signal: 'task_completed', agentId: 'a', taskId: 't1', value: 5000, timestamp: '2026-01-01T00:00:00Z' },
+      { type: 'meta', signal: 'task_completed', agentId: 'a', taskId: 't1', value: 5000, timestamp: NOW },
     ]);
     const profile = profiler.getProfile('a');
     expect(profile).not.toBeNull();
@@ -34,7 +36,7 @@ describe('CompetencyProfiler', () => {
 
   test('getProfileMultiplier returns 1.0 for agent below threshold', () => {
     writeSignals(testDir, [
-      { type: 'meta', signal: 'task_completed', agentId: 'a', taskId: 't1', value: 5000, timestamp: '2026-01-01T00:00:00Z' },
+      { type: 'meta', signal: 'task_completed', agentId: 'a', taskId: 't1', value: 5000, timestamp: NOW },
     ]);
     expect(profiler.getProfileMultiplier('a', 'review')).toBe(1.0);
     expect(profiler.getProfileMultiplier('a', 'impl')).toBe(1.0);
@@ -43,10 +45,10 @@ describe('CompetencyProfiler', () => {
   test('computes reviewStrengths from category_confirmed signals', () => {
     const signals: object[] = [];
     for (let i = 0; i < 12; i++) {
-      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: '2026-01-01T00:00:00Z' });
+      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: NOW });
     }
     for (let i = 0; i < 5; i++) {
-      signals.push({ type: 'consensus', signal: 'category_confirmed', agentId: 'a', category: 'injection_vectors', evidence: '', timestamp: '2026-01-01T00:00:00Z', taskId: `t${i}` });
+      signals.push({ type: 'consensus', signal: 'category_confirmed', agentId: 'a', category: 'injection_vectors', evidence: '', timestamp: NOW, taskId: `t${i}` });
     }
     writeSignals(testDir, signals);
     const profile = profiler.getProfile('a');
@@ -56,13 +58,13 @@ describe('CompetencyProfiler', () => {
   test('computes implPassRate from impl signals', () => {
     const signals: object[] = [];
     for (let i = 0; i < 12; i++) {
-      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: '2026-01-01T00:00:00Z' });
+      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: NOW });
     }
     for (let i = 0; i < 5; i++) {
-      signals.push({ type: 'impl', signal: 'impl_test_pass', agentId: 'a', taskId: `t${i}`, timestamp: '2026-01-01T00:00:00Z' });
+      signals.push({ type: 'impl', signal: 'impl_test_pass', agentId: 'a', taskId: `t${i}`, timestamp: NOW });
     }
     for (let i = 0; i < 2; i++) {
-      signals.push({ type: 'impl', signal: 'impl_test_fail', agentId: 'a', taskId: `f${i}`, timestamp: '2026-01-01T00:00:00Z' });
+      signals.push({ type: 'impl', signal: 'impl_test_fail', agentId: 'a', taskId: `f${i}`, timestamp: NOW });
     }
     writeSignals(testDir, signals);
     const profile = profiler.getProfile('a');
@@ -72,7 +74,7 @@ describe('CompetencyProfiler', () => {
   test('handles zero impl signals — implPassRate defaults to 0.5', () => {
     const signals: object[] = [];
     for (let i = 0; i < 12; i++) {
-      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: '2026-01-01T00:00:00Z' });
+      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: NOW });
     }
     writeSignals(testDir, signals);
     expect(profiler.getProfile('a')!.implPassRate).toBe(0.5);
@@ -81,10 +83,10 @@ describe('CompetencyProfiler', () => {
   test('applies score decay — recent signals have more impact', () => {
     const signals: object[] = [];
     for (let i = 0; i < 60; i++) {
-      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: '2026-01-01T00:00:00Z' });
+      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: NOW });
     }
-    signals.push({ type: 'consensus', signal: 'category_confirmed', agentId: 'a', category: 'concurrency', evidence: '', timestamp: '2026-01-01T00:00:00Z', taskId: 't0' });
-    signals.push({ type: 'consensus', signal: 'category_confirmed', agentId: 'a', category: 'injection_vectors', evidence: '', timestamp: '2026-01-01T00:00:00Z', taskId: 't59' });
+    signals.push({ type: 'consensus', signal: 'category_confirmed', agentId: 'a', category: 'concurrency', evidence: '', timestamp: NOW, taskId: 't0' });
+    signals.push({ type: 'consensus', signal: 'category_confirmed', agentId: 'a', category: 'injection_vectors', evidence: '', timestamp: NOW, taskId: 't59' });
     writeSignals(testDir, signals);
     const profile = profiler.getProfile('a');
     expect(profile!.reviewStrengths['injection_vectors']).toBeGreaterThan(profile!.reviewStrengths['concurrency'] || 0);
@@ -93,32 +95,32 @@ describe('CompetencyProfiler', () => {
   test('caps score change per round at ±0.3', () => {
     const signals: object[] = [];
     for (let i = 0; i < 12; i++) {
-      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: '2026-01-01T00:00:00Z' });
+      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: NOW });
     }
     for (let i = 0; i < 50; i++) {
-      signals.push({ type: 'consensus', signal: 'agreement', agentId: 'a', counterpartId: 'b', evidence: 'ok', timestamp: '2026-01-01T00:00:00Z', taskId: 't0' });
+      signals.push({ type: 'consensus', signal: 'agreement', agentId: 'a', counterpartId: 'b', evidence: 'ok', timestamp: NOW, taskId: 't0' });
     }
     writeSignals(testDir, signals);
     const profile = profiler.getProfile('a');
-    // accuracy starts at 0.5, max ±0.3 per round
-    expect(profile!.reviewReliability).toBeLessThanOrEqual(0.8 * 0.7 + 0.5 * 0.3 + 0.01);
+    // accuracy starts at 0.5, max ±0.3 per round; blend is 0.8 acc + 0.2 uniq
+    expect(profile!.reviewReliability).toBeLessThanOrEqual(0.8 * 0.8 + 0.5 * 0.2 + 0.01);
   });
 
   test('applies agreement diversity discount', () => {
     // Low diversity: 10 agents exist, but 'a' only agrees with 'b'
     const signals: object[] = [];
     for (let i = 0; i < 12; i++) {
-      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: '2026-01-01T00:00:00Z' });
+      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: NOW });
     }
     // Add other agents with consensus signals so they count as consensus participants
     const otherAgents = ['b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'];
     for (const agent of otherAgents) {
-      signals.push({ type: 'meta', signal: 'task_completed', agentId: agent, taskId: `${agent}-t0`, value: 3000, timestamp: '2026-01-01T00:00:00Z' });
-      signals.push({ type: 'consensus', signal: 'unique_unconfirmed', agentId: agent, taskId: `${agent}-t0`, evidence: 'finding', timestamp: '2026-01-01T00:00:00Z' });
+      signals.push({ type: 'meta', signal: 'task_completed', agentId: agent, taskId: `${agent}-t0`, value: 3000, timestamp: NOW });
+      signals.push({ type: 'consensus', signal: 'unique_unconfirmed', agentId: agent, taskId: `${agent}-t0`, evidence: 'finding', timestamp: NOW });
     }
     // All agreements with same peer 'b' (low diversity: 1/10 = 0.3 after min clamp)
     for (let i = 0; i < 10; i++) {
-      signals.push({ type: 'consensus', signal: 'agreement', agentId: 'a', counterpartId: 'b', evidence: 'ok', timestamp: '2026-01-01T00:00:00Z', taskId: `t${i}` });
+      signals.push({ type: 'consensus', signal: 'agreement', agentId: 'a', counterpartId: 'b', evidence: 'ok', timestamp: NOW, taskId: `t${i}` });
     }
     writeSignals(testDir, signals);
     const lowDiv = profiler.getProfile('a');
@@ -126,14 +128,14 @@ describe('CompetencyProfiler', () => {
     // High diversity: same agents exist, 'a' agrees with all different peers
     const signals2: object[] = [];
     for (let i = 0; i < 12; i++) {
-      signals2.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: '2026-01-01T00:00:00Z' });
+      signals2.push({ type: 'meta', signal: 'task_completed', agentId: 'a', taskId: `t${i}`, value: 3000, timestamp: NOW });
     }
     for (const agent of otherAgents) {
-      signals2.push({ type: 'meta', signal: 'task_completed', agentId: agent, taskId: `${agent}-t0`, value: 3000, timestamp: '2026-01-01T00:00:00Z' });
-      signals2.push({ type: 'consensus', signal: 'unique_unconfirmed', agentId: agent, taskId: `${agent}-t0`, evidence: 'finding', timestamp: '2026-01-01T00:00:00Z' });
+      signals2.push({ type: 'meta', signal: 'task_completed', agentId: agent, taskId: `${agent}-t0`, value: 3000, timestamp: NOW });
+      signals2.push({ type: 'consensus', signal: 'unique_unconfirmed', agentId: agent, taskId: `${agent}-t0`, evidence: 'finding', timestamp: NOW });
     }
     for (let i = 0; i < 10; i++) {
-      signals2.push({ type: 'consensus', signal: 'agreement', agentId: 'a', counterpartId: otherAgents[i], evidence: 'ok', timestamp: '2026-01-01T00:00:00Z', taskId: `t${i}` });
+      signals2.push({ type: 'consensus', signal: 'agreement', agentId: 'a', counterpartId: otherAgents[i], evidence: 'ok', timestamp: NOW, taskId: `t${i}` });
     }
     writeSignals(testDir, signals2);
     profiler = new CompetencyProfiler(testDir);
@@ -143,7 +145,7 @@ describe('CompetencyProfiler', () => {
   });
 
   test('skips malformed JSONL lines without crashing', () => {
-    const data = '{"type":"meta","signal":"task_completed","agentId":"a","taskId":"t1","value":100,"timestamp":"2026-01-01T00:00:00Z"}\nnot valid json\n{"type":"meta","signal":"task_completed","agentId":"a","taskId":"t2","value":200,"timestamp":"2026-01-01T00:00:00Z"}\n';
+    const data = `{"type":"meta","signal":"task_completed","agentId":"a","taskId":"t1","value":100,"timestamp":"${NOW}"}\nnot valid json\n{"type":"meta","signal":"task_completed","agentId":"a","taskId":"t2","value":200,"timestamp":"${NOW}"}\n`;
     writeFileSync(join(testDir, '.gossip', 'agent-performance.jsonl'), data);
     const profile = profiler.getProfile('a');
     expect(profile).not.toBeNull();

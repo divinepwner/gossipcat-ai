@@ -4,6 +4,8 @@ import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
+const NOW = new Date().toISOString();
+
 describe('AgentRegistry — profile-aware dispatch', () => {
   const testDir = join(tmpdir(), 'gossip-profile-dispatch-' + Date.now());
   let registry: AgentRegistry;
@@ -21,17 +23,17 @@ describe('AgentRegistry — profile-aware dispatch', () => {
     const signals: object[] = [];
     // 15 completed tasks for both agents
     for (let i = 0; i < 15; i++) {
-      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'deep-agent', taskId: `d${i}`, value: 5000, timestamp: '2026-01-01T00:00:00Z' });
-      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'fast-agent', taskId: `f${i}`, value: 1000, timestamp: '2026-01-01T00:00:00Z' });
+      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'deep-agent', taskId: `d${i}`, value: 5000, timestamp: NOW });
+      signals.push({ type: 'meta', signal: 'task_completed', agentId: 'fast-agent', taskId: `f${i}`, value: 1000, timestamp: NOW });
     }
     // deep-agent has many agreements from diverse peers (peers need consensus signals to count)
     const peers = ['p1', 'p2', 'p3', 'p4', 'p5'];
     for (const peer of peers) {
-      signals.push({ type: 'meta', signal: 'task_completed', agentId: peer, taskId: `${peer}-t`, value: 1000, timestamp: '2026-01-01T00:00:00Z' });
-      signals.push({ type: 'consensus', signal: 'unique_unconfirmed', agentId: peer, taskId: `${peer}-t`, evidence: 'finding', timestamp: '2026-01-01T00:00:00Z' });
+      signals.push({ type: 'meta', signal: 'task_completed', agentId: peer, taskId: `${peer}-t`, value: 1000, timestamp: NOW });
+      signals.push({ type: 'consensus', signal: 'unique_unconfirmed', agentId: peer, taskId: `${peer}-t`, evidence: 'finding', timestamp: NOW });
     }
     for (let i = 0; i < 10; i++) {
-      signals.push({ type: 'consensus', signal: 'agreement', agentId: 'deep-agent', counterpartId: peers[i % peers.length], evidence: 'ok', timestamp: '2026-01-01T00:00:00Z', taskId: `d${i}` });
+      signals.push({ type: 'consensus', signal: 'agreement', agentId: 'deep-agent', counterpartId: peers[i % peers.length], evidence: 'ok', timestamp: NOW, taskId: `d${i}` });
     }
     writeFileSync(
       join(testDir, '.gossip', 'agent-performance.jsonl'),
@@ -54,9 +56,9 @@ describe('AgentRegistry — profile-aware dispatch', () => {
   test('neutral weight for agents below threshold', () => {
     // Only 3 tasks — below the 10-task threshold
     const signals = [
-      { type: 'meta', signal: 'task_completed', agentId: 'deep-agent', taskId: 't1', value: 5000, timestamp: '2026-01-01T00:00:00Z' },
-      { type: 'meta', signal: 'task_completed', agentId: 'deep-agent', taskId: 't2', value: 5000, timestamp: '2026-01-01T00:00:00Z' },
-      { type: 'meta', signal: 'task_completed', agentId: 'deep-agent', taskId: 't3', value: 5000, timestamp: '2026-01-01T00:00:00Z' },
+      { type: 'meta', signal: 'task_completed', agentId: 'deep-agent', taskId: 't1', value: 5000, timestamp: NOW },
+      { type: 'meta', signal: 'task_completed', agentId: 'deep-agent', taskId: 't2', value: 5000, timestamp: NOW },
+      { type: 'meta', signal: 'task_completed', agentId: 'deep-agent', taskId: 't3', value: 5000, timestamp: NOW },
     ];
     writeFileSync(
       join(testDir, '.gossip', 'agent-performance.jsonl'),

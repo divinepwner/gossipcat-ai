@@ -201,7 +201,7 @@ export class CompetencyProfiler {
     for (const [id, p] of profiles) {
       const acc = accuracy.get(id) ?? 0.5;
       const uniq = uniqueness.get(id) ?? 0.5;
-      p.reviewReliability = clamp(acc * 0.7 + uniq * 0.3, 0, 1);
+      p.reviewReliability = clamp(acc * 0.8 + uniq * 0.2, 0, 1);
 
       const h = hallucinations.get(id);
       if (h && h.caught > 0) {
@@ -249,10 +249,33 @@ export class CompetencyProfiler {
   private readSignals(): PerformanceSignal[] {
     if (!existsSync(this.filePath)) return [];
     try {
-      return readFileSync(this.filePath, 'utf-8').trim().split('\n').filter(Boolean).map(line => {
+      const SIGNAL_EXPIRY_DAYS = 30;
+      const expiryMs = Date.now() - SIGNAL_EXPIRY_DAYS * 86400000;
+
+      const lines = readFileSync(this.filePath, 'utf-8').trim().split('\n').filter(Boolean);
+      const all = lines.map(line => {
         try { return JSON.parse(line) as PerformanceSignal; }
         catch { return null; }
       }).filter((s): s is PerformanceSignal => s !== null && typeof s.agentId === 'string' && s.agentId.length > 0);
+
+      // Collect retraction keys (matches PerformanceReader logic)
+      const retracted = new Set<string>();
+      for (const s of all) {
+        if ((s as any).signal === 'signal_retracted') {
+          const taskKey = s.taskId || s.timestamp;
+          retracted.add(s.agentId + ':' + taskKey + ':*');
+        }
+      }
+
+      // Filter: exclude expired, retracted, and retraction signals themselves
+      return all.filter(s => {
+        if ((s as any).signal === 'signal_retracted') return false;
+        const ts = s.timestamp ? new Date(s.timestamp).getTime() : 0;
+        if (!isFinite(ts) || ts === 0 || ts < expiryMs) return false;
+        const taskKey = s.taskId || s.timestamp;
+        if (retracted.has(s.agentId + ':' + taskKey + ':*')) return false;
+        return true;
+      });
     } catch { return []; }
   }
 }
