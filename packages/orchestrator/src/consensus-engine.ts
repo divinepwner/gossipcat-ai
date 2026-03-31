@@ -340,10 +340,11 @@ Return only valid JSON.` },
           f.confidences.push(entry.confidence);
 
           const isKeywordHallucination = this.detectHallucination(entry.evidence);
-          const isCitationFabricated = !isKeywordHallucination
-            ? await this.verifyCitations(entry.evidence)
-            : false;
-          const isHallucination = isKeywordHallucination || isCitationFabricated;
+          const isCitationFabricated = await this.verifyCitations(entry.evidence);
+          // AND gate: both keyword match AND fabricated citations required.
+          // Prevents false positives from legitimate technical language
+          // (e.g., "appendFileSync creates the file if it doesn't exist" matching "doesn't exist")
+          const isHallucination = isKeywordHallucination && isCitationFabricated;
 
           if (isHallucination) {
             // Don't add fabricated disputes to the finding's disputedBy list —
