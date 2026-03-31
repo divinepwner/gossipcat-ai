@@ -550,4 +550,68 @@ describe('DispatchPipeline', () => {
       expect(releaseAgent).toHaveBeenCalledWith('hang-agent');
     });
   });
+
+  describe('JSONL file rotation', () => {
+    const fs = require('fs');
+    const path = require('path');
+
+    it('rotates file when over max entries', () => {
+      const tmpDir = '/tmp/gossip-rotation-test-' + Date.now();
+      fs.mkdirSync(path.join(tmpDir, '.gossip'), { recursive: true });
+      const filePath = path.join(tmpDir, '.gossip', 'test.jsonl');
+
+      // Write 210 entries
+      const lines = Array.from({ length: 210 }, (_, i) => JSON.stringify({ id: i }));
+      fs.writeFileSync(filePath, lines.join('\n') + '\n');
+
+      const p = new DispatchPipeline({
+        projectRoot: tmpDir,
+        workers: new Map([['test-agent', mockWorker()]]),
+        registryGet: () => mockRegistryGet(),
+      });
+
+      (p as any).rotateJsonlFile(filePath, 200, 100);
+
+      const content = fs.readFileSync(filePath, 'utf-8').trim();
+      const remaining = content.split('\n');
+      expect(remaining.length).toBe(100);
+      expect(JSON.parse(remaining[0]).id).toBe(110);
+      expect(JSON.parse(remaining[99]).id).toBe(209);
+
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('does not rotate when under the cap', () => {
+      const tmpDir = '/tmp/gossip-rotation-norot-' + Date.now();
+      fs.mkdirSync(path.join(tmpDir, '.gossip'), { recursive: true });
+      const filePath = path.join(tmpDir, '.gossip', 'test.jsonl');
+
+      const lines = Array.from({ length: 50 }, (_, i) => JSON.stringify({ id: i }));
+      fs.writeFileSync(filePath, lines.join('\n') + '\n');
+
+      const p = new DispatchPipeline({
+        projectRoot: tmpDir,
+        workers: new Map([['test-agent', mockWorker()]]),
+        registryGet: () => mockRegistryGet(),
+      });
+
+      (p as any).rotateJsonlFile(filePath, 200, 100);
+
+      const content = fs.readFileSync(filePath, 'utf-8').trim();
+      expect(content.split('\n').length).toBe(50);
+
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('handles missing file gracefully', () => {
+      const p = new DispatchPipeline({
+        projectRoot: '/tmp/gossip-rotation-missing-' + Date.now(),
+        workers: new Map([['test-agent', mockWorker()]]),
+        registryGet: () => mockRegistryGet(),
+      });
+
+      // Should not throw
+      expect(() => (p as any).rotateJsonlFile('/nonexistent/path.jsonl', 200, 100)).not.toThrow();
+    });
+  });
 });

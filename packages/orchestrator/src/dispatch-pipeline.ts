@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { readFileSync, appendFileSync, mkdirSync } from 'fs';
+import { readFileSync, appendFileSync, mkdirSync, writeFileSync } from 'fs';
 import { resolve as resolvePath, join, dirname } from 'path';
 import { AgentConfig, DispatchOptions, TaskEntry, TaskExecutionResult, SessionGossipEntry, PlanState } from './types';
 import { ILLMProvider } from './llm-client';
@@ -1037,6 +1037,7 @@ export class DispatchPipeline {
         const historyPath = join(this.projectRoot, '.gossip', 'consensus-history.jsonl');
         mkdirSync(join(this.projectRoot, '.gossip'), { recursive: true });
         appendFileSync(historyPath, JSON.stringify(historyEntry) + '\n');
+        this.rotateJsonlFile(historyPath, 200, 100);
       } catch { /* best-effort */ }
 
       // Auto-write consensus knowledge to _project (fire-and-forget)
@@ -1159,6 +1160,7 @@ export class DispatchPipeline {
           const gossipPath = join(this.projectRoot, '.gossip', 'agents', '_project', 'memory', 'session-gossip.jsonl');
           mkdirSync(dirname(gossipPath), { recursive: true });
           appendFileSync(gossipPath, JSON.stringify({ agentId, taskSummary: summary, timestamp: Date.now() }) + '\n');
+          this.rotateJsonlFile(gossipPath, 100, 50);
         } catch { /* best-effort disk persistence */ }
       }
     } catch (err) {
@@ -1173,6 +1175,17 @@ export class DispatchPipeline {
     ];
     const response = await this.llm!.generate(messages, { temperature: 0 });
     return (response.text || '').slice(0, 400);
+  }
+
+  /** Rotate a JSONL file: if over maxEntries lines, keep only the last keepEntries. */
+  private rotateJsonlFile(filePath: string, maxEntries: number, keepEntries: number): void {
+    try {
+      const content = readFileSync(filePath, 'utf-8');
+      const lines = content.trim().split('\n').filter(l => l.length > 0);
+      if (lines.length > maxEntries) {
+        writeFileSync(filePath, lines.slice(-keepEntries).join('\n') + '\n');
+      }
+    } catch { /* file may not exist yet */ }
   }
 }
 
