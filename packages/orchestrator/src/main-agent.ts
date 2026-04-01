@@ -355,6 +355,31 @@ export class MainAgent {
     return this.handleMessageCognitive(userMessage);
   }
 
+  /** Classify whether a task needs single-agent or multi-agent handling. */
+  async classifyTaskComplexity(task: string): Promise<'single' | 'multi'> {
+    const agentSummary = this.registry.getAll()
+      .map(a => `${a.id}: ${a.preset ?? 'agent'} (${a.skills.join(', ')})`)
+      .join('\n');
+
+    const response = await this.llm.generate([
+      {
+        role: 'system',
+        content: `You classify tasks as "single" or "multi". Respond with ONLY one word.
+
+"single" = one agent can handle the entire task (clear scope, one concern, no conflicting file ownership)
+"multi" = needs decomposition (multiple independent concerns, parallel workstreams, or unclear scope)
+
+Available agents:
+${agentSummary}`,
+      },
+      { role: 'user', content: task },
+    ]);
+
+    const answer = response.text.trim().toLowerCase();
+    if (answer === 'multi') return 'multi';
+    return 'single';
+  }
+
   /** Original decompose → assign → dispatch → synthesize flow. */
   private async handleMessageDecompose(userMessage: string | ContentBlock[]): Promise<ChatResponse> {
     // Extract text for task decomposition (dispatcher needs text only)
