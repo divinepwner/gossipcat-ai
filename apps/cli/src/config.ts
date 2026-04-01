@@ -182,18 +182,10 @@ export function claudeSubagentsToConfigs(subagents: ClaudeSubagent[]): AgentConf
     id: sa.id,
     provider: sa.provider as AgentConfig['provider'],
     model: sa.model,
-    preset: inferPreset(sa.description, sa.name),
+    role: sa.description || sa.name,
     skills: inferSkills(sa.description, sa.name),
     native: true,
   }));
-}
-
-function inferPreset(description: string, name: string): string {
-  const text = `${name} ${description}`.toLowerCase();
-  if (/review|audit|critic/.test(text)) return 'reviewer';
-  if (/research|investigat|analyz/.test(text)) return 'researcher';
-  if (/test|qa|quality/.test(text)) return 'tester';
-  return 'implementer';
 }
 
 function inferSkills(description: string, name: string): string[] {

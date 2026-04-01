@@ -266,7 +266,7 @@ async function doBoot() {
         instructions = rf(instrPath, 'utf-8');
       }
       const modelTier = ac.model.includes('opus') ? 'opus' : ac.model.includes('haiku') ? 'haiku' : 'sonnet';
-      ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions, description: ac.preset || '' });
+      ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions, description: ac.role || ac.preset || '' });
       process.stderr.write(`[gossipcat] ${ac.id}: native agent (${modelTier}, dispatched via Agent tool)\n`);
       continue;
     }
@@ -530,7 +530,7 @@ async function doSyncWorkers() {
           instructions = rf(instrPath, 'utf-8');
         }
         const modelTier = ac.model.includes('opus') ? 'opus' : ac.model.includes('haiku') ? 'haiku' : 'sonnet';
-        ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions, description: ac.preset || '' });
+        ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions, description: ac.role || ac.preset || '' });
       }
     }
 
@@ -870,8 +870,8 @@ server.tool(
       custom_model: z.string().optional()
         .describe('For custom agents: model ID (e.g. gemini-2.5-pro, gpt-4o, claude-sonnet-4-6)'),
       // Shared fields
-      preset: z.enum(['implementer', 'reviewer', 'researcher', 'tester']).optional()
-        .describe('Agent role preset'),
+      role: z.string().optional()
+        .describe('Agent role — freeform, e.g. "ui-architect", "security-auditor", "reviewer"'),
       skills: z.array(z.string()).optional()
         .describe('Skill tags (e.g. ["typescript", "code_review"])'),
     })).describe('Array of agents to create'),
@@ -973,8 +973,8 @@ server.tool(
           continue;
         }
 
-        const desc = agent.description || `${agent.preset || 'general'} agent`;
-        const body = agent.instructions || `You are a ${agent.preset || 'skilled developer'} agent. Complete assigned tasks using available tools. Be concise and focused.`;
+        const desc = agent.description || (agent as any).role || `general agent`;
+        const body = agent.instructions || `You are a ${(agent as any).role || 'skilled developer'} agent. Complete assigned tasks using available tools. Be concise and focused.`;
         const tools = ['Bash', 'Glob', 'Grep', 'Read', 'Edit', 'Write'];
         const md = [
           '---',
@@ -997,7 +997,7 @@ server.tool(
         configAgents[agent.id] = {
           provider: mapped.provider,
           model: mapped.model,
-          preset: agent.preset || 'implementer',
+          role: (agent as any).role || (agent as any).preset,
           skills: agent.skills || ['general'],
           native: true,
         };
@@ -1021,7 +1021,7 @@ server.tool(
         configAgents[agent.id] = {
           provider: agent.provider,
           model: agent.custom_model,
-          preset: agent.preset || 'implementer',
+          role: (agent as any).role || (agent as any).preset,
           skills: agent.skills || ['general'],
         };
         customCreated.push(agent.id);
@@ -1177,22 +1177,17 @@ server.tool(
       persistNativeTaskMap();
       try { ctx.mainAgent.recordNativeTask(taskId, agent_id, task); } catch { /* best-effort */ }
       const config = ctx.nativeAgentConfigs.get(agent_id)!;
-      const agentConfig = ctx.mainAgent.getAgentList?.()?.find((a: any) => a.id === agent_id);
-      const preset = agentConfig?.preset || config.description || '';
-      const presetPrompts: Record<string, string> = {
-        reviewer: 'You are a senior code reviewer. Focus on logic errors, security vulnerabilities, TypeScript type safety, and performance. Cite file:line for every finding.',
-        researcher: 'You are a research agent. Explore codebases, trace execution paths, answer architecture questions. Be concise — bullet points over paragraphs. Cite file paths.',
-        implementer: 'You are an implementation agent. Write clean, tested code. Follow existing patterns. Commit your work.',
-        tester: 'You are a testing agent. Write thorough tests, find edge cases, verify behavior. Run tests and report results.',
-      };
-      const presetPrompt = presetPrompts[preset] || `You are a ${preset} agent.`;
+
+      // Use agent's .claude/agents/<id>.md instructions as the system prompt
+      const basePrompt = config.instructions
+        || `You are a skilled ${config.description || 'agent'}. Complete the task thoroughly.`;
 
       // Inject scope restriction for scoped write mode
       const scopePrefix = (write_mode === 'scoped' && scope)
         ? `SCOPE RESTRICTION: Only modify files within ${scope}. Do not edit files outside this directory.\n\n`
         : '';
 
-      const agentPrompt = `${scopePrefix}${presetPrompt}\n\n---\n\nTask: ${task}`;
+      const agentPrompt = `${scopePrefix}${basePrompt}\n\n---\n\nTask: ${task}`;
       const modelMap: Record<string, string> = { 'claude-sonnet-4-6': 'sonnet', 'claude-opus-4-6': 'opus', 'claude-haiku-4-5': 'haiku' };
       const modelShort = modelMap[config.model] || 'sonnet';
 

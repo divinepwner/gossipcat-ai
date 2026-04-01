@@ -7,6 +7,9 @@ export interface AgentConfig {
   id: string;
   provider: 'anthropic' | 'openai' | 'google' | 'local';
   model: string;
+  /** Freeform role description — replaces preset. e.g. "ui-architect", "security-auditor" */
+  role?: string;
+  /** @deprecated Use role instead */
   preset?: string;
   skills: string[];
   /** If true, agent is a native Claude Code subagent (.claude/agents/*.md).
