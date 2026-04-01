@@ -34,7 +34,7 @@ export function colorFromAgent(agentId: string): AvatarColors {
   const h = hashString(agentId), hue = h % 360, sat = 65 + (h >> 8) % 20;
   return {
     primary: hslToHex(hue, sat, 65 + (h >> 16) % 10),
-    secondary: hslToHex((hue + 30) % 360, Math.min(95, sat + 15), 75 + (h >> 16) % 12),
+    secondary: hslToHex(hue, Math.min(95, sat + 10), 80 + (h >> 16) % 8),
   };
 }
 
