@@ -1,5 +1,6 @@
 import type { AgentData } from '@/lib/types';
-import { agentInitials, agentColor, timeAgo } from '@/lib/utils';
+import { agentColor, timeAgo } from '@/lib/utils';
+import { NeuralAvatar } from './NeuralAvatar';
 
 interface AgentRowProps {
   agent: AgentData;
@@ -19,12 +20,7 @@ export function AgentRow({ agent, onClick }: AgentRowProps) {
       onClick={onClick}
       className="group flex w-full items-center gap-4 rounded-md border border-border bg-card p-3 text-left transition hover:border-primary/30 hover:bg-accent"
     >
-      <div
-        className="flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-full border-2"
-        style={{ borderColor: color, color }}
-      >
-        <span className="font-mono text-sm font-bold">{agentInitials(agent.id)}</span>
-      </div>
+      <NeuralAvatar agentId={agent.id} size={52} online={agent.online} evolution={Math.min(1, (agent.scores.signals || 0) / 50)} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm font-semibold text-foreground">{agent.id}</span>
