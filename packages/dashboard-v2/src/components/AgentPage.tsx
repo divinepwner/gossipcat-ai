@@ -128,6 +128,7 @@ export function AgentPage({ agentId, agents, tasks, consensus }: AgentPageProps)
                 <tr className="border-b border-border bg-card">
                   <th className="py-2 pl-4 pr-2 text-xs font-medium text-muted-foreground" style={{ width: 32 }}></th>
                   <th className="py-2 pr-3 font-mono text-xs font-medium text-muted-foreground">ID</th>
+                  <th className="py-2 pr-3 font-mono text-xs font-medium text-muted-foreground">Agent</th>
                   <th className="py-2 pr-3 text-xs font-medium text-muted-foreground">Description</th>
                   <th className="py-2 pr-3 font-mono text-xs font-medium text-muted-foreground">Duration</th>
                   <th className="py-2 pr-4 text-right font-mono text-xs font-medium text-muted-foreground">When</th>
