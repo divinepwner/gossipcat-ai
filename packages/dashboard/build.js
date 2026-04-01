@@ -11,6 +11,7 @@ async function build() {
   const jsParts = [
     join(srcDir, 'app.js'),
     join(srcDir, 'lib', 'markdown.js'),
+    join(srcDir, 'lib', 'data-rows.js'),
     join(srcDir, 'hub', 'overview.js'),
     join(srcDir, 'hub', 'team.js'),
     join(srcDir, 'hub', 'activity.js'),
