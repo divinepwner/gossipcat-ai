@@ -104,8 +104,7 @@ export async function handleCollect(
     const nr = ctx.nativeResultMap.get(id);
     if (nr) {
       allResults.push(nr);
-      ctx.nativeResultMap.delete(id); // consumed
-      ctx.nativeTaskMap.delete(id); // clean up — result has been delivered
+      // Defer deletion until after consensus — allows retry if consensus throws
     } else if (ctx.nativeTaskMap.has(id)) {
       allResults.push({ id, agentId: ctx.nativeTaskMap.get(id)!.agentId, task: ctx.nativeTaskMap.get(id)!.task, status: 'running' as const });
     }
@@ -148,6 +147,14 @@ export async function handleCollect(
   // MIN_AGENTS_FOR_CONSENSUS = 2 (see @gossip/orchestrator/types)
   if (consensus && allResults.filter((r: any) => r.status === 'completed').length >= 2) {
     consensusReport = await ctx.mainAgent.runConsensus(allResults);
+  }
+
+  // Clean up native results after consensus is complete (deferred from Step 3)
+  for (const id of collectNativeIds) {
+    if (ctx.nativeResultMap.has(id)) {
+      ctx.nativeResultMap.delete(id);
+      ctx.nativeTaskMap.delete(id);
+    }
   }
 
   // Auto-persist confirmed findings to implementation-findings.jsonl

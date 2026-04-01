@@ -1193,8 +1193,8 @@ server.tool(
         : '';
 
       const agentPrompt = `${scopePrefix}${basePrompt}\n\n---\n\nTask: ${task}`;
-      const modelMap: Record<string, string> = { 'claude-sonnet-4-6': 'sonnet', 'claude-opus-4-6': 'opus', 'claude-haiku-4-5': 'haiku' };
-      const modelShort = modelMap[config.model] || 'sonnet';
+      // config.model is already the short tier ('sonnet', 'opus', 'haiku') from boot
+      const modelShort = config.model || 'sonnet';
 
       return {
         content: [{ type: 'text' as const, text:
@@ -1208,6 +1208,7 @@ server.tool(
     }
 
     // Relay worker — dispatch and collect in one call
+    planExecutionDepth++;
     try {
       const { taskId } = ctx.mainAgent.dispatch(agent_id, task, options);
       const collectResult = await ctx.mainAgent.collect([taskId], 300000);
@@ -1229,6 +1230,8 @@ server.tool(
       return {
         content: [{ type: 'text' as const, text: `gossip_run failed: ${(err as Error).message}` }],
       };
+    } finally {
+      planExecutionDepth--;
     }
   }
 );

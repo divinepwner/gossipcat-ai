@@ -29237,8 +29237,6 @@ Relay may be down. Check gossip_status() for connection state.` }] };
     const nr = ctx.nativeResultMap.get(id);
     if (nr) {
       allResults.push(nr);
-      ctx.nativeResultMap.delete(id);
-      ctx.nativeTaskMap.delete(id);
     } else if (ctx.nativeTaskMap.has(id)) {
       allResults.push({ id, agentId: ctx.nativeTaskMap.get(id).agentId, task: ctx.nativeTaskMap.get(id).task, status: "running" });
     }
@@ -29272,6 +29270,12 @@ Relay may be down. Check gossip_status() for connection state.` }] };
   let consensusReport = void 0;
   if (consensus && allResults.filter((r) => r.status === "completed").length >= 2) {
     consensusReport = await ctx.mainAgent.runConsensus(allResults);
+  }
+  for (const id of collectNativeIds) {
+    if (ctx.nativeResultMap.has(id)) {
+      ctx.nativeResultMap.delete(id);
+      ctx.nativeTaskMap.delete(id);
+    }
   }
   let provisionalSignalCount = 0;
   if (consensusReport) {
@@ -30449,8 +30453,7 @@ Then review the plan and dispatch with gossip_dispatch(mode: "parallel", tasks: 
 ---
 
 Task: ${task}`;
-      const modelMap = { "claude-sonnet-4-6": "sonnet", "claude-opus-4-6": "opus", "claude-haiku-4-5": "haiku" };
-      const modelShort = modelMap[config2.model] || "sonnet";
+      const modelShort = config2.model || "sonnet";
       return {
         content: [{
           type: "text",
@@ -30465,6 +30468,7 @@ Do BOTH steps in your next response. Do not wait for user input between them.`
         }]
       };
     }
+    planExecutionDepth++;
     try {
       const { taskId } = ctx.mainAgent.dispatch(agent_id, task, options);
       const collectResult = await ctx.mainAgent.collect([taskId], 3e5);
@@ -30482,6 +30486,8 @@ ${output}` }]
       return {
         content: [{ type: "text", text: `gossip_run failed: ${err.message}` }]
       };
+    } finally {
+      planExecutionDepth--;
     }
   }
 );
