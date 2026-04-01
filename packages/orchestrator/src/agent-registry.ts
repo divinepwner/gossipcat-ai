@@ -13,6 +13,7 @@ import type { SkillCatalog } from './skill-catalog';
 export interface FindBestMatchOptions {
   taskText?: string;
   catalog?: SkillCatalog;
+  taskType?: 'review' | 'impl';
 }
 
 export class AgentRegistry {
@@ -49,6 +50,13 @@ export class AgentRegistry {
     this.suggesterCache = cache;
   }
 
+  getDispatchWeight(agentId: string): number {
+    if (this.perfReader?.isCircuitOpen(agentId)) return 0.3;
+    if (this.competencyProfiler) return this.competencyProfiler.getProfileMultiplier(agentId, 'review');
+    if (this.perfReader) return this.perfReader.getDispatchWeight(agentId);
+    return 1.0;
+  }
+
   findBestMatch(requiredSkills: string[], options?: FindBestMatchOptions): AgentConfig | null {
     return this.findBestMatchExcluding(requiredSkills, new Set(), options);
   }
@@ -83,8 +91,9 @@ export class AgentRegistry {
       // 1. Static overlap (existing behavior, normalized)
       const staticOverlap = normalizedRequired.filter(s => normalizedAgentSkills.includes(s)).length;
 
-      // 2. Project match boost — 0.5 per matched project skill
-      const projectMatchBoost = projectMatches.length * 0.5;
+      // 2. Project match boost — 0.5 per project skill that THIS agent has
+      const agentProjectOverlap = projectMatches.filter(s => normalizedAgentSkills.includes(normalizeSkillName(s))).length;
+      const projectMatchBoost = agentProjectOverlap * 0.5;
 
       // 3. Suggester boost — 0.3 if agent suggested any matched project skill
       let suggesterBoost = 0;
@@ -100,7 +109,7 @@ export class AgentRegistry {
       if (this.perfReader?.isCircuitOpen(agent.id)) {
         perfWeight = 0.3; // circuit breaker overrides all scoring
       } else if (this.competencyProfiler) {
-        perfWeight = this.competencyProfiler.getProfileMultiplier(agent.id, 'review');
+        perfWeight = this.competencyProfiler.getProfileMultiplier(agent.id, options?.taskType ?? 'review');
       } else if (this.perfReader) {
         perfWeight = this.perfReader.getDispatchWeight(agent.id);
       }

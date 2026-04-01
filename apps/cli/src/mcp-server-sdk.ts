@@ -1127,30 +1127,40 @@ server.tool(
 
     // Auto mode: fast classify → route to single agent or full plan
     if (agent_id === 'auto') {
-      await syncWorkersViaKeychain();
-      const classification = await ctx.mainAgent.classifyTaskComplexity(task);
+      try {
+        await syncWorkersViaKeychain();
+        const classification = await ctx.mainAgent.classifyTaskComplexity(task);
 
-      if (classification.complexity === 'multi') {
-        // Multi-agent: return instructions to call gossip_plan for decomposition
-        return { content: [{ type: 'text' as const, text:
-          `Auto-dispatch: classified as multi-agent task.\n\n` +
-          `This task needs decomposition. Call:\n` +
-          `  gossip_plan(task: <full task description>)\n\n` +
-          `Then review the plan and dispatch with gossip_dispatch(mode: "parallel", tasks: <plan tasks>).`
-        }] };
+        if (classification.complexity === 'multi') {
+          // Multi-agent: return instructions to call gossip_plan for decomposition
+          return { content: [{ type: 'text' as const, text:
+            `Auto-dispatch: classified as multi-agent task.\n\n` +
+            `This task needs decomposition. Call:\n` +
+            `  gossip_plan(task: <full task description>)\n\n` +
+            `Then review the plan and dispatch with gossip_dispatch(mode: "parallel", tasks: <plan tasks>).`
+          }] };
+        }
+
+        // Single-agent: LLM picked the best agent, fall back to first available
+        const selectedId = classification.agentId
+          || ctx.mainAgent.getAgentList?.()[0]?.id;
+
+        if (!selectedId) {
+          return { content: [{ type: 'text' as const, text: 'No agents available. Run gossip_setup first.' }] };
+        }
+
+        // Validate agent ID format before dispatch
+        if (!/^[a-zA-Z0-9_-]+$/.test(selectedId)) {
+          return { content: [{ type: 'text' as const, text: `Auto-dispatch: invalid agent ID "${selectedId}". Run gossip_status() to see available agents.` }] };
+        }
+
+        // Log whether this was LLM-selected or fallback
+        const source = classification.agentId ? 'LLM-selected' : 'fallback';
+        process.stderr.write(`[gossipcat] Auto-dispatch: single-agent → ${selectedId} (${source})\n`);
+        agent_id = selectedId;
+      } catch (err) {
+        return { content: [{ type: 'text' as const, text: `Auto-dispatch failed: ${(err as Error).message}. Try gossip_run with a specific agent_id instead.` }] };
       }
-
-      // Single-agent: LLM picked the best agent, fall back to first available
-      const selectedId = classification.agentId
-        || ctx.mainAgent.getAgentList?.()[0]?.id;
-
-      if (!selectedId) {
-        return { content: [{ type: 'text' as const, text: 'No agents available. Run gossip_setup first.' }] };
-      }
-
-      // Fall through to the normal dispatch below with the selected agent
-      process.stderr.write(`[gossipcat] Auto-dispatch: single-agent → ${selectedId}\n`);
-      agent_id = selectedId;
     }
 
     const isNative = ctx.nativeAgentConfigs.has(agent_id);

@@ -105,11 +105,14 @@ status: active
   });
 
   it('gives projectMatchBoost when task text matches project skill keywords', () => {
-    const match = registry.findBestMatchExcluding([], new Set(), {
+    // requiredSkills ensures staticOverlap > 0 so match is non-null
+    // projectMatchBoost only applies to agents whose skills overlap with matched project skills
+    const match = registry.findBestMatchExcluding(['security-audit'], new Set(), {
       taskText: 'check rate-limit and DoS protection',
       catalog,
     });
     expect(match).not.toBeNull();
+    expect(match!.id).toBe('reviewer'); // reviewer has 'security-audit' skill
   });
 
   it('gives suggesterBoost to agents who suggested the skill', () => {

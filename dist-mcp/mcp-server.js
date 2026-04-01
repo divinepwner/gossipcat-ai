@@ -420,6 +420,12 @@ var init_agent_registry = __esm({
       setSuggesterCache(cache) {
         this.suggesterCache = cache;
       }
+      getDispatchWeight(agentId) {
+        if (this.perfReader?.isCircuitOpen(agentId)) return 0.3;
+        if (this.competencyProfiler) return this.competencyProfiler.getProfileMultiplier(agentId, "review");
+        if (this.perfReader) return this.perfReader.getDispatchWeight(agentId);
+        return 1;
+      }
       findBestMatch(requiredSkills, options) {
         return this.findBestMatchExcluding(requiredSkills, /* @__PURE__ */ new Set(), options);
       }
@@ -439,7 +445,8 @@ var init_agent_registry = __esm({
           if (exclude.has(agent.id)) continue;
           const normalizedAgentSkills = agent.skills.map(normalizeSkillName);
           const staticOverlap = normalizedRequired.filter((s) => normalizedAgentSkills.includes(s)).length;
-          const projectMatchBoost = projectMatches.length * 0.5;
+          const agentProjectOverlap = projectMatches.filter((s) => normalizedAgentSkills.includes(normalizeSkillName(s))).length;
+          const projectMatchBoost = agentProjectOverlap * 0.5;
           let suggesterBoost = 0;
           for (const skill of projectMatches) {
             if (this.suggesterCache.get(skill)?.has(agent.id)) {
@@ -451,7 +458,7 @@ var init_agent_registry = __esm({
           if (this.perfReader?.isCircuitOpen(agent.id)) {
             perfWeight = 0.3;
           } else if (this.competencyProfiler) {
-            perfWeight = this.competencyProfiler.getProfileMultiplier(agent.id, "review");
+            perfWeight = this.competencyProfiler.getProfileMultiplier(agent.id, options?.taskType ?? "review");
           } else if (this.perfReader) {
             perfWeight = this.perfReader.getDispatchWeight(agent.id);
           }
@@ -10769,7 +10776,11 @@ message: Your question?
        */
       async classifyTaskComplexity(task) {
         const agents = this.registry.getAll();
-        const agentSummary = agents.map((a) => `${a.id}: ${a.role ?? a.preset ?? "agent"} (${a.skills.join(", ")})`).join("\n");
+        const agentLines = agents.map((a) => {
+          const weight = this.registry.getDispatchWeight?.(a.id) ?? 1;
+          const status = weight <= 0.3 ? " [LOW RELIABILITY]" : "";
+          return `${a.id}: ${a.role ?? a.preset ?? "agent"} (${a.skills.join(", ")}) weight=${weight.toFixed(2)}${status}`;
+        });
         const response = await this.llm.generate([
           {
             role: "system",
@@ -10778,21 +10789,24 @@ single:<agent_id>
 OR
 multi
 
-"single" = one agent can handle it. Pick the best agent by skill match.
+"single" = one agent can handle it. Pick the best agent by skill match AND dispatch weight.
+  - Higher weight = more reliable. Prefer agents with weight > 1.0.
+  - Agents marked [LOW RELIABILITY] should be avoided for solo tasks.
 "multi" = needs decomposition across multiple agents.
 
 Available agents:
-${agentSummary}`
+${agentLines.join("\n")}`
           },
           { role: "user", content: task }
         ]);
         const answer = response.text.trim().toLowerCase();
-        if (answer === "multi") return { complexity: "multi" };
-        const singleMatch = answer.match(/^single:(.+)/);
+        if (answer.startsWith("multi")) return { complexity: "multi" };
+        const singleMatch = answer.match(/single\s*:\s*(.+)/);
         if (singleMatch) {
           const agentId = singleMatch[1].trim();
-          if (agents.some((a) => a.id === agentId)) {
-            return { complexity: "single", agentId };
+          const matched = agents.find((a) => a.id.toLowerCase() === agentId.toLowerCase());
+          if (matched) {
+            return { complexity: "single", agentId: matched.id };
           }
         }
         return { complexity: "single" };
@@ -30377,26 +30391,34 @@ server.tool(
   async ({ agent_id, task, write_mode, scope }) => {
     await boot();
     if (agent_id === "auto") {
-      await syncWorkersViaKeychain();
-      const classification = await ctx.mainAgent.classifyTaskComplexity(task);
-      if (classification.complexity === "multi") {
-        return { content: [{
-          type: "text",
-          text: `Auto-dispatch: classified as multi-agent task.
+      try {
+        await syncWorkersViaKeychain();
+        const classification = await ctx.mainAgent.classifyTaskComplexity(task);
+        if (classification.complexity === "multi") {
+          return { content: [{
+            type: "text",
+            text: `Auto-dispatch: classified as multi-agent task.
 
 This task needs decomposition. Call:
   gossip_plan(task: <full task description>)
 
 Then review the plan and dispatch with gossip_dispatch(mode: "parallel", tasks: <plan tasks>).`
-        }] };
-      }
-      const selectedId = classification.agentId || ctx.mainAgent.getAgentList?.()[0]?.id;
-      if (!selectedId) {
-        return { content: [{ type: "text", text: "No agents available. Run gossip_setup first." }] };
-      }
-      process.stderr.write(`[gossipcat] Auto-dispatch: single-agent \u2192 ${selectedId}
+          }] };
+        }
+        const selectedId = classification.agentId || ctx.mainAgent.getAgentList?.()[0]?.id;
+        if (!selectedId) {
+          return { content: [{ type: "text", text: "No agents available. Run gossip_setup first." }] };
+        }
+        if (!/^[a-zA-Z0-9_-]+$/.test(selectedId)) {
+          return { content: [{ type: "text", text: `Auto-dispatch: invalid agent ID "${selectedId}". Run gossip_status() to see available agents.` }] };
+        }
+        const source = classification.agentId ? "LLM-selected" : "fallback";
+        process.stderr.write(`[gossipcat] Auto-dispatch: single-agent \u2192 ${selectedId} (${source})
 `);
-      agent_id = selectedId;
+        agent_id = selectedId;
+      } catch (err) {
+        return { content: [{ type: "text", text: `Auto-dispatch failed: ${err.message}. Try gossip_run with a specific agent_id instead.` }] };
+      }
     }
     const isNative = ctx.nativeAgentConfigs.has(agent_id);
     const options = {};

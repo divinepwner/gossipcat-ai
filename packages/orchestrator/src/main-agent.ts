@@ -366,9 +366,13 @@ export class MainAgent {
    */
   async classifyTaskComplexity(task: string): Promise<{ complexity: 'single' | 'multi'; agentId?: string }> {
     const agents = this.registry.getAll();
-    const agentSummary = agents
-      .map(a => `${a.id}: ${a.role ?? a.preset ?? 'agent'} (${a.skills.join(', ')})`)
-      .join('\n');
+
+    // Build agent summary with dispatch weights so the LLM respects scoring
+    const agentLines = agents.map(a => {
+      const weight = this.registry.getDispatchWeight?.(a.id) ?? 1.0;
+      const status = weight <= 0.3 ? ' [LOW RELIABILITY]' : '';
+      return `${a.id}: ${a.role ?? a.preset ?? 'agent'} (${a.skills.join(', ')}) weight=${weight.toFixed(2)}${status}`;
+    });
 
     const response = await this.llm.generate([
       {
@@ -378,23 +382,27 @@ single:<agent_id>
 OR
 multi
 
-"single" = one agent can handle it. Pick the best agent by skill match.
+"single" = one agent can handle it. Pick the best agent by skill match AND dispatch weight.
+  - Higher weight = more reliable. Prefer agents with weight > 1.0.
+  - Agents marked [LOW RELIABILITY] should be avoided for solo tasks.
 "multi" = needs decomposition across multiple agents.
 
 Available agents:
-${agentSummary}`,
+${agentLines.join('\n')}`,
       },
       { role: 'user', content: task },
     ]);
 
     const answer = response.text.trim().toLowerCase();
-    if (answer === 'multi') return { complexity: 'multi' };
-    const singleMatch = answer.match(/^single:(.+)/);
+    if (answer.startsWith('multi')) return { complexity: 'multi' };
+    // Parse single:<agent_id> — tolerant of whitespace and minor formatting
+    const singleMatch = answer.match(/single\s*:\s*(.+)/);
     if (singleMatch) {
       const agentId = singleMatch[1].trim();
-      // Verify agent exists
-      if (agents.some(a => a.id === agentId)) {
-        return { complexity: 'single', agentId };
+      // Verify agent exists (case-insensitive lookup, return canonical ID)
+      const matched = agents.find(a => a.id.toLowerCase() === agentId.toLowerCase());
+      if (matched) {
+        return { complexity: 'single', agentId: matched.id };
       }
     }
     // Default: single, let caller pick agent
