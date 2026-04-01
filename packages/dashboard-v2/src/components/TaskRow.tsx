@@ -1,5 +1,5 @@
 import type { TaskItem } from '@/lib/types';
-import { timeAgo, formatDuration, agentColor } from '@/lib/utils';
+import { timeAgo, formatDuration } from '@/lib/utils';
 
 interface TaskRowProps {
   task: TaskItem;
@@ -14,7 +14,6 @@ const STATUS_STYLES = {
 
 export function TaskRow({ task }: TaskRowProps) {
   const status = STATUS_STYLES[task.status] ?? STATUS_STYLES.cancelled;
-  const color = agentColor(task.agentId);
 
   return (
     <tr className="border-b border-border transition hover:bg-accent/50">
@@ -24,8 +23,10 @@ export function TaskRow({ task }: TaskRowProps) {
       <td className="py-2.5 pr-3 font-mono text-xs text-muted-foreground">
         {task.taskId.slice(0, 8)}
       </td>
-      <td className="py-2.5 pr-3 font-mono text-xs font-medium" style={{ color }}>
-        {task.agentId}
+      <td className="py-2.5 pr-3 font-mono text-xs text-muted-foreground">
+        <a href={`#/agent/${encodeURIComponent(task.agentId)}`} className="transition hover:text-primary">
+          {task.agentId}
+        </a>
       </td>
       <td className="max-w-md truncate py-2.5 pr-3 text-sm text-foreground/80">
         {task.task.replace(/\n.*/s, '').slice(0, 80)}

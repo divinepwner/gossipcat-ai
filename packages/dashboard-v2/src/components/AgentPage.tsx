@@ -16,6 +16,8 @@ export function AgentPage({ agentId, agents, tasks, consensus }: AgentPageProps)
   const agent = agents.find(a => a.id === agentId);
   const [memories, setMemories] = useState<MemoryFile[]>([]);
   const [expandedMem, setExpandedMem] = useState<string | null>(null);
+  const [expandedRun, setExpandedRun] = useState<number | null>(null);
+  const [runFilter, setRunFilter] = useState<'all' | 'confirmed' | 'disputed' | 'unverified' | 'unique'>('all');
 
   useEffect(() => {
     api<MemoryData>(`memory/${agentId}`).then(data => {
@@ -157,28 +159,95 @@ export function AgentPage({ agentId, agents, tasks, consensus }: AgentPageProps)
               const c = run.counts;
               const total = (c.agreement || 0) + (c.disagreement || 0) + (c.hallucination || 0) + (c.unverified || 0) + (c.unique || 0) + (c.new || 0);
               const barTotal = total || 1;
+              const isOpen = expandedRun === i;
               const segments = [
-                { key: 'confirmed', count: c.agreement || 0, color: 'bg-confirmed', text: 'text-confirmed' },
-                { key: 'disputed', count: (c.disagreement || 0) + (c.hallucination || 0), color: 'bg-disputed', text: 'text-disputed' },
-                { key: 'unverified', count: c.unverified || 0, color: 'bg-unverified', text: 'text-unverified' },
-                { key: 'unique', count: (c.unique || 0) + (c.new || 0), color: 'bg-unique', text: 'text-unique' },
+                { key: 'confirmed' as const, count: c.agreement || 0, color: 'bg-confirmed', text: 'text-confirmed' },
+                { key: 'disputed' as const, count: (c.disagreement || 0) + (c.hallucination || 0), color: 'bg-disputed', text: 'text-disputed' },
+                { key: 'unverified' as const, count: c.unverified || 0, color: 'bg-unverified', text: 'text-unverified' },
+                { key: 'unique' as const, count: (c.unique || 0) + (c.new || 0), color: 'bg-unique', text: 'text-unique' },
               ];
+              const tagMap: Record<string, { label: string; filter: string; cls: string }> = {
+                agreement: { label: 'CONFIRMED', filter: 'confirmed', cls: 'text-confirmed bg-confirmed/10' },
+                consensus_verified: { label: 'CONFIRMED', filter: 'confirmed', cls: 'text-confirmed bg-confirmed/10' },
+                disagreement: { label: 'DISPUTED', filter: 'disputed', cls: 'text-disputed bg-disputed/10' },
+                hallucination_caught: { label: 'DISPUTED', filter: 'disputed', cls: 'text-disputed bg-disputed/10' },
+                unverified: { label: 'UNVERIFIED', filter: 'unverified', cls: 'text-unverified bg-unverified/10' },
+                unique_confirmed: { label: 'UNIQUE', filter: 'unique', cls: 'text-unique bg-unique/10' },
+                unique_unconfirmed: { label: 'UNIQUE', filter: 'unique', cls: 'text-unique bg-unique/10' },
+                new_finding: { label: 'NEW', filter: 'unique', cls: 'text-unique bg-unique/10' },
+              };
+              const filteredSignals = run.signals.filter(sig => {
+                if (sig.signal === 'signal_retracted') return false;
+                const tag = tagMap[sig.signal];
+                if (!tag) return false;
+                return runFilter === 'all' || tag.filter === runFilter;
+              });
               return (
-                <div key={run.taskId + i} className="rounded-md border border-border bg-card p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-sm font-semibold text-foreground">{total} findings</span>
-                    <span className="font-mono text-xs text-muted-foreground">{timeAgo(run.timestamp)}</span>
-                  </div>
-                  <div className="mt-1.5 flex gap-2">
-                    {segments.map(s => s.count > 0 && (
-                      <span key={s.key} className={`font-mono text-[10px] font-semibold ${s.text}`}>{s.count} {s.key}</span>
-                    ))}
-                  </div>
-                  <div className="mt-1.5 flex h-1.5 overflow-hidden rounded-sm">
-                    {segments.map(s => s.count > 0 && (
-                      <div key={s.key} className={s.color} style={{ width: `${(s.count / barTotal) * 100}%` }} />
-                    ))}
-                  </div>
+                <div key={run.taskId + i} className={`rounded-md border bg-card transition ${isOpen ? 'border-primary/25' : 'border-border'}`}>
+                  <button
+                    onClick={() => { setExpandedRun(isOpen ? null : i); setRunFilter('all'); }}
+                    className="flex w-full items-center p-3 text-left transition hover:bg-accent/50"
+                  >
+                    <span className={`mr-3 font-mono text-xs ${isOpen ? 'text-primary' : 'text-muted-foreground'}`}>{isOpen ? '▾' : '▸'}</span>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-sm font-semibold text-foreground">{total} findings</span>
+                        <span className="font-mono text-xs text-muted-foreground">{timeAgo(run.timestamp)}</span>
+                      </div>
+                      <div className="mt-1.5 flex gap-2">
+                        {segments.map(seg => seg.count > 0 && (
+                          <span key={seg.key} className={`font-mono text-[10px] font-semibold ${seg.text}`}>{seg.count} {seg.key}</span>
+                        ))}
+                      </div>
+                      <div className="mt-1.5 flex h-1.5 overflow-hidden rounded-sm">
+                        {segments.map(seg => seg.count > 0 && (
+                          <div key={seg.key} className={seg.color} style={{ width: `${(seg.count / barTotal) * 100}%` }} />
+                        ))}
+                      </div>
+                    </div>
+                  </button>
+                  {isOpen && (
+                    <div className="border-t border-border px-4 pb-3 pt-3">
+                      <div className="mb-3 flex gap-1.5">
+                        {(['all', 'confirmed', 'disputed', 'unverified', 'unique'] as const).map(f => {
+                          const styles: Record<string, { cls: string; active: string }> = {
+                            all: { cls: 'text-muted-foreground', active: 'text-foreground bg-muted' },
+                            confirmed: { cls: 'text-confirmed/60', active: 'text-confirmed bg-confirmed/10' },
+                            disputed: { cls: 'text-disputed/60', active: 'text-disputed bg-disputed/10' },
+                            unverified: { cls: 'text-unverified/60', active: 'text-unverified bg-unverified/10' },
+                            unique: { cls: 'text-unique/60', active: 'text-unique bg-unique/10' },
+                          };
+                          const st = styles[f];
+                          return (
+                            <button key={f} onClick={() => setRunFilter(f)}
+                              className={`rounded-sm px-2 py-0.5 font-mono text-[10px] font-semibold transition ${runFilter === f ? st.active : st.cls} hover:opacity-80`}
+                            >{f.charAt(0).toUpperCase() + f.slice(1)}</button>
+                          );
+                        })}
+                      </div>
+                      {filteredSignals.length === 0 ? (
+                        <div className="py-3 text-center text-xs text-muted-foreground">No findings match this filter.</div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {filteredSignals.map((sig, j) => {
+                            const tag = tagMap[sig.signal];
+                            if (!tag) return null;
+                            return (
+                              <div key={j} className="flex items-start gap-2">
+                                <span className={`shrink-0 rounded-sm px-1.5 py-0.5 font-mono text-[9px] font-bold ${tag.cls}`}>{tag.label}</span>
+                                <div className="min-w-0 flex-1">
+                                  <span className="text-xs text-muted-foreground">{(sig.evidence || '').slice(0, 200)}</span>
+                                  <span className="ml-2 font-mono text-[10px] text-muted-foreground/50">
+                                    {sig.agentId}{sig.counterpartId ? ` + ${sig.counterpartId}` : ''}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
