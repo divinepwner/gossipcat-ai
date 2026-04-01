@@ -13,15 +13,22 @@ interface SignalEntry {
 }
 
 export interface SignalsResponse {
-  signals: SignalEntry[];
+  items: SignalEntry[];
   total: number;
+  offset: number;
+  limit: number;
 }
 
-const MAX_SIGNALS = 100;
+const MAX_LIMIT = 200;
+const DEFAULT_LIMIT = 50;
 
-export async function signalsHandler(projectRoot: string, agentFilter: string | null): Promise<SignalsResponse> {
+export async function signalsHandler(projectRoot: string, query?: URLSearchParams): Promise<SignalsResponse> {
+  const agentFilter = query?.get('agent') ?? null;
+  const limit = Math.min(Math.max(parseInt(query?.get('limit') ?? '', 10) || DEFAULT_LIMIT, 1), MAX_LIMIT);
+  const offset = Math.max(parseInt(query?.get('offset') ?? '', 10) || 0, 0);
+
   const perfPath = join(projectRoot, '.gossip', 'agent-performance.jsonl');
-  if (!existsSync(perfPath)) return { signals: [], total: 0 };
+  if (!existsSync(perfPath)) return { items: [], total: 0, offset, limit };
 
   const all: SignalEntry[] = [];
   try {
@@ -34,8 +41,8 @@ export async function signalsHandler(projectRoot: string, agentFilter: string | 
         all.push(entry);
       } catch { /* skip malformed */ }
     }
-  } catch { return { signals: [], total: 0 }; }
+  } catch { return { items: [], total: 0, offset, limit }; }
 
   all.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-  return { signals: all.slice(0, MAX_SIGNALS), total: all.length };
+  return { items: all.slice(offset, offset + limit), total: all.length, offset, limit };
 }

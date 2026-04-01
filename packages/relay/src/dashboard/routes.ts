@@ -163,8 +163,7 @@ export class DashboardRouter {
       }
 
       if (url === '/dashboard/api/signals' && req.method === 'GET') {
-        const agentFilter = query?.get('agent') ?? null;
-        const data = await signalsHandler(this.projectRoot, agentFilter);
+        const data = await signalsHandler(this.projectRoot, query ?? undefined);
         this.json(res, 200, data);
         return true;
       }
