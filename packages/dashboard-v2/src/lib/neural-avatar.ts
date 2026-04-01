@@ -281,10 +281,10 @@ export class OrbAvatarEngine {
     ctx.strokeStyle = rgba(color.primary, 0.2);
     ctx.lineWidth = 1.5; ctx.stroke();
 
-    // Subtle inner glow (much less than before)
+    // Minimal ambient — almost none
     const bgBreath = 0.9 + 0.1 * Math.sin(time * 0.3);
-    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, size * 0.4);
-    bg.addColorStop(0, rgba(color.primary, 0.04 * gi * bgBreath));
+    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, size * 0.35);
+    bg.addColorStop(0, rgba(color.primary, 0.015 * gi * bgBreath));
     bg.addColorStop(1, 'transparent');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, size, size);
@@ -296,7 +296,7 @@ export class OrbAvatarEngine {
       const twinkle = 0.4 + 0.6 * Math.pow((Math.sin(time * p.twinkleSpeed + p.twinklePhase) + 1) / 2, 2);
       ctx.beginPath();
       ctx.arc(px, py, p.size * (0.8 + twinkle * 0.4), 0, Math.PI * 2);
-      ctx.fillStyle = rgba(color.primary, twinkle * 0.25);
+      ctx.fillStyle = rgba(color.primary, twinkle * 0.12);
       ctx.fill();
     }
 
@@ -347,34 +347,33 @@ export class OrbAvatarEngine {
       ctx.fill();
     }
 
-    // 5. Node halos
+    // 5. Node halos — subtle, tight
     for (const n of nodes) {
       const b = n.currentBrightness;
-      const breathGlow = 0.8 + 0.2 * Math.sin(time * n.breathSpeed * 0.5 + n.phase);
-      const hr = n.size * 5 * gi * breathGlow;
+      const breathGlow = 0.85 + 0.15 * Math.sin(time * n.breathSpeed * 0.5 + n.phase);
+      const hr = n.size * 3;
       const hg = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, hr);
-      hg.addColorStop(0, rgba(color.primary, b * 0.18 * breathGlow));
-      hg.addColorStop(0.4, rgba(color.primary, b * 0.06 * breathGlow));
+      hg.addColorStop(0, rgba(color.primary, b * 0.12 * breathGlow));
       hg.addColorStop(1, 'transparent');
       ctx.fillStyle = hg;
       ctx.beginPath(); ctx.arc(n.x, n.y, hr, 0, Math.PI * 2); ctx.fill();
     }
 
-    // 6. Nodes
+    // 6. Nodes — FULL opacity, bright and solid
     for (const n of nodes) {
       const b = n.currentBrightness;
       ctx.beginPath(); ctx.arc(n.x, n.y, n.size, 0, Math.PI * 2);
-      ctx.fillStyle = rgba(color.primary, b * 0.9);
+      ctx.fillStyle = rgba(color.primary, Math.min(1, b * 1.2));
       ctx.fill();
     }
 
-    // 7. Hot cores
+    // 7. Hot cores — bright white centers
     for (const n of nodes) {
-      if (n.size > 1.2) {
+      if (n.size > 1.0) {
         const b = n.currentBrightness;
         const coreGlow = 0.7 + 0.3 * Math.sin(time * n.breathSpeed + n.phase + 1);
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.size * 0.35, 0, Math.PI * 2);
-        ctx.fillStyle = rgba('#ffffff', b * 0.35 * coreGlow);
+        ctx.beginPath(); ctx.arc(n.x, n.y, n.size * 0.4, 0, Math.PI * 2);
+        ctx.fillStyle = rgba('#ffffff', Math.min(1, b * 0.6 * coreGlow));
         ctx.fill();
       }
     }
