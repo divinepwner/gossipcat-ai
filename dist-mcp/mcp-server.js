@@ -7357,7 +7357,9 @@ var init_dispatch_pipeline = __esm({
       batches = /* @__PURE__ */ new Map();
       scopeTracker;
       worktreeManager;
+      // @ts-ignore — reserved for future write queue implementation
       writeQueue = [];
+      // @ts-ignore — reserved for future write queue implementation
       writeActive = false;
       overlapDetector = null;
       lensGenerator = null;
@@ -7539,6 +7541,7 @@ var init_dispatch_pipeline = __esm({
         this.tasks.set(taskId, entry);
         return { taskId, finalResultPromise: entry.finalResultPromise };
       }
+      // @ts-ignore — reserved for future write queue implementation
       static MAX_WRITE_QUEUE = 20;
       getTask(taskId) {
         return this.tasks.get(taskId);
@@ -11123,7 +11126,7 @@ ${spec.slice(0, 2e3)}`
         try {
           const reviewer = this.registry.getAll().filter((a) => a.id !== args.callerId && a.skills.includes("code_review")).find((a) => this.workers.has(a.id));
           if (reviewer) {
-            const { promise: promise2 } = this.pipeline.dispatch(
+            const { finalResultPromise: promise2 } = this.pipeline.dispatch(
               reviewer.id,
               `Review this diff for correctness:
 
@@ -11135,7 +11138,7 @@ ${args.testResult}
 Provide a brief review: what's good, what needs fixing.`
             );
             try {
-              reviewText = await promise2;
+              reviewText = (await promise2).result;
             } catch {
               reviewText = "Reviewer agent failed.";
             }
@@ -11153,12 +11156,12 @@ Provide a brief review: what's good, what needs fixing.`
         }
       }
       async executeSubTask(subTask) {
-        const { taskId, promise: promise2 } = this.pipeline.dispatch(subTask.assignedAgent, subTask.description);
+        const { taskId, finalResultPromise: promise2 } = this.pipeline.dispatch(subTask.assignedAgent, subTask.description);
         const start = Date.now();
         try {
-          const result = await promise2;
+          const execResult = await promise2;
           await this.pipeline.writeMemoryForTask(taskId);
-          return { agentId: subTask.assignedAgent, task: subTask.description, result, duration: Date.now() - start };
+          return { agentId: subTask.assignedAgent, task: subTask.description, result: execResult.result, duration: Date.now() - start };
         } catch (err) {
           return {
             agentId: subTask.assignedAgent,

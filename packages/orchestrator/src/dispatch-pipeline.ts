@@ -25,10 +25,10 @@ import { CompetencyProfiler } from './competency-profiler';
 import { DispatchDifferentiator } from './dispatch-differentiator';
 import { CollectResult } from './consensus-types';
 import { extractCategories } from './category-extractor';
-import { WorkerProgressCallback } from './worker-agent';
 import { WorkerLike } from './worker-like';
 import { IConsensusJudge } from './consensus-judge';
 import { SkillIndex } from './skill-index';
+import { TaskStreamEvent, TaskStreamEventType } from './task-stream';
 
 const log = (msg: string) => process.stderr.write(`[gossipcat] ${msg}\n`);
 
@@ -48,7 +48,10 @@ export interface DispatchPipelineConfig {
   toolServer?: ToolServerCallbacks | null;
 }
 
-type TrackedTask = TaskEntry & { promise: Promise<string> };
+type TrackedTask = TaskEntry & { 
+    stream: AsyncGenerator<TaskStreamEvent, void, undefined>;
+    finalResultPromise: Promise<TaskExecutionResult>;
+};
 
 export class DispatchPipeline {
   private readonly projectRoot: string;
@@ -75,7 +78,9 @@ export class DispatchPipeline {
 
   private readonly scopeTracker: ScopeTracker;
   private readonly worktreeManager: WorktreeManager;
+  // @ts-ignore — reserved for future write queue implementation
   private writeQueue: Array<() => void> = [];
+  // @ts-ignore — reserved for future write queue implementation
   private writeActive = false;
 
   private overlapDetector: OverlapDetector | null = null;
@@ -89,7 +94,7 @@ export class DispatchPipeline {
   private sessionStartTime: Date = new Date();
   private sessionConsensusHistory: Array<{ timestamp: string; confirmed: number; disputed: number; unverified: number; unique: number; summary: string }> = [];
 
-  private taskProgressCallback: ((taskId: string, event: { toolCalls: number; inputTokens: number; outputTokens: number; currentTool: string; turn: number }) => void) | null = null;
+  private onTaskUpdate: ((taskId: string, event: TaskStreamEvent) => void) | null = null;
   private projectStructureCache: string | null = null;
 
   private getProjectStructure(): string | undefined {
@@ -99,8 +104,8 @@ export class DispatchPipeline {
     return this.projectStructureCache || undefined;
   }
 
-  setTaskProgressCallback(cb: typeof this.taskProgressCallback): void {
-    this.taskProgressCallback = cb;
+  setTaskUpdateCallback(cb: typeof this.onTaskUpdate): void {
+    this.onTaskUpdate = cb;
   }
 
   constructor(config: DispatchPipelineConfig) {
@@ -167,7 +172,7 @@ export class DispatchPipeline {
     return findingsCount >= 8 ? 30 : findingsCount <= 1 ? 12 : 20;
   }
 
-  dispatch(agentId: string, task: string, options?: DispatchOptions): { taskId: string; promise: Promise<string> } {
+  dispatch(agentId: string, task: string, options?: DispatchOptions): { taskId: string; finalResultPromise: Promise<TaskExecutionResult> } {
     if (this.tasks.size >= DispatchPipeline.MAX_TASKS) {
       throw new Error(`Too many active tasks (${this.tasks.size}). Collect results before dispatching more.`);
     }
@@ -255,140 +260,50 @@ export class DispatchPipeline {
     const entry: TrackedTask = {
       id: taskId, agentId, task, status: 'running',
       startedAt: Date.now(), skillWarnings,
-      promise: null as unknown as Promise<string>,
+      stream: null as any,
+      finalResultPromise: null as any,
     };
     entry.writeMode = options?.writeMode;
     entry.scope = options?.scope;
     entry.planId = options?.planId;
     entry.planStep = options?.step;
 
-    // 8. Execute (with write-mode awareness)
-    if (options?.writeMode === 'sequential') {
-      const progressCb: WorkerProgressCallback = (evt) => {
-        entry.toolCalls = evt.toolCalls;
-        entry.inputTokens = evt.inputTokens;
-        entry.outputTokens = evt.outputTokens;
-        this.taskProgressCallback?.(taskId, evt);
-      };
-      entry.promise = this.enqueueSequential(() =>
-        worker.executeTask(task, undefined, promptContent, progressCb)
-      ).then((execResult: TaskExecutionResult) => {
-        entry.status = 'completed';
-        entry.result = execResult.result;
-        entry.inputTokens = execResult.inputTokens;
-        entry.outputTokens = execResult.outputTokens;
-        entry.completedAt = Date.now();
-        return execResult.result;
-      }).catch((err: Error) => {
-        entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
-        throw err;
-      });
-    } else if (options?.writeMode === 'scoped') {
-      if (!options.scope) throw new Error('scoped write mode requires a scope path');
-      const overlap = this.scopeTracker.hasOverlap(options.scope);
-      if (overlap.overlaps) {
-        throw new Error(`Scope "${options.scope}" overlaps with task ${overlap.conflictTaskId} at "${overlap.conflictScope}"`);
-      }
-      this.scopeTracker.register(options.scope, taskId);
-      this.toolServer?.assignScope(agentId, options.scope);
-      const progressCb: WorkerProgressCallback = (evt) => {
-        entry.toolCalls = evt.toolCalls;
-        entry.inputTokens = evt.inputTokens;
-        entry.outputTokens = evt.outputTokens;
-        this.taskProgressCallback?.(taskId, evt);
-      };
-      entry.promise = worker.executeTask(task, undefined, promptContent, progressCb)
-        .then((execResult: TaskExecutionResult) => {
-          entry.status = 'completed';
-          entry.result = execResult.result;
-          entry.inputTokens = execResult.inputTokens;
-          entry.outputTokens = execResult.outputTokens;
-          entry.completedAt = Date.now();
-          this.scopeTracker.release(taskId);
-          this.toolServer?.releaseAgent(agentId);
-          return execResult.result;
-        }).catch((err: Error) => {
-          entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
-          this.scopeTracker.release(taskId);
-          this.toolServer?.releaseAgent(agentId);
-          throw err;
-        });
-    } else if (options?.writeMode === 'worktree') {
-      const progressCb: WorkerProgressCallback = (evt) => {
-        entry.toolCalls = evt.toolCalls;
-        entry.inputTokens = evt.inputTokens;
-        entry.outputTokens = evt.outputTokens;
-        this.taskProgressCallback?.(taskId, evt);
-      };
-      entry.promise = this.worktreeManager.create(taskId).then(({ path, branch }) => {
-        entry.worktreeInfo = { path, branch };
-        this.toolServer?.assignRoot(agentId, path);
-        return worker.executeTask(task, undefined, promptContent, progressCb);
-      }).then((execResult: TaskExecutionResult) => {
-        entry.status = 'completed';
-        entry.result = execResult.result;
-        entry.inputTokens = execResult.inputTokens;
-        entry.outputTokens = execResult.outputTokens;
-        entry.completedAt = Date.now();
-        this.toolServer?.releaseAgent(agentId);
-        return execResult.result;
-      }).catch((err: Error) => {
-        entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
-        this.toolServer?.releaseAgent(agentId);
-        // Clean up worktree on failure to prevent leaked FS paths and git branches
-        if (entry.worktreeInfo) {
-          this.worktreeManager.cleanup(taskId, entry.worktreeInfo.path).catch(() => {});
+    const stream = worker.executeTask(task, options?.lens, promptContent);
+    entry.stream = stream;
+
+    entry.finalResultPromise = (async () => {
+        for await (const event of stream) {
+            this.onTaskUpdate?.(taskId, event);
+            switch (event.type) {
+                case TaskStreamEventType.PROGRESS:
+                    entry.toolCalls = event.payload.toolCalls;
+                    entry.inputTokens = event.payload.inputTokens;
+                    entry.outputTokens = event.payload.outputTokens;
+                    break;
+                case TaskStreamEventType.FINAL_RESULT:
+                    entry.status = 'completed';
+                    entry.result = event.payload.result;
+                    entry.inputTokens = event.payload.inputTokens;
+                    entry.outputTokens = event.payload.outputTokens;
+                    entry.completedAt = Date.now();
+                    return event.payload;
+                case TaskStreamEventType.ERROR:
+                    entry.status = 'failed';
+                    entry.error = event.payload.error;
+                    entry.completedAt = Date.now();
+                    throw new Error(event.payload.error);
+            }
         }
-        throw err;
-      });
-    } else {
-      // Default: fire-and-forget (read-only)
-      const progressCb: WorkerProgressCallback = (evt) => {
-        entry.toolCalls = evt.toolCalls;
-        entry.inputTokens = evt.inputTokens;
-        entry.outputTokens = evt.outputTokens;
-        this.taskProgressCallback?.(taskId, evt);
-      };
-      entry.promise = worker.executeTask(task, undefined, promptContent, progressCb)
-        .then((execResult: TaskExecutionResult) => {
-          entry.status = 'completed';
-          entry.result = execResult.result;
-          entry.inputTokens = execResult.inputTokens;
-          entry.outputTokens = execResult.outputTokens;
-          entry.completedAt = Date.now();
-          return execResult.result;
-        }).catch((err: Error) => {
-          entry.status = 'failed'; entry.error = err.message; entry.completedAt = Date.now();
-          throw err;
-        });
-    }
+        // Should not be reached if stream always provides a FINAL_RESULT or ERROR
+        throw new Error('Task stream ended without a final result or error.');
+    })();
 
     this.tasks.set(taskId, entry);
-    return { taskId, promise: entry.promise };
+    return { taskId, finalResultPromise: entry.finalResultPromise };
   }
 
+  // @ts-ignore — reserved for future write queue implementation
   private static readonly MAX_WRITE_QUEUE = 20;
-
-  private enqueueSequential(fn: () => Promise<TaskExecutionResult>): Promise<TaskExecutionResult> {
-    if (this.writeActive && this.writeQueue.length >= DispatchPipeline.MAX_WRITE_QUEUE) {
-      throw new Error('Sequential write queue full (20 tasks). Collect results before dispatching more.');
-    }
-    return new Promise<TaskExecutionResult>((resolve, reject) => {
-      const run = () => {
-        this.writeActive = true;
-        fn().then(resolve, reject).finally(() => {
-          this.writeActive = false;
-          const next = this.writeQueue.shift();
-          if (next) next();
-        });
-      };
-      if (this.writeActive) {
-        this.writeQueue.push(run);
-      } else {
-        run();
-      }
-    });
-  }
 
   getTask(taskId: string): TaskEntry | undefined {
     return this.tasks.get(taskId);
@@ -479,7 +394,7 @@ export class DispatchPipeline {
     // Wait with timeout (clean up timer to avoid pinning event loop)
     let timer: ReturnType<typeof setTimeout>;
     await Promise.race([
-      Promise.all(targets.map(t => t.promise.catch(() => {}))),
+      Promise.all(targets.map(t => t.finalResultPromise.catch(() => {}))),
       new Promise(r => { timer = setTimeout(r, timeoutMs); timer.unref(); }),
     ]).finally(() => clearTimeout(timer!));
 
@@ -758,40 +673,40 @@ export class DispatchPipeline {
     }
 
     for (const def of taskDefs) {
-      try {
-        const lens = lensMap?.get(def.agentId);
-        const { taskId, promise } = this.dispatch(def.agentId, def.task, {
-          ...def.options,
-          ...(lens ? { lens } : {}),
-          ...(pipelineOptions?.consensus ? { consensus: true } : {}),
-        });
-        taskIds.push(taskId);
-        batchTaskIds.add(taskId);
-
-        // Gossip trigger on completion
-        if (this.gossipPublisher) {
-          promise.then(async (result) => {
-            const remaining = Array.from(batchTaskIds)
-              .map(tid => this.tasks.get(tid))
-              .filter((t): t is TrackedTask => t !== undefined && t.status === 'running' && t.agentId !== def.agentId)
-              .map(t => this.registryGet(t.agentId))
-              .filter((ac): ac is AgentConfig => ac !== undefined);
-
-            if (remaining.length > 0) {
-              this.gossipPublisher!.publishGossip({
-                batchId,
-                completedAgentId: def.agentId,
-                completedResult: result,
-                remainingSiblings: remaining.map(ac => ({
-                  agentId: ac.id, preset: ac.preset || 'custom', skills: ac.skills,
-                })),
-              }).catch(err => process.stderr.write(`[gossipcat] Gossip: ${(err as Error).message}\n`));
+        try {
+            const lens = lensMap?.get(def.agentId);
+            const { taskId, finalResultPromise } = this.dispatch(def.agentId, def.task, {
+              ...def.options,
+              ...(lens ? { lens } : {}),
+              ...(pipelineOptions?.consensus ? { consensus: true } : {}),
+            });
+            taskIds.push(taskId);
+            batchTaskIds.add(taskId);
+    
+            // Gossip trigger on completion
+            if (this.gossipPublisher) {
+              finalResultPromise.then(async (result) => {
+                const remaining = Array.from(batchTaskIds)
+                  .map(tid => this.tasks.get(tid))
+                  .filter((t): t is TrackedTask => t !== undefined && t.status === 'running' && t.agentId !== def.agentId)
+                  .map(t => this.registryGet(t.agentId))
+                  .filter((ac): ac is AgentConfig => ac !== undefined);
+    
+                if (remaining.length > 0) {
+                  this.gossipPublisher!.publishGossip({
+                    batchId,
+                    completedAgentId: def.agentId,
+                    completedResult: result.result,
+                    remainingSiblings: remaining.map(ac => ({
+                      agentId: ac.id, preset: ac.preset || 'custom', skills: ac.skills,
+                    })),
+                  }).catch(err => process.stderr.write(`[gossipcat] Gossip: ${(err as Error).message}\n`));
+                }
+              }).catch(() => {});
             }
-          }).catch(() => {});
-        }
-      } catch (err) {
-        errors.push(`Agent "${def.agentId}": ${(err as Error).message}`);
-      }
+          } catch (err) {
+            errors.push(`Agent "${def.agentId}": ${(err as Error).message}`);
+          }
     }
 
     this.batches.set(batchId, batchTaskIds);

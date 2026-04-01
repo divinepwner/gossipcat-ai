@@ -355,7 +355,15 @@ export class MainAgent {
     return this.handleMessageCognitive(userMessage);
   }
 
-  /** Classify whether a task needs single-agent or multi-agent handling. */
+  /**
+   * Classifies a task's complexity to determine if it can be handled by a single agent
+   * or requires decomposition for multiple agents. This is a preliminary step to decide
+   * between a simple dispatch and a multi-agent plan.
+   *
+   * @param task The natural language description of the task.
+   * @returns A promise that resolves to either 'single' for simple, self-contained tasks
+   *          or 'multi' for complex tasks requiring a coordinated effort.
+   */
   async classifyTaskComplexity(task: string): Promise<'single' | 'multi'> {
     const agentSummary = this.registry.getAll()
       .map(a => `${a.id}: ${a.preset ?? 'agent'} (${a.skills.join(', ')})`)
@@ -904,11 +912,11 @@ ${agentSummary}`,
         .find(a => this.workers.has(a.id));
 
       if (reviewer) {
-        const { promise } = this.pipeline.dispatch(reviewer.id,
+        const { finalResultPromise: promise } = this.pipeline.dispatch(reviewer.id,
           `Review this diff for correctness:\n\n${args.diff}\n\nTest results:\n${args.testResult}\n\nProvide a brief review: what's good, what needs fixing.`
         );
         try {
-          reviewText = await promise;
+          reviewText = (await promise).result;
         } catch { reviewText = 'Reviewer agent failed.'; }
       }
     } catch (err) {
@@ -927,12 +935,12 @@ ${agentSummary}`,
   }
 
   private async executeSubTask(subTask: { assignedAgent?: string; description: string }): Promise<TaskResult> {
-    const { taskId, promise } = this.pipeline.dispatch(subTask.assignedAgent!, subTask.description);
+    const { taskId, finalResultPromise: promise } = this.pipeline.dispatch(subTask.assignedAgent!, subTask.description);
     const start = Date.now();
     try {
-      const result = await promise;
+      const execResult = await promise;
       await this.pipeline.writeMemoryForTask(taskId);
-      return { agentId: subTask.assignedAgent!, task: subTask.description, result, duration: Date.now() - start };
+      return { agentId: subTask.assignedAgent!, task: subTask.description, result: execResult.result, duration: Date.now() - start };
     } catch (err) {
       return {
         agentId: subTask.assignedAgent!, task: subTask.description,
