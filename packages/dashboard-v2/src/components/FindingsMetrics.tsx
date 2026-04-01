@@ -14,10 +14,10 @@ export function FindingsMetrics({ overview, consensus }: FindingsMetricsProps) {
   const disputed = actionable;
 
   const metrics = [
-    { label: 'Confirmed', value: confirmed, color: 'bg-confirmed', textColor: 'text-confirmed' },
-    { label: 'Disputed', value: disputed, color: 'bg-disputed', textColor: 'text-disputed' },
-    { label: 'Unverified', value: Math.max(0, unverified), color: 'bg-unverified', textColor: 'text-unverified' },
-    { label: 'Unique', value: unique, color: 'bg-unique', textColor: 'text-unique' },
+    { label: 'Confirmed', value: confirmed, color: 'bg-confirmed', textColor: 'text-confirmed', border: 'border-l-confirmed' },
+    { label: 'Disputed', value: disputed, color: 'bg-disputed', textColor: 'text-disputed', border: 'border-l-disputed' },
+    { label: 'Unverified', value: Math.max(0, unverified), color: 'bg-unverified', textColor: 'text-unverified', border: 'border-l-unverified' },
+    { label: 'Unique', value: unique, color: 'bg-unique', textColor: 'text-unique', border: 'border-l-unique' },
   ];
 
   const barTotal = metrics.reduce((s, m) => s + m.value, 0) || 1;
@@ -29,7 +29,7 @@ export function FindingsMetrics({ overview, consensus }: FindingsMetricsProps) {
       </h2>
       <div className="grid grid-cols-4 gap-3">
         {metrics.map((m) => (
-          <div key={m.label} className="rounded-md border border-border bg-card p-4">
+          <div key={m.label} className={`rounded-md border border-border bg-card p-4 border-l-2 ${m.border}`}>
             <div className={`font-mono text-2xl font-bold ${m.textColor}`}>{m.value}</div>
             <div className="mt-1 text-xs text-muted-foreground">{m.label}</div>
           </div>
