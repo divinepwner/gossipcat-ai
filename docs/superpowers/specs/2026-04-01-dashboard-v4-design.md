@@ -4,6 +4,8 @@
 **Status:** Design approved
 **Approach:** Hybrid — hub stays as curated inbox, detail views upgraded to grid-based data rows
 **Research:** 3-agent parallel research (sonnet-reviewer, gemini-reviewer, haiku-researcher)
+**Supersedes:** v3 detail-view freeze ("detail views unchanged") — v4 intentionally rewrites all detail views
+**Consensus review:** 3 agents, 7 confirmed, 2 disputed, 8 unverified — all confirmed findings addressed below
 
 ---
 
@@ -67,6 +69,8 @@ Add inline aggregate metrics to the existing status bar:
 
 Add blue "NEW" pill to Recent Runs cards. Data source: `counts.new` from consensus API (already calculated, never rendered).
 
+**Lifecycle:** The NEW pill is purely data-driven — it appears when `counts.new > 0` for a consensus run. It does not clear on view or expire. It reflects findings discovered during cross-review (not present in any agent's initial pass). This is a permanent property of the run, not a notification state.
+
 ---
 
 ## Detail Views — Grid Data Rows
@@ -103,7 +107,17 @@ All detail views use a common grid data row system:
 **Pagination:**
 - Server-side `?limit=50&offset=0`
 - "Load more" button at bottom of data area (not numbered pages)
+- Button hidden when `offset + items.length >= total` (all items loaded)
 - Response includes `total` count for context
+- Loaded items accumulate in memory (append on "Load more", don't re-fetch)
+
+**Search + pagination interaction:** Search is client-side, filtering only the currently loaded items. The search input shows "(searching N loaded of M total)" when `total > loaded count` to signal that not all data is visible. This avoids server-side search complexity while being transparent about scope.
+
+**Empty states:** When a view has no data, show centered muted text: "No tasks yet" / "No signals recorded" / "No agents configured". When filters produce no matches: "No matching items" with a "Clear filters" link. No illustrations.
+
+**Loading states:** Show a single-line "Loading..." text in muted color centered in the data area. No skeleton loaders (too much complexity for vanilla JS).
+
+**Error states:** On API fetch failure, show "Failed to load — Retry" with a clickable retry link that re-fetches. No toast notifications.
 
 ### #/team — Agent Rows
 
@@ -215,17 +229,31 @@ Response shape:
 
 Default limit: 50. Max limit: 200.
 
-### New data surfaced
+### Data corrections (from consensus review)
 
-| Endpoint | New fields | Source |
-|----------|-----------|--------|
-| `GET /api/tasks` | `inputTokens`, `outputTokens` | Already in task-graph.jsonl, not returned |
-| `GET /api/agents` | `skills` array | SkillIndex bound skills |
-| `GET /api/signals` | `taskId` | Link signal to source task/consensus run |
+**Already returned (no backend change needed):**
+- `GET /api/tasks` — `inputTokens`, `outputTokens` already in response (api-tasks.ts:12-13). Frontend just needs to render them in the new grid.
+- `GET /api/signals` — `taskId` already in SignalEntry interface (api-signals.ts:9). Frontend needs to render it as a link.
+
+**Needs backend change:**
+
+| Endpoint | Change | Detail |
+|----------|--------|--------|
+| `GET /api/agents` | Replace `skills: string[]` with `skillSlots: SkillSlot[]` | Current `skills` field is raw config strings (api-agents.ts:138). Need to integrate SkillIndex to return `{ name, enabled, source, boundAt }` per slot. Fallback: return empty array if agent has no SkillIndex entries. Keep existing `skills: string[]` for backwards compat, add `skillSlots` alongside it. |
+| `GET /api/tasks` | Add pagination params | Thread `limit`/`offset` from query params through routes.ts to tasksHandler. Currently routes.ts:148 doesn't pass query to handler. |
+| `GET /api/signals` | Add pagination params | Same router threading needed. Currently reads entire file and slices. |
+
+### Router layer change
+
+`routes.ts` must forward query params to `tasksHandler` and `signalsHandler`. Currently only `api-signals.ts` receives `query?.get('agent')`. Both handlers need `limit` and `offset` params threaded through.
+
+### Hub section refresh fix
+
+`app.js:292-295` selects sections by DOM index for WS-driven refresh. Adding the `.hub-grid` wrapper div will break this index-based selection. Implementation must switch to class-based or data-attribute selection (e.g., `section.querySelector('.hub-team')` instead of `sections[2]`).
 
 ### No new endpoints
 
-All changes are additions to existing API responses.
+All changes are modifications to existing API responses and router wiring.
 
 ---
 
@@ -266,6 +294,75 @@ No changes to existing color tokens. The grid data rows use the same surface sta
 
 ---
 
+## lib/data-rows.js — Shared API
+
+The shared data row library exports these functions. All detail views consume this API.
+
+```javascript
+/**
+ * Create a complete data view (header + scrollable row area + load-more).
+ * Returns the container DOM element. Caller appends it to their section.
+ *
+ * @param {Object} options
+ * @param {Array<{key: string, label: string, width: string, align?: 'left'|'right'|'center'}>} options.columns
+ * @param {string} options.defaultSort - Column key to sort by initially
+ * @param {'asc'|'desc'} options.defaultOrder - Initial sort direction
+ * @param {Function} options.onSort - Called with (key, direction) when user clicks header
+ * @param {Function} options.onLoadMore - Called when "Load more" clicked. Returns promise.
+ * @param {number} options.total - Total item count (for "Load more" visibility)
+ */
+export function createDataView(options) → HTMLElement
+
+/**
+ * Render a single data row. Returns the row element.
+ * Caller is responsible for cell content (can be text, pills, rings, etc).
+ *
+ * @param {Array<{content: string|HTMLElement, className?: string}>} cells
+ * @param {Function} onExpand - Called when row clicked. Receives the row element.
+ *                              Return an HTMLElement for the expansion panel content,
+ *                              or null to collapse.
+ */
+export function createDataRow(cells, onExpand) → HTMLElement
+
+/**
+ * Render a date group separator row.
+ * @param {string} label - e.g., "Today", "Yesterday", "Mar 30"
+ */
+export function createDateGroup(label) → HTMLElement
+
+/**
+ * Expansion state manager. Only one row expanded at a time.
+ * Call expand(row) to open a row and close the previous one.
+ * Call collapse() to close the current row.
+ */
+export function createExpansionManager() → { expand(row), collapse(), current() }
+
+/**
+ * Utility: format a number for display in metric cells.
+ * 1234 → "1.2K", 1234567 → "1.2M"
+ */
+export function formatMetric(n) → string
+
+/**
+ * Utility: compute estimated cost from token counts.
+ * Uses hardcoded per-provider rates (see COST_RATES below).
+ */
+export function estimateCost(provider, inputTokens, outputTokens) → string
+```
+
+**Cost rates** (hardcoded in `lib/data-rows.js`):
+```javascript
+const COST_RATES = {
+  anthropic: { input: 3.0 / 1_000_000, output: 15.0 / 1_000_000 },   // Claude Sonnet
+  google:    { input: 1.25 / 1_000_000, output: 10.0 / 1_000_000 },   // Gemini Pro
+  default:   { input: 3.0 / 1_000_000, output: 15.0 / 1_000_000 },
+};
+```
+
+These are rough estimates for display only — not billing-accurate. The `default` rate applies when provider is unknown.
+
+---
+
 ## Files to Change
 
 ### Frontend (packages/dashboard/src/)
@@ -273,7 +370,7 @@ No changes to existing color tokens. The grid data rows use the same surface sta
 | File | Change |
 |------|--------|
 | `style.css` | Add data row system classes, hub-grid, remove dead styles |
-| `app.js` | Hub grid layout, live timestamp intervals (1s + 30s) |
+| `app.js` | Hub grid layout, live timestamp intervals (1s + 30s), fix section refresh to use class-based selectors |
 | `hub/overview.js` | Add aggregate metrics to status bar |
 | `hub/activity.js` | Add NEW pill, adapt to side-by-side layout |
 | `hub/team.js` | Adapt to hub-grid left column |
@@ -282,15 +379,16 @@ No changes to existing color tokens. The grid data rows use the same surface sta
 | `detail/signals.js` | Rewrite as grid data rows with task ID links |
 | `detail/consensus.js` | Rewrite findings as grid data rows with dispute comparison |
 | `detail/knowledge.js` | Task history section → grid data rows |
-| `lib/data-rows.js` | **New**: shared data row rendering (header, row, expansion, sort, pagination) |
+| `lib/data-rows.js` | **New**: shared data row rendering (see API below) |
 
 ### Backend (packages/relay/src/dashboard/)
 
 | File | Change |
 |------|--------|
-| `api-tasks.ts` | Add pagination (`limit`/`offset`), return `inputTokens`/`outputTokens` |
-| `api-signals.ts` | Add pagination, return `taskId` |
-| `api-agents.ts` | Return `skills` array from SkillIndex |
+| `api-tasks.ts` | Add pagination (`limit`/`offset` params) |
+| `api-signals.ts` | Add pagination (`limit`/`offset` params) |
+| `api-agents.ts` | Add `skillSlots` field from SkillIndex integration |
+| `routes.ts` | Thread query params to tasksHandler and signalsHandler |
 
 ### Build
 
@@ -308,7 +406,7 @@ No changes to existing color tokens. The grid data rows use the same surface sta
 - Export to CSV
 - Keyboard navigation between rows
 - Virtual scrolling for 1000+ rows (pagination handles this)
-- Cost model configuration (hardcoded estimates per provider)
+- Cost model configuration beyond hardcoded estimates (see COST_RATES in lib/data-rows.js)
 - Mobile-specific layouts (current breakpoints sufficient)
 - Action buttons on findings (Mark Verified, Escalate)
 - Competency radar charts (bars are sufficient)
@@ -364,6 +462,15 @@ No changes to existing color tokens. The grid data rows use the same surface sta
 - `/api/tasks` response includes `inputTokens`, `outputTokens`
 - `/api/agents` response includes `skills` array
 - `/api/signals` response includes `taskId`
+
+### Edge cases
+- Empty state: views with no data show muted placeholder text
+- Empty filter: "No matching items" with "Clear filters" link when filters produce zero results
+- API error: "Failed to load — Retry" shown, retry link re-fetches
+- Pagination exhaustion: "Load more" button hidden when all items loaded
+- Search scope: "(searching N loaded of M total)" shown when not all data is loaded
+- Long task descriptions: truncated with ellipsis in grid row, full text in expansion panel
+- Hub section refresh: WS events correctly target sections after hub-grid wrapper added
 
 ### Performance
 - Hub loads in < 500ms with 400+ tasks in history
