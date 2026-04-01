@@ -258,13 +258,15 @@ Return only valid JSON.` },
         const finding = line.replace(/^\s*-\s*/, '').trim();
         if (!finding) continue;
         const key = `${r.agentId}::${finding}`;
+        // Detect source file anchors — restrict to known extensions to avoid false matches (node:18, http:443)
+        const hasAnchor = /[\w./-]+\.(ts|js|tsx|jsx|py|go|rs|java|rb|md|json|yaml|yml|toml|sh):\d+/.test(finding);
         findingMap.set(key, {
           originalAgentId: r.agentId,
           finding,
           confirmedBy: [],
           disputedBy: [],
           unverifiedBy: [],
-          confidences: [],
+          confidences: hasAnchor ? [] : [2], // pre-load low confidence for anchorless findings
         });
       }
     }

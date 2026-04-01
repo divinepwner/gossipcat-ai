@@ -721,3 +721,21 @@ describe('crossReviewForAgent per-finding snippets', () => {
     expect(prompt).toContain('const body = req.body');
   });
 });
+
+describe('anchor detection in synthesize', () => {
+  it('matches real source anchors but not false positives', () => {
+    const SOURCE_ANCHOR_PATTERN = /[\w./-]+\.(ts|js|tsx|jsx|py|go|rs|java|rb|md|json|yaml|yml|toml|sh):\d+/;
+
+    // Should match real source anchors
+    expect(SOURCE_ANCHOR_PATTERN.test('packages/relay/src/server.ts:47')).toBe(true);
+    expect(SOURCE_ANCHOR_PATTERN.test('consensus-engine.ts:254')).toBe(true);
+    expect(SOURCE_ANCHOR_PATTERN.test('src/index.js:1')).toBe(true);
+    expect(SOURCE_ANCHOR_PATTERN.test('file.yaml:10')).toBe(true);
+
+    // Should NOT match false positives
+    expect(SOURCE_ANCHOR_PATTERN.test('node:18')).toBe(false);
+    expect(SOURCE_ANCHOR_PATTERN.test('http://host:443')).toBe(false);
+    expect(SOURCE_ANCHOR_PATTERN.test('version: 1')).toBe(false);
+    expect(SOURCE_ANCHOR_PATTERN.test('accuracy is 0.95')).toBe(false);
+  });
+});
