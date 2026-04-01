@@ -193,7 +193,7 @@ function Dashboard() {
   } else {
     content = (
       <>
-        <FindingsMetrics overview={overview} consensus={consensus} />
+        <FindingsMetrics consensus={consensus} />
         {agents && <TeamSection agents={agents} />}
         {tasks && <TasksSection tasks={tasks} />}
         {memories && <RecentMemories memories={memories} />}

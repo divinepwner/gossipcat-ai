@@ -20,7 +20,7 @@ export function AgentRow({ agent, onClick }: AgentRowProps) {
       onClick={onClick}
       className="group flex w-full items-center gap-4 rounded-md border border-border bg-card p-3 text-left transition hover:border-primary/30 hover:bg-accent"
     >
-      <NeuralAvatar agentId={agent.id} size={52} online={agent.online} evolution={Math.min(1, (agent.scores.signals || 0) / 50)} />
+      <NeuralAvatar agentId={agent.id} size={64} animate={agent.online} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm font-semibold text-foreground">{agent.id}</span>

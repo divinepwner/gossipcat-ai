@@ -1,15 +1,13 @@
-import type { OverviewData, ConsensusData } from '@/lib/types';
+import type { ConsensusData } from '@/lib/types';
 import { timeAgo } from '@/lib/utils';
 
 interface FindingsMetricsProps {
-  overview: OverviewData;
   consensus: ConsensusData;
 }
 
 const MAX_RUNS = 5;
 
-export function FindingsMetrics({ overview, consensus }: FindingsMetricsProps) {
-  const total = overview.totalFindings;
+export function FindingsMetrics({ consensus }: FindingsMetricsProps) {
   const runs = consensus.runs.slice(0, MAX_RUNS);
   const hasMore = consensus.runs.length > MAX_RUNS;
 
@@ -17,7 +15,7 @@ export function FindingsMetrics({ overview, consensus }: FindingsMetricsProps) {
     <section>
       <div className="mb-4 flex items-center justify-between">
         <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-foreground">
-          Findings <span className="text-primary">{total}</span>
+          Consensus Rounds <span className="text-primary">{consensus.runs.length}</span>
         </h2>
         {hasMore && (
           <a
