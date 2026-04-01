@@ -73,13 +73,15 @@ export class DashboardRouter {
       return this.handleApi(req, res, url, query);
     }
 
-    // Static assets
-    if (url.startsWith('/dashboard/assets/')) {
-      return this.serveAsset(res, url);
+    // Static assets (Vite outputs to /assets/ and /dashboard/assets/)
+    if (url.startsWith('/dashboard/') && !url.startsWith('/dashboard/api/')) {
+      const served = this.serveStaticFile(res, url);
+      if (served) return true;
+      // SPA catch-all: serve index.html for unmatched routes
+      return this.serveDashboard(res);
     }
 
-    // Serve static dashboard (SPA) — catch-all for client-side routing
-    if (url === '/dashboard' || url === '/dashboard/' || (url.startsWith('/dashboard') && !url.startsWith('/dashboard/api/') && !url.startsWith('/dashboard/assets/'))) {
+    if (url === '/dashboard') {
       return this.serveDashboard(res);
     }
 
@@ -221,10 +223,11 @@ export class DashboardRouter {
     return true;
   }
 
-  private serveAsset(res: ServerResponse, url: string): boolean {
-    const filename = url.replace('/dashboard/assets/', '');
+  private serveStaticFile(res: ServerResponse, url: string): boolean {
+    // Strip /dashboard/ prefix to get the relative path within dist-dashboard/
+    const relativePath = url.replace(/^\/dashboard\//, '');
     // Prevent path traversal
-    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    if (relativePath.includes('..')) {
       res.writeHead(404);
       res.end();
       return true;
@@ -232,19 +235,20 @@ export class DashboardRouter {
     const MIME: Record<string, string> = {
       '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml',
       '.css': 'text/css', '.js': 'application/javascript', '.ico': 'image/x-icon',
+      '.woff': 'font/woff', '.woff2': 'font/woff2',
     };
-    const ext = '.' + filename.split('.').pop();
-    const mime = MIME[ext] || 'application/octet-stream';
-    const filePath = join(this.projectRoot, 'dist-dashboard', filename);
+    const ext = '.' + (relativePath.split('.').pop() || '');
+    const mime = MIME[ext];
+    if (!mime) return false; // Not a static file — fall through to SPA
+    const filePath = join(this.projectRoot, 'dist-dashboard', relativePath);
     try {
       const data = readFileSync(filePath);
       res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'public, max-age=86400' });
       res.end(data);
+      return true;
     } catch {
-      res.writeHead(404);
-      res.end();
+      return false; // File not found — fall through to SPA
     }
-    return true;
   }
 
   private extractSessionToken(req: IncomingMessage): string | null {

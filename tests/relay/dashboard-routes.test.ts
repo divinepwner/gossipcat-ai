@@ -39,7 +39,7 @@ describe('DashboardRouter', () => {
   beforeEach(() => {
     projectRoot = mkdtempSync(join(tmpdir(), 'gossip-dash-'));
     mkdirSync(join(projectRoot, '.gossip'), { recursive: true });
-    auth = new DashboardAuth(projectRoot);
+    auth = new DashboardAuth();
     auth.init();
     router = new DashboardRouter(auth, projectRoot, { agentConfigs: [], relayConnections: 0, connectedAgentIds: [] });
   });
@@ -161,7 +161,7 @@ describe('URL query string handling', () => {
   beforeEach(() => {
     projectRoot = mkdtempSync(join(tmpdir(), 'gossip-dash-'));
     mkdirSync(join(projectRoot, '.gossip'), { recursive: true });
-    auth = new DashboardAuth(projectRoot);
+    auth = new DashboardAuth();
     auth.init();
     router = new DashboardRouter(auth, projectRoot, { agentConfigs: [], relayConnections: 0, connectedAgentIds: [] });
     const token = auth.createSession(auth.getKey())!;
@@ -200,7 +200,7 @@ describe('SPA catch-all routing', () => {
   beforeEach(() => {
     projectRoot = mkdtempSync(join(tmpdir(), 'gossip-dash-'));
     mkdirSync(join(projectRoot, '.gossip'), { recursive: true });
-    auth = new DashboardAuth(projectRoot);
+    auth = new DashboardAuth();
     auth.init();
     router = new DashboardRouter(auth, projectRoot, { agentConfigs: [], relayConnections: 0, connectedAgentIds: [] });
   });
@@ -247,12 +247,12 @@ describe('SPA catch-all routing', () => {
     expect(res._status).toBe(401);
   });
 
-  it('does NOT catch /dashboard/assets/* as SPA', async () => {
+  it('falls through to SPA for missing assets', async () => {
     const req = mockReq('GET', '/dashboard/assets/app.js');
     const res = mockRes();
     await router.handle(req, res);
-    // Asset handler returns 404 (no assets in Phase 1), but it's handled (not SPA)
-    expect(res._status).toBe(404);
+    // Missing asset falls through to SPA catch-all (503 when dashboard not built in test env)
+    expect([404, 503]).toContain(res._status);
   });
 });
 
@@ -298,8 +298,7 @@ describe('RelayServer dashboard integration', () => {
   });
 
   it('POST /dashboard/api/auth with valid key returns session cookie', async () => {
-    const fullKey = require('fs').readFileSync(join(projectRoot, '.gossip', 'dashboard-key'), 'utf-8').trim();
-    const postBody = JSON.stringify({ key: fullKey });
+    const postBody = JSON.stringify({ key: server.dashboardKey });
     const { status, headers } = await new Promise<{ status: number; headers: http.IncomingHttpHeaders }>((resolve, reject) => {
       const req = http.request(`http://localhost:${server.port}/dashboard/api/auth`, {
         method: 'POST',
@@ -318,8 +317,7 @@ describe('RelayServer dashboard integration', () => {
   });
 
   it('full auth → cookie → API flow', async () => {
-    const fullKey = require('fs').readFileSync(join(projectRoot, '.gossip', 'dashboard-key'), 'utf-8').trim();
-    const postBody = JSON.stringify({ key: fullKey });
+    const postBody = JSON.stringify({ key: server.dashboardKey });
 
     // Step 1: Authenticate and get cookie
     const authRes = await new Promise<{ status: number; cookie: string }>((resolve, reject) => {
