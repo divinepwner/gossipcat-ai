@@ -38,13 +38,17 @@ export function AgentRow({ agent, onClick }: AgentRowProps) {
       {/* Model */}
       <span className="mt-1 text-[10px] text-muted-foreground">{agent.model.split('/').pop()}</span>
 
-      {/* Metrics */}
-      <div className="mt-2 flex gap-2 font-mono text-[10px]">
-        <span className="text-confirmed">{Math.round(s.accuracy * 100)}%</span>
-        <span className="text-muted-foreground">·</span>
-        <span className="text-primary">{Math.round(s.reliability * 100)}%</span>
-        <span className="text-muted-foreground">·</span>
-        <span className="text-unique">{Math.round(s.uniqueness * 100)}%</span>
+      {/* Metrics — meaningful at a glance */}
+      <div className="mt-2 font-mono text-[10px]">
+        {s.signals > 0 ? (
+          <div className="flex items-center gap-1.5">
+            <span className="text-confirmed">{Math.round(s.accuracy * 100)}% accurate</span>
+            <span className="text-muted-foreground">·</span>
+            <span className="text-muted-foreground">{s.signals} signals</span>
+          </div>
+        ) : (
+          <span className="text-muted-foreground/50">no signals yet</span>
+        )}
       </div>
 
       {/* Last activity */}
