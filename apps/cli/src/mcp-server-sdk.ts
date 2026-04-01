@@ -1128,9 +1128,9 @@ server.tool(
     // Auto mode: fast classify → route to single agent or full plan
     if (agent_id === 'auto') {
       await syncWorkersViaKeychain();
-      const complexity = await ctx.mainAgent.classifyTaskComplexity(task);
+      const classification = await ctx.mainAgent.classifyTaskComplexity(task);
 
-      if (complexity === 'multi') {
+      if (classification.complexity === 'multi') {
         // Multi-agent: return instructions to call gossip_plan for decomposition
         return { content: [{ type: 'text' as const, text:
           `Auto-dispatch: classified as multi-agent task.\n\n` +
@@ -1140,22 +1140,9 @@ server.tool(
         }] };
       }
 
-      // Single-agent: find best match and fall through to normal dispatch
-      const { AgentRegistry } = await import('@gossip/orchestrator');
-      const { findConfigPath, loadConfig, configToAgentConfigs } = await import('./config');
-      const configPath = findConfigPath();
-      if (!configPath) return { content: [{ type: 'text' as const, text: 'No config found. Run gossip_setup first.' }] };
-
-      const config = loadConfig(configPath);
-      const agentConfigs = configToAgentConfigs(config);
-      const registry = new AgentRegistry();
-      for (const ac of agentConfigs) registry.register(ac);
-
-      // Use inferSkills to extract relevant skills from the task text for better agent matching
-      const { inferSkills } = await import('./config');
-      const taskSkills = inferSkills(task, '');
-      const bestAgent = registry.findBestMatch(taskSkills.length > 0 ? taskSkills : ['implementation', 'typescript']);
-      const selectedId = bestAgent?.id || agentConfigs[0]?.id;
+      // Single-agent: LLM picked the best agent, fall back to first available
+      const selectedId = classification.agentId
+        || ctx.mainAgent.getAgentList?.()[0]?.id;
 
       if (!selectedId) {
         return { content: [{ type: 'text' as const, text: 'No agents available. Run gossip_setup first.' }] };

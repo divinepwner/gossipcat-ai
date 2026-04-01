@@ -364,18 +364,22 @@ export class MainAgent {
    * @returns A promise that resolves to either 'single' for simple, self-contained tasks
    *          or 'multi' for complex tasks requiring a coordinated effort.
    */
-  async classifyTaskComplexity(task: string): Promise<'single' | 'multi'> {
-    const agentSummary = this.registry.getAll()
-      .map(a => `${a.id}: ${a.preset ?? 'agent'} (${a.skills.join(', ')})`)
+  async classifyTaskComplexity(task: string): Promise<{ complexity: 'single' | 'multi'; agentId?: string }> {
+    const agents = this.registry.getAll();
+    const agentSummary = agents
+      .map(a => `${a.id}: ${a.role ?? a.preset ?? 'agent'} (${a.skills.join(', ')})`)
       .join('\n');
 
     const response = await this.llm.generate([
       {
         role: 'system',
-        content: `You classify tasks as "single" or "multi". Respond with ONLY one word.
+        content: `Classify this task and pick the best agent. Respond with ONLY one line in this format:
+single:<agent_id>
+OR
+multi
 
-"single" = one agent can handle the entire task (clear scope, one concern, no conflicting file ownership)
-"multi" = needs decomposition (multiple independent concerns, parallel workstreams, or unclear scope)
+"single" = one agent can handle it. Pick the best agent by skill match.
+"multi" = needs decomposition across multiple agents.
 
 Available agents:
 ${agentSummary}`,
@@ -384,8 +388,17 @@ ${agentSummary}`,
     ]);
 
     const answer = response.text.trim().toLowerCase();
-    if (answer === 'multi') return 'multi';
-    return 'single';
+    if (answer === 'multi') return { complexity: 'multi' };
+    const singleMatch = answer.match(/^single:(.+)/);
+    if (singleMatch) {
+      const agentId = singleMatch[1].trim();
+      // Verify agent exists
+      if (agents.some(a => a.id === agentId)) {
+        return { complexity: 'single', agentId };
+      }
+    }
+    // Default: single, let caller pick agent
+    return { complexity: 'single' };
   }
 
   /** Original decompose → assign → dispatch → synthesize flow. */

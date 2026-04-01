@@ -10703,14 +10703,18 @@ message: Your question?
        *          or 'multi' for complex tasks requiring a coordinated effort.
        */
       async classifyTaskComplexity(task) {
-        const agentSummary = this.registry.getAll().map((a) => `${a.id}: ${a.preset ?? "agent"} (${a.skills.join(", ")})`).join("\n");
+        const agents = this.registry.getAll();
+        const agentSummary = agents.map((a) => `${a.id}: ${a.role ?? a.preset ?? "agent"} (${a.skills.join(", ")})`).join("\n");
         const response = await this.llm.generate([
           {
             role: "system",
-            content: `You classify tasks as "single" or "multi". Respond with ONLY one word.
+            content: `Classify this task and pick the best agent. Respond with ONLY one line in this format:
+single:<agent_id>
+OR
+multi
 
-"single" = one agent can handle the entire task (clear scope, one concern, no conflicting file ownership)
-"multi" = needs decomposition (multiple independent concerns, parallel workstreams, or unclear scope)
+"single" = one agent can handle it. Pick the best agent by skill match.
+"multi" = needs decomposition across multiple agents.
 
 Available agents:
 ${agentSummary}`
@@ -10718,8 +10722,15 @@ ${agentSummary}`
           { role: "user", content: task }
         ]);
         const answer = response.text.trim().toLowerCase();
-        if (answer === "multi") return "multi";
-        return "single";
+        if (answer === "multi") return { complexity: "multi" };
+        const singleMatch = answer.match(/^single:(.+)/);
+        if (singleMatch) {
+          const agentId = singleMatch[1].trim();
+          if (agents.some((a) => a.id === agentId)) {
+            return { complexity: "single", agentId };
+          }
+        }
+        return { complexity: "single" };
       }
       /** Original decompose → assign → dispatch → synthesize flow. */
       async handleMessageDecompose(userMessage) {
@@ -30302,8 +30313,8 @@ server.tool(
     await boot();
     if (agent_id === "auto") {
       await syncWorkersViaKeychain();
-      const complexity = await ctx.mainAgent.classifyTaskComplexity(task);
-      if (complexity === "multi") {
+      const classification = await ctx.mainAgent.classifyTaskComplexity(task);
+      if (classification.complexity === "multi") {
         return { content: [{
           type: "text",
           text: `Auto-dispatch: classified as multi-agent task.
@@ -30314,18 +30325,7 @@ This task needs decomposition. Call:
 Then review the plan and dispatch with gossip_dispatch(mode: "parallel", tasks: <plan tasks>).`
         }] };
       }
-      const { AgentRegistry: AgentRegistry2 } = await Promise.resolve().then(() => (init_src4(), src_exports3));
-      const { findConfigPath: findConfigPath2, loadConfig: loadConfig2, configToAgentConfigs: configToAgentConfigs2 } = await Promise.resolve().then(() => (init_config(), config_exports));
-      const configPath = findConfigPath2();
-      if (!configPath) return { content: [{ type: "text", text: "No config found. Run gossip_setup first." }] };
-      const config2 = loadConfig2(configPath);
-      const agentConfigs = configToAgentConfigs2(config2);
-      const registry2 = new AgentRegistry2();
-      for (const ac of agentConfigs) registry2.register(ac);
-      const { inferSkills: inferSkills2 } = await Promise.resolve().then(() => (init_config(), config_exports));
-      const taskSkills = inferSkills2(task, "");
-      const bestAgent = registry2.findBestMatch(taskSkills.length > 0 ? taskSkills : ["implementation", "typescript"]);
-      const selectedId = bestAgent?.id || agentConfigs[0]?.id;
+      const selectedId = classification.agentId || ctx.mainAgent.getAgentList?.()[0]?.id;
       if (!selectedId) {
         return { content: [{ type: "text", text: "No agents available. Run gossip_setup first." }] };
       }
