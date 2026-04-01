@@ -14412,6 +14412,7 @@ __export(config_exports, {
   claudeSubagentsToConfigs: () => claudeSubagentsToConfigs,
   configToAgentConfigs: () => configToAgentConfigs,
   findConfigPath: () => findConfigPath,
+  inferSkills: () => inferSkills,
   loadClaudeSubagents: () => loadClaudeSubagents,
   loadConfig: () => loadConfig,
   validateConfig: () => validateConfig
@@ -30300,6 +30301,7 @@ server.tool(
   async ({ agent_id, task, write_mode, scope }) => {
     await boot();
     if (agent_id === "auto") {
+      await syncWorkersViaKeychain();
       const complexity = await ctx.mainAgent.classifyTaskComplexity(task);
       if (complexity === "multi") {
         return { content: [{
@@ -30320,8 +30322,9 @@ Then review the plan and dispatch with gossip_dispatch(mode: "parallel", tasks: 
       const agentConfigs = configToAgentConfigs2(config2);
       const registry2 = new AgentRegistry2();
       for (const ac of agentConfigs) registry2.register(ac);
-      const implSkills = ["implementation", "typescript"];
-      const bestAgent = registry2.findBestMatch(implSkills);
+      const { inferSkills: inferSkills2 } = await Promise.resolve().then(() => (init_config(), config_exports));
+      const taskSkills = inferSkills2(task, "");
+      const bestAgent = registry2.findBestMatch(taskSkills.length > 0 ? taskSkills : ["implementation", "typescript"]);
       const selectedId = bestAgent?.id || agentConfigs[0]?.id;
       if (!selectedId) {
         return { content: [{ type: "text", text: "No agents available. Run gossip_setup first." }] };

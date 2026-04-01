@@ -1127,6 +1127,7 @@ server.tool(
 
     // Auto mode: fast classify → route to single agent or full plan
     if (agent_id === 'auto') {
+      await syncWorkersViaKeychain();
       const complexity = await ctx.mainAgent.classifyTaskComplexity(task);
 
       if (complexity === 'multi') {
@@ -1150,8 +1151,10 @@ server.tool(
       const registry = new AgentRegistry();
       for (const ac of agentConfigs) registry.register(ac);
 
-      const implSkills = ['implementation', 'typescript'];
-      const bestAgent = registry.findBestMatch(implSkills);
+      // Use inferSkills to extract relevant skills from the task text for better agent matching
+      const { inferSkills } = await import('./config');
+      const taskSkills = inferSkills(task, '');
+      const bestAgent = registry.findBestMatch(taskSkills.length > 0 ? taskSkills : ['implementation', 'typescript']);
       const selectedId = bestAgent?.id || agentConfigs[0]?.id;
 
       if (!selectedId) {

@@ -188,7 +188,7 @@ export function claudeSubagentsToConfigs(subagents: ClaudeSubagent[]): AgentConf
   }));
 }
 
-function inferSkills(description: string, name: string): string[] {
+export function inferSkills(description: string, name: string): string[] {
   const text = `${name} ${description}`.toLowerCase();
   const skills: string[] = [];
   if (/prompt|llm|ai|agent/.test(text)) skills.push('prompt_engineering');
