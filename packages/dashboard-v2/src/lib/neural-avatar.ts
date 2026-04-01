@@ -176,7 +176,7 @@ export class OrbAvatarEngine {
 
     const rawNodes = topoFn(this.size, rng, nodeCount);
 
-    const nodeSizeBoost = 1.4; // bigger nodes than crab-language default
+    const nodeSizeBoost = 1.7; // bigger nodes than crab-language default
     this.nodes = rawNodes.map(n => ({
       x: n.x, y: n.y, originX: n.x, originY: n.y,
       baseSize: n.size * sizeRatio * nodeSizeBoost,
@@ -304,10 +304,10 @@ export class OrbAvatarEngine {
     for (const c of connections) {
       const f = nodes[c.from], t = nodes[c.to];
       const connBreath = 0.7 + 0.3 * Math.sin(time * c.pulseSpeed + c.pulsePhase);
-      const alpha = (c.strength * 0.6 + 0.25) * connBreath;
+      const alpha = (c.strength * 0.6 + 0.3) * connBreath;
       ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(t.x, t.y);
       ctx.strokeStyle = rgba(color.primary, alpha);
-      ctx.lineWidth = (1.0 + c.strength * 1.5) * (0.85 + connBreath * 0.15);
+      ctx.lineWidth = (1.2 + c.strength * 1.8) * (0.85 + connBreath * 0.15);
       ctx.stroke();
     }
 
