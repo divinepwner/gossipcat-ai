@@ -226,7 +226,7 @@ async function doBoot() {
   await ctx.relay.start();
 
   if (ctx.relay.dashboardUrl) {
-    process.stderr.write(`[gossipcat] Dashboard: ${ctx.relay.dashboardUrl} (key: ${ctx.relay.dashboardKeyPrefix}...)\n`);
+    process.stderr.write(`[gossipcat] Dashboard: ${ctx.relay.dashboardUrl} (key: ${ctx.relay.dashboardKey})\n`);
   }
 
   // Create performance writer for ATI signal collection
@@ -1098,10 +1098,41 @@ server.tool(
   async ({ agent_id, task, write_mode, scope }) => {
     await boot();
 
-    // Auto mode: orchestrator decomposes and assigns agents
+    // Auto mode: fast classify → route to single agent or full plan
     if (agent_id === 'auto') {
-      const result = await ctx.mainAgent.handleMessage(task, { mode: 'decompose' });
-      return { content: [{ type: 'text' as const, text: typeof result === 'string' ? result : JSON.stringify(result) }] };
+      const complexity = await ctx.mainAgent.classifyTaskComplexity(task);
+
+      if (complexity === 'multi') {
+        // Multi-agent: delegate to full gossip_plan flow
+        const result = await ctx.mainAgent.handleMessage(task, { mode: 'decompose' });
+        return { content: [{ type: 'text' as const, text: typeof result === 'string' ? result : JSON.stringify(result) }] };
+      }
+
+      // Single-agent: find best match and dispatch directly
+      const { AgentRegistry } = await import('@gossip/orchestrator');
+      const { findConfigPath, loadConfig, configToAgentConfigs } = await import('./config');
+      const configPath = findConfigPath();
+      if (!configPath) return { content: [{ type: 'text' as const, text: 'No config found. Run gossip_setup first.' }] };
+
+      const config = loadConfig(configPath);
+      const agentConfigs = configToAgentConfigs(config);
+      const registry = new AgentRegistry();
+      for (const ac of agentConfigs) registry.register(ac);
+
+      const implSkills = ['implementation', 'typescript'];
+      const bestAgent = registry.findBestMatch(implSkills);
+      const selectedId = bestAgent?.id || agentConfigs[0]?.id;
+
+      if (!selectedId) {
+        return { content: [{ type: 'text' as const, text: 'No agents available. Run gossip_setup first.' }] };
+      }
+
+      return { content: [{ type: 'text' as const, text:
+        `Auto-dispatch: classified as single-agent task.\n` +
+        `Selected: ${selectedId} (best match by dispatch weight)\n\n` +
+        `Dispatching via: gossip_run(agent_id: "${selectedId}", task: "${task.slice(0, 80)}...")\n\n` +
+        `Call gossip_run(agent_id: "${selectedId}", task: <your task>) to execute.`
+      }] };
     }
 
     const isNative = ctx.nativeAgentConfigs.has(agent_id);
