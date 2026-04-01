@@ -30317,13 +30317,7 @@ Then review the plan and dispatch with gossip_dispatch(mode: "parallel", tasks: 
       if (!selectedId) {
         return { content: [{ type: "text", text: "No agents available. Run gossip_setup first." }] };
       }
-      return { content: [{
-        type: "text",
-        text: `Auto-dispatch: classified as single-agent task.
-Selected: ${selectedId} (best match by dispatch weight)
-
-Call gossip_run(agent_id: "${selectedId}", task: <full task description>) to execute.`
-      }] };
+      agent_id = selectedId;
     }
     const isNative = ctx.nativeAgentConfigs.has(agent_id);
     const options = {};

@@ -1139,7 +1139,7 @@ server.tool(
         }] };
       }
 
-      // Single-agent: find best match and dispatch directly
+      // Single-agent: find best match and fall through to normal dispatch
       const { AgentRegistry } = await import('@gossip/orchestrator');
       const { findConfigPath, loadConfig, configToAgentConfigs } = await import('./config');
       const configPath = findConfigPath();
@@ -1158,11 +1158,8 @@ server.tool(
         return { content: [{ type: 'text' as const, text: 'No agents available. Run gossip_setup first.' }] };
       }
 
-      return { content: [{ type: 'text' as const, text:
-        `Auto-dispatch: classified as single-agent task.\n` +
-        `Selected: ${selectedId} (best match by dispatch weight)\n\n` +
-        `Call gossip_run(agent_id: "${selectedId}", task: <full task description>) to execute.`
-      }] };
+      // Fall through to the normal dispatch below with the selected agent
+      agent_id = selectedId;
     }
 
     const isNative = ctx.nativeAgentConfigs.has(agent_id);
