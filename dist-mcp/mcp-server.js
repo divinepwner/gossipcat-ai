@@ -14511,17 +14511,10 @@ function claudeSubagentsToConfigs(subagents) {
     id: sa.id,
     provider: sa.provider,
     model: sa.model,
-    preset: inferPreset(sa.description, sa.name),
+    role: sa.description || sa.name,
     skills: inferSkills(sa.description, sa.name),
     native: true
   }));
-}
-function inferPreset(description, name) {
-  const text = `${name} ${description}`.toLowerCase();
-  if (/review|audit|critic/.test(text)) return "reviewer";
-  if (/research|investigat|analyz/.test(text)) return "researcher";
-  if (/test|qa|quality/.test(text)) return "tester";
-  return "implementer";
 }
 function inferSkills(description, name) {
   const text = `${name} ${description}`.toLowerCase();
@@ -28560,19 +28553,8 @@ var ctx = {
   }
 };
 var NATIVE_TASK_TTL_MS = 2 * 60 * 60 * 1e3;
-function presetScores(preset) {
-  switch (preset) {
-    case "reviewer":
-      return { relevance: 3, accuracy: 5, uniqueness: 4 };
-    case "tester":
-      return { relevance: 3, accuracy: 4, uniqueness: 4 };
-    case "researcher":
-      return { relevance: 4, accuracy: 3, uniqueness: 5 };
-    case "implementer":
-      return { relevance: 5, accuracy: 3, uniqueness: 2 };
-    default:
-      return { relevance: 3, accuracy: 3, uniqueness: 3 };
-  }
+function defaultImportanceScores() {
+  return { relevance: 3, accuracy: 3, uniqueness: 3 };
 }
 
 // apps/cli/src/handlers/native-tasks.ts
@@ -28799,7 +28781,7 @@ async function handleNativeRelay(task_id, result, error48) {
         if (ctx.mainAgent.getLLM()) memWriter.setSummaryLlm(ctx.mainAgent.getLLM());
       } catch {
       }
-      const scores = presetScores(agentMeta.preset);
+      const scores = defaultImportanceScores();
       await memWriter.writeTaskEntry(agentId, {
         taskId: task_id,
         task: taskInfo.task,
@@ -29539,7 +29521,7 @@ async function doBoot() {
         instructions2 = rf(instrPath, "utf-8");
       }
       const modelTier = ac.model.includes("opus") ? "opus" : ac.model.includes("haiku") ? "haiku" : "sonnet";
-      ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions: instructions2, description: ac.preset || "" });
+      ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions: instructions2, description: ac.role || ac.preset || "" });
       process.stderr.write(`[gossipcat] ${ac.id}: native agent (${modelTier}, dispatched via Agent tool)
 `);
       continue;
@@ -29786,7 +29768,7 @@ async function doSyncWorkers() {
           instructions = rf(instrPath, "utf-8");
         }
         const modelTier = ac.model.includes("opus") ? "opus" : ac.model.includes("haiku") ? "haiku" : "sonnet";
-        ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions, description: ac.preset || "" });
+        ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions, description: ac.role || ac.preset || "" });
       }
     }
     const existingIds = /* @__PURE__ */ new Set([...agentConfigs.map((a) => a.id), ...ctx.workers.keys(), ...ctx.nativeAgentConfigs.keys()]);
@@ -30081,7 +30063,7 @@ server.tool(
       provider: external_exports.enum(["anthropic", "openai", "google", "local"]).optional().describe("For custom agents: LLM provider"),
       custom_model: external_exports.string().optional().describe("For custom agents: model ID (e.g. gemini-2.5-pro, gpt-4o, claude-sonnet-4-6)"),
       // Shared fields
-      preset: external_exports.enum(["implementer", "reviewer", "researcher", "tester"]).optional().describe("Agent role preset"),
+      role: external_exports.string().optional().describe('Agent role \u2014 freeform, e.g. "ui-architect", "security-auditor", "reviewer"'),
       skills: external_exports.array(external_exports.string()).optional().describe('Skill tags (e.g. ["typescript", "code_review"])')
     })).describe("Array of agents to create")
   },
@@ -30166,8 +30148,8 @@ server.tool(
           errors.push(`${agent.id}: unknown model tier "${modelTier}"`);
           continue;
         }
-        const desc = agent.description || `${agent.preset || "general"} agent`;
-        const body = agent.instructions || `You are a ${agent.preset || "skilled developer"} agent. Complete assigned tasks using available tools. Be concise and focused.`;
+        const desc = agent.description || agent.role || `general agent`;
+        const body = agent.instructions || `You are a ${agent.role || "skilled developer"} agent. Complete assigned tasks using available tools. Be concise and focused.`;
         const tools = ["Bash", "Glob", "Grep", "Read", "Edit", "Write"];
         const md = [
           "---",
@@ -30187,7 +30169,7 @@ server.tool(
         configAgents[agent.id] = {
           provider: mapped.provider,
           model: mapped.model,
-          preset: agent.preset || "implementer",
+          role: agent.role || agent.preset,
           skills: agent.skills || ["general"],
           native: true
         };
@@ -30209,7 +30191,7 @@ server.tool(
         configAgents[agent.id] = {
           provider: agent.provider,
           model: agent.custom_model,
-          preset: agent.preset || "implementer",
+          role: agent.role || agent.preset,
           skills: agent.skills || ["general"]
         };
         customCreated.push(agent.id);
@@ -30344,19 +30326,11 @@ Then review the plan and dispatch with gossip_dispatch(mode: "parallel", tasks: 
       } catch {
       }
       const config2 = ctx.nativeAgentConfigs.get(agent_id);
-      const agentConfig = ctx.mainAgent.getAgentList?.()?.find((a) => a.id === agent_id);
-      const preset = agentConfig?.preset || config2.description || "";
-      const presetPrompts = {
-        reviewer: "You are a senior code reviewer. Focus on logic errors, security vulnerabilities, TypeScript type safety, and performance. Cite file:line for every finding.",
-        researcher: "You are a research agent. Explore codebases, trace execution paths, answer architecture questions. Be concise \u2014 bullet points over paragraphs. Cite file paths.",
-        implementer: "You are an implementation agent. Write clean, tested code. Follow existing patterns. Commit your work.",
-        tester: "You are a testing agent. Write thorough tests, find edge cases, verify behavior. Run tests and report results."
-      };
-      const presetPrompt = presetPrompts[preset] || `You are a ${preset} agent.`;
+      const basePrompt = config2.instructions || `You are a skilled ${config2.description || "agent"}. Complete the task thoroughly.`;
       const scopePrefix = write_mode === "scoped" && scope ? `SCOPE RESTRICTION: Only modify files within ${scope}. Do not edit files outside this directory.
 
 ` : "";
-      const agentPrompt = `${scopePrefix}${presetPrompt}
+      const agentPrompt = `${scopePrefix}${basePrompt}
 
 ---
 
