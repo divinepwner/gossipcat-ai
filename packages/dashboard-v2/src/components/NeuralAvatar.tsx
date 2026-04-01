@@ -5,9 +5,11 @@ interface NeuralAvatarProps {
   agentId: string;
   size?: number;
   animate?: boolean;
+  /** 0-1: controls node count and complexity. For gossipcat: signals/200 */
+  evolution?: number;
 }
 
-export function NeuralAvatar({ agentId, size = 64, animate = true }: NeuralAvatarProps) {
+export function NeuralAvatar({ agentId, size = 64, animate = true, evolution = 0.15 }: NeuralAvatarProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<OrbAvatarEngine | null>(null);
   const rafRef = useRef<number>(0);
@@ -23,7 +25,7 @@ export function NeuralAvatar({ agentId, size = 64, animate = true }: NeuralAvata
     if (!ctx) return;
     ctx.scale(2, 2);
 
-    const engine = new OrbAvatarEngine(canvas, agentId);
+    const engine = new OrbAvatarEngine(canvas, agentId, evolution);
     engineRef.current = engine;
     engine.draw();
 
@@ -42,7 +44,7 @@ export function NeuralAvatar({ agentId, size = 64, animate = true }: NeuralAvata
       cancelAnimationFrame(rafRef.current);
       engineRef.current = null;
     };
-  }, [agentId, size, animate]);
+  }, [agentId, size, animate, evolution]);
 
   useEffect(() => {
     const canvas = canvasRef.current;

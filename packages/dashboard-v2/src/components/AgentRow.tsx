@@ -24,7 +24,7 @@ export function AgentRow({ agent, onClick }: AgentRowProps) {
           className="absolute -inset-3 rounded-full opacity-30 blur-xl transition group-hover:opacity-50"
           style={{ background: color }}
         />
-        <NeuralAvatar agentId={agent.id} size={96} animate={agent.online} />
+        <NeuralAvatar agentId={agent.id} size={96} animate={agent.online} evolution={Math.min(1, (agent.scores.signals || 0) / 200)} />
       </div>
 
       {/* Agent name */}
