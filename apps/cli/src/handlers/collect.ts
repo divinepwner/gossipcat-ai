@@ -287,11 +287,11 @@ export async function handleCollect(
     }
   } catch { /* best-effort */ }
 
-  // Session save reminder after enough activity
+  // Session save reminder — only every 10th collect to avoid nagging
   try {
     const gossipCount = ctx.mainAgent.getSessionGossip().length;
     const consensusCount = ctx.mainAgent.getSessionConsensusHistory().length;
-    if (gossipCount >= 5 || consensusCount >= 1) {
+    if (gossipCount > 0 && gossipCount % 10 === 0) {
       output += `\n\n💡 Active session (${gossipCount} tasks, ${consensusCount} consensus runs). Call gossip_session_save() before ending to preserve what you've learned.`;
     }
   } catch { /* best-effort */ }

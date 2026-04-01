@@ -29396,7 +29396,7 @@ ${suggestions.map((s) => `  - ${s}`).join("\n")}`;
   try {
     const gossipCount = ctx.mainAgent.getSessionGossip().length;
     const consensusCount = ctx.mainAgent.getSessionConsensusHistory().length;
-    if (gossipCount >= 5 || consensusCount >= 1) {
+    if (gossipCount > 0 && gossipCount % 10 === 0) {
       output += `
 
 \u{1F4A1} Active session (${gossipCount} tasks, ${consensusCount} consensus runs). Call gossip_session_save() before ending to preserve what you've learned.`;
