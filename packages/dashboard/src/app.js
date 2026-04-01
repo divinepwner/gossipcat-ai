@@ -166,7 +166,7 @@ async function route() {
   if (path === '/' || path === '/overview') return renderHub(app);
 
   // Detail views
-  if (path === '/team') return renderAllAgents(app);
+  if (path === '/team') return renderAgentDetail(app);
   if (parts[0] === 'team' && parts[1]) return renderAgentDetail(app, decodeURIComponent(parts[1]));
   if (path === '/tasks') return renderTasksDetail(app);
   if (parts[0] === 'consensus' && parts[1]) return renderConsensusDetail(app, decodeURIComponent(parts[1]));
