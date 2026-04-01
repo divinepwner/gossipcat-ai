@@ -1,11 +1,18 @@
+import { useState } from 'react';
 import type { TasksData } from '@/lib/types';
 import { TaskRow } from './TaskRow';
+
+const PAGE_SIZE = 25;
 
 interface TasksSectionProps {
   tasks: TasksData;
 }
 
 export function TasksSection({ tasks }: TasksSectionProps) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? tasks.items : tasks.items.slice(0, PAGE_SIZE);
+  const remaining = tasks.items.length - PAGE_SIZE;
+
   return (
     <section>
       <h2 className="mb-4 font-mono text-xs font-bold uppercase tracking-widest text-foreground">
@@ -24,7 +31,7 @@ export function TasksSection({ tasks }: TasksSectionProps) {
             </tr>
           </thead>
           <tbody>
-            {tasks.items.map((task) => (
+            {visible.map((task) => (
               <TaskRow key={task.taskId} task={task} />
             ))}
           </tbody>
@@ -33,6 +40,14 @@ export function TasksSection({ tasks }: TasksSectionProps) {
           <div className="py-8 text-center text-sm text-muted-foreground">No tasks yet.</div>
         )}
       </div>
+      {remaining > 0 && !showAll && (
+        <button
+          onClick={() => setShowAll(true)}
+          className="mt-3 w-full rounded-md border border-dashed border-border py-2 font-mono text-xs text-muted-foreground transition hover:border-primary hover:text-primary"
+        >
+          show more ({remaining} remaining)
+        </button>
+      )}
     </section>
   );
 }

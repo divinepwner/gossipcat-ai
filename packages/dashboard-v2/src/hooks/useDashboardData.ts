@@ -30,7 +30,7 @@ export function useDashboardData() {
       // Fetch memories for top agents + _project
       const agentIds = agents.slice(0, 5).map((a) => a.id).concat(['_project']);
       const memoryResults = await Promise.allSettled(
-        agentIds.map((id) => api<MemoryData>(`knowledge/${id}`))
+        agentIds.map((id) => api<MemoryData>(`memory/${id}`))
       );
       const allMemories: MemoryFile[] = [];
       for (const result of memoryResults) {

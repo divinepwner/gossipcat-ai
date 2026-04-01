@@ -10,8 +10,7 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 import { useDashboardData } from '@/hooks/useDashboardData';
 import type { DashboardEvent } from '@/lib/types';
 
-export function App() {
-  const { authed, login, error } = useAuth();
+function Dashboard() {
   const { overview, agents, tasks, consensus, memories, loading, refresh } = useDashboardData();
 
   const handleWsEvent = useCallback((_event: DashboardEvent) => {
@@ -19,14 +18,6 @@ export function App() {
   }, [refresh]);
 
   useWebSocket(handleWsEvent);
-
-  if (authed === null) {
-    return <div className="flex min-h-screen items-center justify-center text-muted-foreground">Loading...</div>;
-  }
-
-  if (!authed) {
-    return <AuthGate onLogin={login} error={error} />;
-  }
 
   if (loading || !overview || !consensus) {
     return (
@@ -48,4 +39,18 @@ export function App() {
       </main>
     </div>
   );
+}
+
+export function App() {
+  const { authed, login, error } = useAuth();
+
+  if (authed === null) {
+    return <div className="flex min-h-screen items-center justify-center text-muted-foreground">Loading...</div>;
+  }
+
+  if (!authed) {
+    return <AuthGate onLogin={login} error={error} />;
+  }
+
+  return <Dashboard />;
 }
