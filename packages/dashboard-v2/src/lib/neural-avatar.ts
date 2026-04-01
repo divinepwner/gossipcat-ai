@@ -157,15 +157,21 @@ export class OrbAvatarEngine {
   private glowIntensity: number;
   private pulseRate: number;
 
-  constructor(canvas: HTMLCanvasElement, agentId: string, evolution = 0.15) {
+  private accuracy: number;
+  private uniqueness: number;
+
+  constructor(canvas: HTMLCanvasElement, agentId: string, evolution = 0.15, accuracy = 0.5, uniqueness = 0.5) {
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('No 2D context');
     this.ctx = ctx;
     this.size = canvas.width / 2;
     this.color = colorFromAgent(agentId);
+    this.accuracy = Math.max(0, Math.min(1, accuracy));
+    this.uniqueness = Math.max(0, Math.min(1, uniqueness));
 
     const evo = Math.max(0, Math.min(1, evolution));
-    this.glowIntensity = 1.0 + evo * 0.8;
+    // Accuracy drives glow intensity — high accuracy = brighter
+    this.glowIntensity = 0.6 + this.accuracy * 1.4;
     this.pulseRate = 0.06 + evo * 0.08;
 
     const seed = hashString(agentId);
@@ -190,8 +196,9 @@ export class OrbAvatarEngine {
       driftSpeed: rng.range(0.1, 0.3),
       driftRadius: rng.range(0.3, 1.0),
       glimpsePhase: rng.next() * Math.PI * 2,
-      glimpseSpeed: rng.range(0.05, 0.15),
-      glimpseIntensity: rng.range(0.2, 0.5),
+      // Uniqueness drives blink frequency and intensity
+      glimpseSpeed: rng.range(0.03, 0.1) + this.uniqueness * 0.25,
+      glimpseIntensity: rng.range(0.1, 0.3) + this.uniqueness * 0.6,
     }));
 
     // Connections — generous like crab-language

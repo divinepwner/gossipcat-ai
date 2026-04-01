@@ -5,11 +5,18 @@ interface NeuralAvatarProps {
   agentId: string;
   size?: number;
   animate?: boolean;
-  /** 0-1: controls node count and complexity. For gossipcat: signals/200 */
+  /** 0-1: controls node count. signals/200 */
   evolution?: number;
+  /** 0-1: controls glow intensity */
+  accuracy?: number;
+  /** 0-1: controls blink/glimpse frequency */
+  uniqueness?: number;
 }
 
-export function NeuralAvatar({ agentId, size = 64, animate = true, evolution = 0.15 }: NeuralAvatarProps) {
+export function NeuralAvatar({
+  agentId, size = 64, animate = true,
+  evolution = 0.15, accuracy = 0.5, uniqueness = 0.5,
+}: NeuralAvatarProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<OrbAvatarEngine | null>(null);
   const rafRef = useRef<number>(0);
@@ -25,11 +32,10 @@ export function NeuralAvatar({ agentId, size = 64, animate = true, evolution = 0
     if (!ctx) return;
     ctx.scale(2, 2);
 
-    const engine = new OrbAvatarEngine(canvas, agentId, evolution);
+    const engine = new OrbAvatarEngine(canvas, agentId, evolution, accuracy, uniqueness);
     engineRef.current = engine;
     engine.draw();
 
-    // Always animate — even "offline" agents breathe, just dimmed
     const loop = () => {
       if (visibleRef.current) {
         engine.update(0.016);
@@ -43,7 +49,7 @@ export function NeuralAvatar({ agentId, size = 64, animate = true, evolution = 0
       cancelAnimationFrame(rafRef.current);
       engineRef.current = null;
     };
-  }, [agentId, size, animate, evolution]);
+  }, [agentId, size, animate, evolution, accuracy, uniqueness]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -55,7 +61,7 @@ export function NeuralAvatar({ agentId, size = 64, animate = true, evolution = 0
     );
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, [animate]);
+  }, []);
 
   return (
     <canvas
@@ -66,7 +72,7 @@ export function NeuralAvatar({ agentId, size = 64, animate = true, evolution = 0
         width: size,
         height: size,
         borderRadius: '50%',
-        opacity: animate ? 1 : 0.4,
+        opacity: animate ? 1 : 0.5,
         transition: 'opacity 0.3s',
       }}
     />

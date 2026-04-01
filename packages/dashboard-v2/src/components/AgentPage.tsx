@@ -68,7 +68,12 @@ export function AgentPage({ agentId, agents, tasks, consensus }: AgentPageProps)
       <div className="mb-8 flex items-center gap-6">
         <div className="relative">
           <div className="absolute -inset-4 rounded-full opacity-20 blur-xl" style={{ background: color }} />
-          <NeuralAvatar agentId={agent.id} size={160} animate={agent.online} evolution={Math.min(1, (s.signals || 0) / 200)} />
+          <NeuralAvatar
+            agentId={agent.id} size={160} animate={agent.online}
+            evolution={Math.min(1, (s.signals || 0) / 200)}
+            accuracy={s.accuracy}
+            uniqueness={s.uniqueness}
+          />
         </div>
         <div>
           <h1 className="font-mono text-2xl font-bold text-foreground">{agent.id}</h1>
