@@ -221,10 +221,29 @@ export class DashboardRouter {
     return true;
   }
 
-  private serveAsset(res: ServerResponse, _url: string): boolean {
-    // No assets in Phase 1 — everything is bundled in index.html
-    res.writeHead(404);
-    res.end();
+  private serveAsset(res: ServerResponse, url: string): boolean {
+    const filename = url.replace('/dashboard/assets/', '');
+    // Prevent path traversal
+    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+      res.writeHead(404);
+      res.end();
+      return true;
+    }
+    const MIME: Record<string, string> = {
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml',
+      '.css': 'text/css', '.js': 'application/javascript', '.ico': 'image/x-icon',
+    };
+    const ext = '.' + filename.split('.').pop();
+    const mime = MIME[ext] || 'application/octet-stream';
+    const filePath = join(this.projectRoot, 'dist-dashboard', filename);
+    try {
+      const data = readFileSync(filePath);
+      res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'public, max-age=86400' });
+      res.end(data);
+    } catch {
+      res.writeHead(404);
+      res.end();
+    }
     return true;
   }
 

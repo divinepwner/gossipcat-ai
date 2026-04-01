@@ -85,6 +85,11 @@ body::after {
   box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 80px rgba(167,139,250,0.06);
   backdrop-filter: blur(12px);
 }
+.auth-logo {
+  width: 120px; height: 120px; object-fit: contain;
+  margin-bottom: 0.75rem;
+  filter: drop-shadow(0 0 20px rgba(167,139,250,0.3));
+}
 .auth-card h1 {
   color: var(--accent); font-size: 1.75rem; font-weight: 700;
   margin-bottom: 0.25rem; letter-spacing: -0.03em;
@@ -127,9 +132,11 @@ body::after {
 }
 .nav-left { display: flex; align-items: center; gap: 10px; }
 .logo {
+  display: flex; align-items: center; gap: 8px;
   font-size: 16px; font-weight: 700; color: var(--accent);
   letter-spacing: -0.02em; text-decoration: none;
 }
+.logo-img { width: 28px; height: 28px; object-fit: contain; }
 .logo:hover { opacity: 0.9; }
 .sep { color: var(--text-3); font-size: 12px; }
 .crumb { color: var(--text-2); font-size: 13px; font-weight: 500; }
