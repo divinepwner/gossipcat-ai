@@ -125,7 +125,12 @@ gossip_signals(signals: [
 \`\`\`
 **CRITICAL:** Record \`hallucination_caught\` IMMEDIATELY when a finding is wrong. Don't batch — record inline as you verify. This keeps agent scores accurate.
 
-### Step 5: Fix confirmed issues (only after all signals recorded).
+### Step 5: Verify ALL UNVERIFIED findings.
+UNVERIFIED does not mean "skip." It means the cross-reviewer couldn't check it — YOU can.
+For each UNVERIFIED finding: grep/read the cited code or identifiers, then record the signal.
+Do NOT present raw consensus results with unverified findings to the user.
+
+### Step 6: Fix confirmed issues (only after all signals recorded).
 
 ## Performance Signals & Agent Scores
 

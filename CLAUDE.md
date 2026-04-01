@@ -10,6 +10,10 @@ Also read `.gossip/next-session.md` if it exists — it has the prioritized task
 Call `gossip_setup(mode: "merge", ...)` to refresh after adding/removing agents.
 Call `gossip_session_save()` before ending your session to preserve context.
 
+**After consensus:** Verify ALL UNVERIFIED findings against the code before presenting
+results. UNVERIFIED means the cross-reviewer couldn't check — you can and must. Do not
+show raw consensus results with unexamined UNVERIFIED findings.
+
 ---
 
 ## gstack

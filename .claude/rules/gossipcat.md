@@ -200,6 +200,30 @@ which means wrong agents get picked for future tasks. The haiku-researcher tscon
 
 ---
 
+## UNVERIFIED Findings — Mandatory Verification
+
+**After every `gossip_collect` with consensus, the orchestrator MUST verify ALL UNVERIFIED
+findings before presenting results to the user.**
+
+UNVERIFIED does not mean "low priority" or "probably wrong." It means the cross-reviewer
+couldn't access the code — but the orchestrator CAN. In practice, most UNVERIFIED findings
+are real issues. Evidence: 4/4 UNVERIFIED findings in the 2026-04-01 session were confirmed
+as real bugs after manual verification.
+
+**Workflow after consensus:**
+1. Read each UNVERIFIED finding
+2. Grep/read the cited code or `<fn>`-tagged identifiers
+3. Record the appropriate signal (`unique_confirmed` or `hallucination_caught`)
+4. Present the fully verified report — no UNVERIFIED findings left unexamined
+5. Only present genuinely ambiguous findings as "uncertain"
+
+**Do NOT:**
+- Present raw consensus results with UNVERIFIED findings and ask the user what to do
+- Skip verification because "the user can check it"
+- Leave UNVERIFIED findings unexamined — that is a system failure
+
+---
+
 ## Closing the Loop: Hallucination → Skill Development
 
 When you record `hallucination_caught` for an agent, check if the error maps to a
