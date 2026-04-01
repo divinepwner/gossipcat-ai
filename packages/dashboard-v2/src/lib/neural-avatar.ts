@@ -166,7 +166,7 @@ export class OrbAvatarEngine {
 
     const evo = Math.max(0, Math.min(1, evolution));
     this.glowIntensity = 1.0 + evo * 0.8;
-    this.pulseRate = 0.12 + evo * 0.15;
+    this.pulseRate = 0.06 + evo * 0.08;
 
     const seed = hashString(agentId);
     const rng = new SeededRNG(seed);
@@ -184,14 +184,14 @@ export class OrbAvatarEngine {
       brightness: n.brightness,
       currentBrightness: n.brightness,
       phase: rng.next() * Math.PI * 2,
-      breathSpeed: rng.range(0.8, 2.5),
-      breathDepth: rng.range(0.35, 0.6),
+      breathSpeed: rng.range(0.5, 1.2),
+      breathDepth: rng.range(0.15, 0.3),
       driftAngle: rng.next() * Math.PI * 2,
-      driftSpeed: rng.range(0.2, 0.6),
-      driftRadius: rng.range(0.6, 2.0),
+      driftSpeed: rng.range(0.1, 0.3),
+      driftRadius: rng.range(0.3, 1.0),
       glimpsePhase: rng.next() * Math.PI * 2,
-      glimpseSpeed: rng.range(0.1, 0.35),
-      glimpseIntensity: rng.range(0.4, 0.9),
+      glimpseSpeed: rng.range(0.05, 0.15),
+      glimpseIntensity: rng.range(0.2, 0.5),
     }));
 
     // Connections — generous like crab-language
@@ -258,9 +258,9 @@ export class OrbAvatarEngine {
       n.size = n.baseSize * (1 + breath * n.breathDepth);
       n.x = n.originX + Math.cos(this.time * n.driftSpeed + n.driftAngle) * n.driftRadius;
       n.y = n.originY + Math.sin(this.time * n.driftSpeed * 0.7 + n.driftAngle) * n.driftRadius;
-      // Brightness also breathes — nodes dim and brighten
-      const brightBreath = 0.7 + 0.3 * Math.sin(this.time * n.breathSpeed * 0.8 + n.phase + 0.5);
-      const glimpse = Math.pow(Math.max(0, Math.sin(this.time * n.glimpseSpeed + n.glimpsePhase)), 6);
+      // Subtle brightness breathing
+      const brightBreath = 0.85 + 0.15 * Math.sin(this.time * n.breathSpeed * 0.6 + n.phase + 0.5);
+      const glimpse = Math.pow(Math.max(0, Math.sin(this.time * n.glimpseSpeed + n.glimpsePhase)), 8);
       n.currentBrightness = n.brightness * brightBreath + glimpse * n.glimpseIntensity;
     }
 
@@ -276,18 +276,17 @@ export class OrbAvatarEngine {
     // 1. Clear + ring background + subtle ambient
     ctx.clearRect(0, 0, size, size);
 
-    // Ring background — dark disc with breathing colored ring border
-    const ringBreath = 0.7 + 0.3 * Math.sin(time * 0.5);
+    // Ring background — solid dark disc, very subtle border
     ctx.beginPath(); ctx.arc(cx, cy, size * 0.46, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(10,10,16,0.7)'; ctx.fill();
+    ctx.fillStyle = 'rgba(6,6,10,0.9)'; ctx.fill();
     ctx.beginPath(); ctx.arc(cx, cy, size * 0.46, 0, Math.PI * 2);
-    ctx.strokeStyle = rgba(color.primary, 0.15 + 0.12 * ringBreath);
-    ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.strokeStyle = rgba(color.primary, 0.1);
+    ctx.lineWidth = 1; ctx.stroke();
 
-    // Ambient breathes with the whole organism
-    const bgBreath = 0.7 + 0.3 * Math.sin(time * 0.6);
-    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, size * (0.35 + 0.05 * bgBreath));
-    bg.addColorStop(0, rgba(color.primary, 0.03 * gi * bgBreath));
+    // Minimal ambient
+    const bgBreath = 0.9 + 0.1 * Math.sin(time * 0.4);
+    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, size * 0.35);
+    bg.addColorStop(0, rgba(color.primary, 0.02 * gi * bgBreath));
     bg.addColorStop(1, 'transparent');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, size, size);
@@ -306,7 +305,7 @@ export class OrbAvatarEngine {
     // 3. Connections — thick, visible, breathing
     for (const c of connections) {
       const f = nodes[c.from], t = nodes[c.to];
-      const connBreath = 0.5 + 0.5 * Math.sin(time * c.pulseSpeed + c.pulsePhase);
+      const connBreath = 0.7 + 0.3 * Math.sin(time * c.pulseSpeed + c.pulsePhase);
       const alpha = (c.strength * 0.6 + 0.3) * connBreath;
       ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(t.x, t.y);
       ctx.strokeStyle = rgba(color.primary, alpha);
