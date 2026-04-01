@@ -1,4 +1,5 @@
 import { PerformanceReader, AgentScore } from '@gossip/orchestrator/performance-reader';
+import { SkillIndex, SkillSlot } from '@gossip/orchestrator/skill-index';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
@@ -16,6 +17,13 @@ interface LastTask {
   timestamp: string;
 }
 
+export interface SkillSlotResponse {
+  name: string;
+  enabled: boolean;
+  source: string;
+  boundAt: string;
+}
+
 export interface AgentResponse {
   id: string;
   provider: string;
@@ -23,6 +31,7 @@ export interface AgentResponse {
   preset?: string;
   native: boolean;
   skills: string[];
+  skillSlots: SkillSlotResponse[];
   online: boolean;
   totalTokens: number;
   lastTask: LastTask | null;
@@ -125,9 +134,25 @@ export async function agentsHandler(
 
   const taskDataByAgent = readTaskGraphByAgent(projectRoot);
 
+  let skillIndex: SkillIndex | null = null;
+  try { skillIndex = new SkillIndex(projectRoot); } catch { /* skill index unavailable */ }
+
   return configs.map(config => {
     const score = scores.get(config.id) ?? { ...DEFAULT_SCORE, agentId: config.id };
     const agentTask = taskDataByAgent.get(config.id) ?? { totalTokens: 0, lastTask: null };
+
+    let skillSlots: SkillSlotResponse[] = [];
+    try {
+      if (skillIndex) {
+        skillSlots = skillIndex.getAgentSlots(config.id).map((slot: SkillSlot) => ({
+          name: slot.skill,
+          enabled: slot.enabled,
+          source: slot.source,
+          boundAt: slot.boundAt,
+        }));
+      }
+    } catch { /* return empty on error */ }
+
     return {
       id: config.id,
       provider: config.provider,
@@ -135,6 +160,7 @@ export async function agentsHandler(
       preset: config.preset,
       native: config.native ?? false,
       skills: config.skills,
+      skillSlots,
       online: onlineAgents.includes(config.id),
       totalTokens: agentTask.totalTokens,
       lastTask: agentTask.lastTask,
