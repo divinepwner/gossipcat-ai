@@ -11,6 +11,7 @@ import { TaskRow } from '@/components/TaskRow';
 import { useAuth } from '@/hooks/useAuth';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useDashboardData } from '@/hooks/useDashboardData';
+import { timeAgo } from '@/lib/utils';
 import type { DashboardEvent, AgentData } from '@/lib/types';
 
 function useRoute() {
@@ -84,6 +85,85 @@ function TasksPage({ tasks }: { tasks: import('@/lib/types').TasksData }) {
   );
 }
 
+function FindingsPage({ consensus }: { consensus: import('@/lib/types').ConsensusData }) {
+  return (
+    <>
+      <div className="mb-4 flex items-center gap-3">
+        <a href="#/" className="font-mono text-xs text-muted-foreground hover:text-primary">← back</a>
+        <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-foreground">
+          All Consensus Runs <span className="text-primary">{consensus.runs.length}</span>
+        </h2>
+      </div>
+      <div className="space-y-2">
+        {consensus.runs.map((run, i) => {
+          const c = run.counts;
+          const runTotal = (c.agreement || 0) + (c.disagreement || 0) + (c.hallucination || 0) + (c.unverified || 0) + (c.unique || 0) + (c.new || 0);
+          const barTotal = runTotal || 1;
+          const segments = [
+            { key: 'confirmed', count: c.agreement || 0, color: 'bg-confirmed', text: 'text-confirmed', label: 'confirmed' },
+            { key: 'disputed', count: (c.disagreement || 0) + (c.hallucination || 0), color: 'bg-disputed', text: 'text-disputed', label: 'disputed' },
+            { key: 'unverified', count: c.unverified || 0, color: 'bg-unverified', text: 'text-unverified', label: 'unverified' },
+            { key: 'unique', count: (c.unique || 0) + (c.new || 0), color: 'bg-unique', text: 'text-unique', label: 'unique' },
+          ];
+          return (
+            <div key={run.taskId + i} className="rounded-md border border-border bg-card p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-sm font-semibold text-foreground">{runTotal} findings</span>
+                  <div className="flex gap-1.5">
+                    {run.agents.map((a) => (
+                      <span key={a} className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                        {a.split('-').map(p => p[0]).join('').toUpperCase().slice(0, 2)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <span className="font-mono text-xs text-muted-foreground">{timeAgo(run.timestamp)}</span>
+              </div>
+              <div className="mt-2 flex gap-2">
+                {segments.map((s) => s.count > 0 && (
+                  <span key={s.key} className={`font-mono text-[10px] font-semibold ${s.text}`}>
+                    {s.count} {s.label}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-2 flex h-1.5 overflow-hidden rounded-sm">
+                {segments.map((s) => s.count > 0 && (
+                  <div key={s.key} className={`${s.color}`} style={{ width: `${(s.count / barTotal) * 100}%` }} />
+                ))}
+              </div>
+              {run.signals.length > 0 && (
+                <div className="mt-3 space-y-1 border-t border-border pt-3">
+                  {run.signals.filter(s => s.signal !== 'signal_retracted').map((sig, j) => {
+                    const tagMap: Record<string, { label: string; cls: string }> = {
+                      agreement: { label: 'CONFIRMED', cls: 'text-confirmed bg-confirmed/10' },
+                      consensus_verified: { label: 'CONFIRMED', cls: 'text-confirmed bg-confirmed/10' },
+                      disagreement: { label: 'DISPUTED', cls: 'text-disputed bg-disputed/10' },
+                      hallucination_caught: { label: 'DISPUTED', cls: 'text-disputed bg-disputed/10' },
+                      unverified: { label: 'UNVERIFIED', cls: 'text-unverified bg-unverified/10' },
+                      unique_confirmed: { label: 'UNIQUE', cls: 'text-unique bg-unique/10' },
+                      unique_unconfirmed: { label: 'UNIQUE', cls: 'text-unique bg-unique/10' },
+                      new_finding: { label: 'NEW', cls: 'text-unique bg-unique/10' },
+                    };
+                    const tag = tagMap[sig.signal];
+                    if (!tag) return null;
+                    return (
+                      <div key={j} className="flex items-start gap-2">
+                        <span className={`shrink-0 rounded-sm px-1.5 py-0.5 font-mono text-[9px] font-bold ${tag.cls}`}>{tag.label}</span>
+                        <span className="text-xs text-muted-foreground">{(sig.evidence || '').slice(0, 150)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 function Dashboard() {
   const route = useRoute();
   const { overview, agents, tasks, consensus, memories, loading, refresh } = useDashboardData();
@@ -108,6 +188,8 @@ function Dashboard() {
     content = <TeamPage agents={agents} />;
   } else if (route === '#/tasks' && tasks) {
     content = <TasksPage tasks={tasks} />;
+  } else if (route === '#/findings' && consensus) {
+    content = <FindingsPage consensus={consensus} />;
   } else {
     content = (
       <>

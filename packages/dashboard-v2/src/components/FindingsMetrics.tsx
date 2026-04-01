@@ -1,51 +1,91 @@
 import type { OverviewData, ConsensusData } from '@/lib/types';
+import { timeAgo } from '@/lib/utils';
 
 interface FindingsMetricsProps {
   overview: OverviewData;
   consensus: ConsensusData;
 }
 
+const MAX_RUNS = 5;
+
 export function FindingsMetrics({ overview, consensus }: FindingsMetricsProps) {
-  const confirmed = overview.confirmedFindings;
   const total = overview.totalFindings;
-  const actionable = overview.actionableFindings;
-  const unverified = total - confirmed - actionable;
-  const unique = consensus.runs.reduce((sum, r) => sum + (r.counts.unique || 0), 0);
-  const disputed = actionable;
-
-  const metrics = [
-    { label: 'Confirmed', value: confirmed, color: 'bg-confirmed', textColor: 'text-confirmed', border: 'border-l-confirmed' },
-    { label: 'Disputed', value: disputed, color: 'bg-disputed', textColor: 'text-disputed', border: 'border-l-disputed' },
-    { label: 'Unverified', value: Math.max(0, unverified), color: 'bg-unverified', textColor: 'text-unverified', border: 'border-l-unverified' },
-    { label: 'Unique', value: unique, color: 'bg-unique', textColor: 'text-unique', border: 'border-l-unique' },
-  ];
-
-  const barTotal = metrics.reduce((s, m) => s + m.value, 0) || 1;
+  const runs = consensus.runs.slice(0, MAX_RUNS);
+  const hasMore = consensus.runs.length > MAX_RUNS;
 
   return (
     <section>
-      <h2 className="mb-4 font-mono text-xs font-bold uppercase tracking-widest text-foreground">
-        Findings <span className="text-primary">{total}</span>
-      </h2>
-      <div className="grid grid-cols-4 gap-3">
-        {metrics.map((m) => (
-          <div key={m.label} className={`rounded-md border border-border bg-card p-4 border-l-2 ${m.border}`}>
-            <div className={`font-mono text-2xl font-bold ${m.textColor}`}>{m.value}</div>
-            <div className="mt-1 text-xs text-muted-foreground">{m.label}</div>
-          </div>
-        ))}
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-foreground">
+          Findings <span className="text-primary">{total}</span>
+        </h2>
+        {hasMore && (
+          <a
+            href="#/findings"
+            className="font-mono text-xs text-muted-foreground transition hover:text-primary"
+          >
+            view all →
+          </a>
+        )}
       </div>
-      <div className="mt-3 flex h-2 overflow-hidden rounded-sm">
-        {metrics.map((m) => (
-          m.value > 0 && (
-            <div
-              key={m.label}
-              className={`${m.color} transition-all`}
-              style={{ width: `${(m.value / barTotal) * 100}%` }}
-            />
-          )
-        ))}
-      </div>
+
+      {runs.length === 0 ? (
+        <div className="py-8 text-center text-sm text-muted-foreground">No consensus runs yet.</div>
+      ) : (
+        <div className="space-y-2">
+          {runs.map((run, i) => {
+            const c = run.counts;
+            const runTotal = (c.agreement || 0) + (c.disagreement || 0) + (c.hallucination || 0) + (c.unverified || 0) + (c.unique || 0) + (c.new || 0);
+            const barTotal = runTotal || 1;
+
+            const segments = [
+              { key: 'confirmed', count: c.agreement || 0, color: 'bg-confirmed', text: 'text-confirmed', label: 'confirmed' },
+              { key: 'disputed', count: (c.disagreement || 0) + (c.hallucination || 0), color: 'bg-disputed', text: 'text-disputed', label: 'disputed' },
+              { key: 'unverified', count: c.unverified || 0, color: 'bg-unverified', text: 'text-unverified', label: 'unverified' },
+              { key: 'unique', count: (c.unique || 0) + (c.new || 0), color: 'bg-unique', text: 'text-unique', label: 'unique' },
+            ];
+
+            return (
+              <div key={run.taskId + i} className="rounded-md border border-border bg-card p-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="font-mono text-sm font-semibold text-foreground">{runTotal} findings</span>
+                    <div className="flex gap-1.5">
+                      {run.agents.slice(0, 4).map((a) => (
+                        <span key={a} className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                          {a.split('-').map(p => p[0]).join('').toUpperCase().slice(0, 2)}
+                        </span>
+                      ))}
+                      {run.agents.length > 4 && (
+                        <span className="font-mono text-[10px] text-muted-foreground">+{run.agents.length - 4}</span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="font-mono text-xs text-muted-foreground">{timeAgo(run.timestamp)}</span>
+                </div>
+
+                <div className="mt-2 flex gap-2">
+                  {segments.map((s) => s.count > 0 && (
+                    <span key={s.key} className={`font-mono text-[10px] font-semibold ${s.text}`}>
+                      {s.count} {s.label}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="mt-2 flex h-1.5 overflow-hidden rounded-sm">
+                  {segments.map((s) => s.count > 0 && (
+                    <div
+                      key={s.key}
+                      className={`${s.color} transition-all`}
+                      style={{ width: `${(s.count / barTotal) * 100}%` }}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }

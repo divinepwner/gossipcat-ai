@@ -28,8 +28,9 @@ export function AgentRow({ agent, onClick }: AgentRowProps) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm font-semibold text-foreground">{agent.id}</span>
-          <span className={`inline-block h-2 w-2 rounded-full ${agent.online ? 'bg-confirmed shadow-[0_0_6px_rgba(52,211,153,0.5)]' : 'bg-muted-foreground/30'}`} />
-          <span className="font-mono text-xs text-muted-foreground">{agent.online ? 'ONLINE' : 'OFFLINE'}</span>
+          <span className={`rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-semibold ${agent.native ? 'text-primary bg-primary/10' : 'text-confirmed bg-confirmed/10'}`}>
+            {agent.native ? 'NATIVE' : 'RELAY'}
+          </span>
         </div>
         <div className="mt-0.5 text-xs text-muted-foreground">{agent.provider}/{agent.model}</div>
         <div className="mt-1 flex items-center gap-3 font-mono text-xs">
