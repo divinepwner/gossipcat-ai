@@ -176,10 +176,11 @@ export class OrbAvatarEngine {
 
     const rawNodes = topoFn(this.size, rng, nodeCount);
 
+    const nodeSizeBoost = 1.4; // bigger nodes than crab-language default
     this.nodes = rawNodes.map(n => ({
       x: n.x, y: n.y, originX: n.x, originY: n.y,
-      baseSize: n.size * sizeRatio,
-      size: n.size * sizeRatio,
+      baseSize: n.size * sizeRatio * nodeSizeBoost,
+      size: n.size * sizeRatio * nodeSizeBoost,
       brightness: n.brightness,
       currentBrightness: n.brightness,
       phase: rng.next() * Math.PI * 2,
@@ -270,12 +271,20 @@ export class OrbAvatarEngine {
     const cx = size / 2, cy = size / 2;
     const gi = this.glowIntensity;
 
-    // 1. Clear + background glow (NO opaque disc — transparent like crab-language)
+    // 1. Clear + ring background + subtle ambient
     ctx.clearRect(0, 0, size, size);
-    const bgBreath = 0.85 + 0.15 * Math.sin(time * 0.3);
-    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, size * 0.48);
-    bg.addColorStop(0, rgba(color.primary, 0.08 * gi * bgBreath));
-    bg.addColorStop(0.5, rgba(color.primary, 0.025 * gi * bgBreath));
+
+    // Ring background — dark disc with colored ring border
+    ctx.beginPath(); ctx.arc(cx, cy, size * 0.46, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(10,10,16,0.7)'; ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, size * 0.46, 0, Math.PI * 2);
+    ctx.strokeStyle = rgba(color.primary, 0.2);
+    ctx.lineWidth = 1.5; ctx.stroke();
+
+    // Subtle inner glow (much less than before)
+    const bgBreath = 0.9 + 0.1 * Math.sin(time * 0.3);
+    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, size * 0.4);
+    bg.addColorStop(0, rgba(color.primary, 0.04 * gi * bgBreath));
     bg.addColorStop(1, 'transparent');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, size, size);
@@ -291,14 +300,14 @@ export class OrbAvatarEngine {
       ctx.fill();
     }
 
-    // 3. Connections — strong alpha like crab-language
+    // 3. Connections — thick and visible
     for (const c of connections) {
       const f = nodes[c.from], t = nodes[c.to];
       const connBreath = 0.7 + 0.3 * Math.sin(time * c.pulseSpeed + c.pulsePhase);
-      const alpha = (c.strength * 0.5 + 0.18) * connBreath;
+      const alpha = (c.strength * 0.6 + 0.25) * connBreath;
       ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(t.x, t.y);
       ctx.strokeStyle = rgba(color.primary, alpha);
-      ctx.lineWidth = (0.7 + c.strength * 1.0) * (0.85 + connBreath * 0.15);
+      ctx.lineWidth = (1.0 + c.strength * 1.5) * (0.85 + connBreath * 0.15);
       ctx.stroke();
     }
 
