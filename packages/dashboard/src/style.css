@@ -247,6 +247,76 @@ html::after {
 .sb-action { color: var(--amber); font-size: 13px; font-weight: 600; font-family: var(--mono); }
 .sb-clear { color: var(--green); font-size: 13px; font-family: var(--mono); }
 
+/* ── Agent Roster ──────────────────────────────── */
+.roster { display: flex; flex-direction: column; gap: 2px; }
+.roster-row {
+  display: grid;
+  grid-template-columns: 36px 180px 120px 80px 1fr 70px;
+  gap: 8px; align-items: center;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s;
+  position: relative;
+}
+.roster-row:hover {
+  background: var(--surface-raised);
+  border-left-color: var(--accent);
+}
+.roster-row.roster-active { border-left-color: var(--green); }
+.roster-badge {
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  width: 32px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 3px;
+  background: var(--surface-hover);
+}
+.roster-name {
+  font-family: var(--mono); font-size: 13px; font-weight: 600;
+  color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.roster-bar-wrap {
+  display: flex; align-items: center; gap: 6px;
+}
+.roster-bar {
+  flex: 1; height: 4px; background: rgba(255,255,255,0.06);
+  border-radius: 2px; overflow: hidden;
+}
+.roster-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
+.roster-pct { font-family: var(--mono); font-size: 11px; color: var(--text-3); min-width: 32px; }
+.roster-status {
+  display: flex; align-items: center; gap: 5px;
+  font-family: var(--mono); font-size: 11px; color: var(--text-3);
+}
+.roster-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.roster-dot.online { background: var(--green); box-shadow: 0 0 6px rgba(52,211,153,0.5); }
+.roster-dot.idle { background: var(--text-3); opacity: 0.4; }
+.roster-dot.error { background: var(--red); }
+.roster-task {
+  font-family: var(--prose); font-size: 12px; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.roster-time { font-family: var(--mono); font-size: 11px; color: var(--text-3); text-align: right; }
+.roster-tooltip {
+  display: none; position: absolute; top: 100%; left: 36px; z-index: 100;
+  background: var(--surface-hover); border: 1px solid var(--border); border-radius: 3px;
+  padding: 6px 10px; font-family: var(--mono); font-size: 11px; color: var(--text-2);
+  white-space: nowrap; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.roster-row:hover .roster-tooltip { display: block; }
+
+@media (max-width: 1000px) {
+  .roster-row { grid-template-columns: 36px 180px 120px 80px; }
+  .roster-task, .roster-time { display: none; }
+}
+@media (max-width: 600px) {
+  .roster-row { grid-template-columns: 36px 1fr 80px; gap: 6px; }
+  .roster-bar-wrap { display: none; }
+}
+
 /* ── Agent Cards ────────────────────────────────── */
 .agent-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .ag {

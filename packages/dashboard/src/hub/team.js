@@ -1,74 +1,76 @@
-// packages/dashboard/src/hub/team.js — Trust ring agent cards
+// packages/dashboard/src/hub/team.js — Agent roster rows
 
-function renderTeamSection(agents) {
-  const { escapeHtml: e, navigate, makeSection, timeAgo, agentInitials } = window._dash;
-  const section = makeSection('Team', agents.length + ' agents', 'all agents →', '#/team');
+function renderTeamSection(agents, liveTaskAgents) {
+  var _dash = window._dash;
+  var e = _dash.escapeHtml, navigate = _dash.navigate, makeSection = _dash.makeSection;
+  var timeAgo = _dash.timeAgo, agentInitials = _dash.agentInitials;
+  var section = makeSection('Team', agents.length + ' agents', 'all agents \u2192', '#/team');
 
-  const grid = document.createElement('div');
-  grid.className = 'agent-grid';
+  var roster = document.createElement('div');
+  roster.className = 'roster';
 
-  // Sort by dispatch weight descending
-  const sorted = [...agents].sort((a, b) =>
-    (b.scores?.dispatchWeight || 0) - (a.scores?.dispatchWeight || 0)
-  );
+  var sorted = agents.slice().sort(function(a, b) {
+    return (b.scores?.dispatchWeight || 0) - (a.scores?.dispatchWeight || 0);
+  });
 
-  const show = sorted.slice(0, 6);
-  const rest = sorted.length - show.length;
+  var liveSet = new Set(liveTaskAgents || []);
 
-  for (const agent of show) {
-    const btn = document.createElement('button');
-    btn.className = 'ag';
-    btn.addEventListener('click', () => navigate('#/team/' + encodeURIComponent(agent.id)));
+  for (var i = 0; i < sorted.length; i++) {
+    var agent = sorted[i];
+    var row = document.createElement('div');
+    row.className = 'roster-row';
+    row.dataset.agentId = agent.id;
 
-    const w = agent.scores?.dispatchWeight ?? 1;
-    const signals = agent.scores?.signals ?? 0;
-    const accuracy = agent.scores?.accuracy ?? 0.5;
-    const reliability = agent.scores?.reliability ?? 0.5;
-    const uniqueness = agent.scores?.uniqueness ?? 0.5;
-    const ringColor = signals === 0 ? 'var(--text-3)'
+    var w = agent.scores?.dispatchWeight ?? 1;
+    var signals = agent.scores?.signals ?? 0;
+    var accuracy = agent.scores?.accuracy ?? 0.5;
+    var reliability = agent.scores?.reliability ?? 0.5;
+    var uniqueness = agent.scores?.uniqueness ?? 0.5;
+
+    var tierColor = signals === 0 ? 'var(--text-3)'
       : w >= 1.5 ? 'var(--green)'
       : w >= 0.8 ? 'var(--amber)'
       : 'var(--red)';
-    const ringOpacity = signals === 0 ? '0.35' : '1';
-    const arcLength = 132 * Math.min(1, accuracy);
 
-    const lastTask = agent.lastTask;
-    const lastText = lastTask
-      ? e((lastTask.task || '').replace(/\n.*/s, '').slice(0, 55))
-      : 'idle';
-    const lastTime = lastTask?.timestamp ? timeAgo(lastTask.timestamp) : '';
+    // Health bar: normalize dispatchWeight from [0.3, 2.0] to [0, 1]
+    var health = Math.min(1, Math.max(0, (w - 0.3) / 1.7));
+    var healthPct = Math.round(health * 100);
 
-    btn.innerHTML =
-      '<div class="ag-ring-wrap">' +
-        '<svg class="ag-ring" viewBox="0 0 48 48" style="opacity:' + ringOpacity + '">' +
-          '<circle cx="24" cy="24" r="21" fill="none" stroke="' + ringColor + '" stroke-width="3" opacity="0.2"/>' +
-          '<circle cx="24" cy="24" r="21" fill="none" stroke="' + ringColor + '" stroke-width="3"' +
-            ' stroke-dasharray="' + arcLength + ' 132"' +
-            ' transform="rotate(-90 24 24)"/>' +
-        '</svg>' +
-        '<span class="ag-initials" style="color:' + ringColor + '">' + agentInitials(agent.id) + '</span>' +
+    // Status: active if in live tasks, error if last task failed, else idle
+    var isActive = liveSet.has(agent.id);
+    var isError = agent.lastTask?.status === 'failed';
+    var statusDot = isActive ? 'online' : isError ? 'error' : 'idle';
+    var statusText = isActive ? 'ACTIVE' : isError ? 'ERROR' : 'IDLE';
+
+    var lastTask = agent.lastTask;
+    var lastText = lastTask
+      ? e((lastTask.task || '').replace(/\n.*/s, '').slice(0, 60))
+      : '';
+    var lastTime = lastTask?.timestamp ? timeAgo(lastTask.timestamp) : '';
+
+    row.innerHTML =
+      '<span class="roster-badge" style="color:' + tierColor + '">' + agentInitials(agent.id) + '</span>' +
+      '<span class="roster-name">' + e(agent.id) + '</span>' +
+      '<div class="roster-bar-wrap">' +
+        '<div class="roster-bar"><div class="roster-bar-fill" style="width:' + healthPct + '%;background:' + tierColor + '"></div></div>' +
+        '<span class="roster-pct">' + healthPct + '%</span>' +
       '</div>' +
-      '<span class="ag-name">' + e(agent.id) + '</span>' +
-      '<div class="ag-stats">' +
-        '<div class="ag-stat"><span class="ag-stat-label">acc</span><div class="ag-stat-bar"><div class="ag-stat-fill" style="width:' + (accuracy * 100) + '%;background:' + ringColor + '"></div></div></div>' +
-        '<div class="ag-stat"><span class="ag-stat-label">rel</span><div class="ag-stat-bar"><div class="ag-stat-fill" style="width:' + (reliability * 100) + '%;background:' + ringColor + '"></div></div></div>' +
-        '<div class="ag-stat"><span class="ag-stat-label">uniq</span><div class="ag-stat-bar"><div class="ag-stat-fill" style="width:' + (uniqueness * 100) + '%;background:' + ringColor + '"></div></div></div>' +
+      '<div class="roster-status">' +
+        '<span class="roster-dot ' + statusDot + '"></span>' +
+        '<span>' + statusText + '</span>' +
       '</div>' +
-      '<span class="ag-last">' + lastText +
-        (lastTime ? ' <span class="ag-time">' + lastTime + '</span>' : '') +
-      '</span>';
+      '<span class="roster-task">' + lastText + '</span>' +
+      '<span class="roster-time">' + lastTime + '</span>' +
+      '<div class="roster-tooltip">Acc: ' + Math.round(accuracy * 100) + '% | Rel: ' + Math.round(reliability * 100) + '% | Uniq: ' + Math.round(uniqueness * 100) + '%</div>';
 
-    grid.appendChild(btn);
+    row.addEventListener('click', (function(id) {
+      return function() { navigate('#/team/' + encodeURIComponent(id)); };
+    })(agent.id));
+
+    if (isActive) row.classList.add('roster-active');
+    roster.appendChild(row);
   }
 
-  if (rest > 0) {
-    const more = document.createElement('button');
-    more.className = 'ag ag-overflow';
-    more.addEventListener('click', () => navigate('#/team'));
-    more.innerHTML = '<span class="ag-more-count">+' + rest + '</span><span class="ag-more-label">more</span>';
-    grid.appendChild(more);
-  }
-
-  section.appendChild(grid);
+  section.appendChild(roster);
   return section;
 }

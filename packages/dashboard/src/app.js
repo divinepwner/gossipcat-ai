@@ -228,6 +228,16 @@ async function renderHub(app) {
     const [overview, agents, consensus] = await Promise.all([
       api('overview'), api('agents'), api('consensus'),
     ]);
+
+    // Collect agent IDs with active live tasks
+    var liveTaskAgents = [];
+    try {
+      var tasksData = await api('tasks?status=running');
+      if (tasksData && tasksData.tasks) {
+        liveTaskAgents = tasksData.tasks.map(function(t) { return t.agentId; });
+      }
+    } catch(e) { /* best-effort */ }
+
     app.innerHTML = '';
 
     // Build sections
@@ -245,7 +255,7 @@ async function renderHub(app) {
     const hubGrid = document.createElement('div');
     hubGrid.className = 'hub-grid';
 
-    const teamEl = renderTeamSection(agents);
+    const teamEl = renderTeamSection(agents, liveTaskAgents);
     teamEl.dataset.section = 'team';
     hubGrid.appendChild(teamEl);
 
@@ -328,7 +338,7 @@ async function renderHub(app) {
             if (old) old.replaceWith(el);
           }
           if (ag) {
-            const teamEl = renderTeamSection(ag); teamEl.dataset.section = 'team';
+            const teamEl = renderTeamSection(ag, []); teamEl.dataset.section = 'team';
             const oldTeam = app.querySelector('[data-section="team"]');
             if (oldTeam) oldTeam.replaceWith(teamEl);
 
