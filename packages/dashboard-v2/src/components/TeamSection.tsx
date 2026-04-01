@@ -10,9 +10,11 @@ interface TeamSectionProps {
 export function TeamSection({ agents }: TeamSectionProps) {
   const [selected, setSelected] = useState<AgentData | null>(null);
 
-  const sorted = [...agents].sort((a, b) =>
-    (b.scores?.dispatchWeight || 0) - (a.scores?.dispatchWeight || 0)
-  );
+  const sorted = [...agents].sort((a, b) => {
+    const aTime = a.lastTask?.timestamp ? new Date(a.lastTask.timestamp).getTime() : 0;
+    const bTime = b.lastTask?.timestamp ? new Date(b.lastTask.timestamp).getTime() : 0;
+    return bTime - aTime;
+  });
   const visible = sorted.slice(0, 5);
   const hasMore = sorted.length > 5;
 

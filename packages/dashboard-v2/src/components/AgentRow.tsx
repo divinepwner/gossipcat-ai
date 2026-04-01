@@ -15,7 +15,7 @@ export function AgentRow({ agent, onClick }: AgentRowProps) {
   return (
     <button
       onClick={onClick}
-      className="group flex min-w-0 flex-1 flex-col items-center rounded-lg border border-border bg-card p-3 text-center transition hover:border-primary/30 hover:bg-accent"
+      className="group flex min-w-0 flex-1 flex-col items-center rounded-lg border border-border bg-card p-4 text-center transition hover:border-primary/30 hover:bg-accent"
     >
       {/* Avatar with portal glow */}
       <div className="relative mb-3">
@@ -24,7 +24,7 @@ export function AgentRow({ agent, onClick }: AgentRowProps) {
           className="absolute -inset-3 rounded-full opacity-30 blur-xl transition group-hover:opacity-50"
           style={{ background: color }}
         />
-        <NeuralAvatar agentId={agent.id} size={96} animate={agent.online} evolution={Math.min(1, (agent.scores.signals || 0) / 200)} />
+        <NeuralAvatar agentId={agent.id} size={112} animate={agent.online} evolution={Math.min(1, (agent.scores.signals || 0) / 200)} />
       </div>
 
       {/* Agent name */}
