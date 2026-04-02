@@ -48,6 +48,11 @@ function ReportFinding({ f }: { f: ConsensusReportFinding }) {
       <span className={`shrink-0 rounded-sm px-1.5 py-0.5 font-mono text-[9px] font-bold ${tagCls}`}>
         {f.tag.toUpperCase()}
       </span>
+      {f.findingType && f.findingType !== 'finding' && (
+        <span className={`shrink-0 rounded-sm px-1 py-0.5 font-mono text-[8px] font-bold ${f.findingType === 'suggestion' ? 'text-blue-400 bg-blue-500/10' : 'text-purple-400 bg-purple-500/10'}`}>
+          {f.findingType === 'suggestion' ? '💡' : '🔍'}
+        </span>
+      )}
       {f.severity && (
         <span className={`shrink-0 rounded-sm px-1 py-0.5 font-mono text-[8px] font-bold ${sevCls}`}>
           {f.severity.toUpperCase()}
@@ -65,7 +70,7 @@ function ReportFinding({ f }: { f: ConsensusReportFinding }) {
 export function FindingsMetrics({ consensus, reports }: FindingsMetricsProps) {
   const runs = consensus.runs.slice(0, MAX_RUNS);
   const hasMore = consensus.runs.length > MAX_RUNS;
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>('all');
 
   // If we have structured reports, show those instead of signal-based view
@@ -96,11 +101,11 @@ export function FindingsMetrics({ consensus, reports }: FindingsMetricsProps) {
             ];
             const filteredFindings = filter === 'all' ? allFindings
               : allFindings.filter(f => f.tag === filter || (filter === 'unique' && f.findingType === 'insight'));
-            const isExpanded = expandedIdx === i;
+            const isExpanded = expandedId === report.id;
 
             return (
               <div key={report.id} className="rounded-md border border-border/50 bg-card/50 px-3 py-2">
-                <button className="flex w-full items-center justify-between text-left" onClick={() => setExpandedIdx(isExpanded ? null : i)}>
+                <button className="flex w-full items-center justify-between text-left" onClick={() => setExpandedId(isExpanded ? null : report.id)}>
                   <div>
                     <span className="font-mono text-[10px] text-primary/70">{report.id}</span>
                     <span className="ml-2 font-mono text-sm font-bold text-foreground">{allFindings.length} findings</span>
@@ -148,7 +153,7 @@ export function FindingsMetrics({ consensus, reports }: FindingsMetricsProps) {
             const c = run.counts;
             const runTotal = (c.agreement || 0) + (c.disagreement || 0) + (c.hallucination || 0) + (c.unverified || 0) + (c.unique || 0) + (c.new || 0);
             const barTotal = runTotal || 1;
-            const isOpen = expandedIdx === i;
+            const isOpen = expandedId === run.taskId;
 
             const segments = [
               { key: 'confirmed', count: c.agreement || 0, color: 'bg-confirmed', text: 'text-confirmed', label: 'confirmed' },
@@ -169,7 +174,7 @@ export function FindingsMetrics({ consensus, reports }: FindingsMetricsProps) {
               <div key={run.taskId + i} className={`rounded-md border bg-card transition ${isOpen ? 'border-primary/25' : 'border-border'}`}>
                 {/* Header — clickable */}
                 <button
-                  onClick={() => setExpandedIdx(isOpen ? null : i)}
+                  onClick={() => setExpandedId(isOpen ? null : run.taskId)}
                   className="flex w-full items-center p-3 text-left transition hover:bg-accent/50"
                 >
                   <span className={`mr-3 font-mono text-xs text-muted-foreground transition ${isOpen ? 'text-primary' : ''}`}>
@@ -178,7 +183,7 @@ export function FindingsMetrics({ consensus, reports }: FindingsMetricsProps) {
                   <div className="flex-1">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <span className="font-mono text-[10px] text-primary/50">{run.taskId.slice(0, 17)}</span>
+                        <span className="font-mono text-[10px] text-primary/50">{run.taskId}</span>
                         <span className="font-mono text-sm font-semibold text-foreground">{runTotal} findings</span>
                         <div className="flex gap-1.5">
                           {run.agents.slice(0, 4).map((a) => (

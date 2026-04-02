@@ -1,14 +1,26 @@
-/** Clean <fn>, <cite>, <agent_finding>, and [FINDING] tags from finding text into HTML for rendering */
+/** Clean and sanitize finding text for safe HTML rendering */
 export function cleanFindingTags(text: string): string {
-  let cleaned = text.replace(/^\[(FINDING|SUGGESTION|INSIGHT)\]\s*/i, '');
-  // Strip <agent_finding> wrapper tags (content already extracted by engine, but may appear in evidence)
-  cleaned = cleaned.replace(/<agent_finding[^>]*>/g, '');
-  cleaned = cleaned.replace(/<\/agent_finding>/g, '');
-  // Style <cite> tags
-  cleaned = cleaned.replace(/<cite\s+tag="file">([^<]+)<\/cite>/g, '<code class="cite-file">$1</code>');
-  cleaned = cleaned.replace(/<cite\s+tag="fn">([^<]+)<\/cite>/g, '<code class="cite-fn">$1</code>');
-  // Legacy <fn> tags
-  cleaned = cleaned.replace(/<fn>([^<]+)<\/fn>/g, '<code class="cite-fn">$1</code>');
+  // Step 1: Escape all HTML to prevent XSS
+  let cleaned = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+  // Step 2: Strip [FINDING]/[SUGGESTION]/[INSIGHT] prefixes
+  cleaned = cleaned.replace(/^\[(FINDING|SUGGESTION|INSIGHT)\]\s*/i, '');
+
+  // Step 3: Re-apply safe styling for known tags (on the escaped text)
+  // <agent_finding> → strip wrapper
+  cleaned = cleaned.replace(/&lt;agent_finding[^&]*&gt;/g, '');
+  cleaned = cleaned.replace(/&lt;\/agent_finding&gt;/g, '');
+  // <cite tag="file"> → blue code span
+  cleaned = cleaned.replace(/&lt;cite\s+tag=&quot;file&quot;&gt;([^&]+)&lt;\/cite&gt;/g, '<code class="cite-file">$1</code>');
+  // <cite tag="fn"> → purple code span
+  cleaned = cleaned.replace(/&lt;cite\s+tag=&quot;fn&quot;&gt;([^&]+)&lt;\/cite&gt;/g, '<code class="cite-fn">$1</code>');
+  // Legacy <fn> → purple code span
+  cleaned = cleaned.replace(/&lt;fn&gt;([^&]+)&lt;\/fn&gt;/g, '<code class="cite-fn">$1</code>');
+
   return cleaned;
 }
 
