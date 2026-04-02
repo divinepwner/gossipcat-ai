@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { readFileSync, appendFileSync, mkdirSync, writeFileSync, realpathSync } from 'fs';
 import { resolve as resolvePath, join, dirname } from 'path';
 import { AgentConfig, DispatchOptions, TaskEntry, TaskExecutionResult, SessionGossipEntry, PlanState, MIN_AGENTS_FOR_CONSENSUS } from './types';
-import { ILLMProvider } from './llm-client';
+import { ILLMProvider, createProvider } from './llm-client';
 import { LLMMessage } from '@gossip/types';
 import { loadSkills } from './skill-loader';
 import { assemblePrompt, extractSpecReferences, buildSpecReviewEnrichment } from './prompt-assembler';
@@ -54,6 +54,7 @@ export interface DispatchPipelineConfig {
   llm?: ILLMProvider;
   syncFactory?: () => TaskGraphSync | null;
   toolServer?: ToolServerCallbacks | null;
+  keyProvider?: (provider: string) => Promise<string | null>;
 }
 
 type TrackedTask = TaskEntry & { 
@@ -99,6 +100,7 @@ export class DispatchPipeline {
   private perfReader: PerformanceReader | null = null;
   private consensusJudge: IConsensusJudge | null = null;
   private skillIndex: SkillIndex | null = null;
+  private keyProvider: ((provider: string) => Promise<string | null>) | null = null;
   private skillCounters: SkillCounterTracker | null = null;
   private sessionStartTime: Date = new Date();
   private sessionConsensusHistory: Array<{ timestamp: string; confirmed: number; disputed: number; unverified: number; unique: number; summary: string }> = [];
@@ -125,6 +127,7 @@ export class DispatchPipeline {
     this.llm = config.llm ?? null;
     this.syncFactory = config.syncFactory ?? null;
     this.toolServer = config.toolServer ?? null;
+    this.keyProvider = config.keyProvider ?? null;
 
     this.taskGraph = new TaskGraph(config.projectRoot);
     this.memWriter = new MemoryWriter(config.projectRoot);
@@ -863,7 +866,29 @@ export class DispatchPipeline {
     if (!this.llm || results.filter(r => r.status === 'completed').length < 2) return undefined;
 
     try {
-      const engine = new ConsensusEngine({ llm: this.llm, registryGet: this.registryGet, projectRoot: this.projectRoot });
+      // Build per-agent LLM factory for relay agents
+      let agentLlm: ((agentId: string) => ILLMProvider | undefined) | undefined;
+      if (this.keyProvider) {
+        const agentLlmCache = new Map<string, ILLMProvider | null>();
+        for (const r of results) {
+          if (r.status !== 'completed') continue;
+          const agentConfig = this.registryGet(r.agentId);
+          if (!agentConfig) continue;
+          try {
+            const key = await this.keyProvider(agentConfig.provider);
+            if (key) {
+              agentLlmCache.set(r.agentId, createProvider(agentConfig.provider, agentConfig.model, key));
+            } else {
+              agentLlmCache.set(r.agentId, null);
+            }
+          } catch {
+            agentLlmCache.set(r.agentId, null);
+          }
+        }
+        agentLlm = (agentId: string) => agentLlmCache.get(agentId) ?? undefined;
+      }
+
+      const engine = new ConsensusEngine({ llm: this.llm, registryGet: this.registryGet, projectRoot: this.projectRoot, agentLlm });
       const consensusReport = await engine.run(results);
       const perfWriter = new PerformanceWriter(this.projectRoot);
 
@@ -1060,6 +1085,8 @@ export class DispatchPipeline {
   getSessionConsensusHistory() { return this.sessionConsensusHistory; }
   getSessionStartTime() { return this.sessionStartTime; }
   getSessionGossip() { return this.sessionGossip; }
+  getLlm(): ILLMProvider | null { return this.llm; }
+  getAgentConfig(agentId: string): AgentConfig | undefined { return this.registryGet(agentId); }
 
   // Track which (agentId, category) pairs have been suggested this session to avoid repeats
   private suggestedSkillGaps = new Set<string>();

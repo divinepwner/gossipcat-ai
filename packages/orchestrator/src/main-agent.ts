@@ -137,6 +137,7 @@ export class MainAgent {
       llm: this.llm,
       syncFactory: config.syncFactory,
       toolServer: config.toolServer,
+      keyProvider: config.keyProvider,
     });
 
     // Wire dispatch differentiator (after pipeline creation)
@@ -231,6 +232,8 @@ export class MainAgent {
   getSessionStartTime() { return this.pipeline.getSessionStartTime(); }
   getSessionGossip() { return this.pipeline.getSessionGossip(); }
   getSkillIndex(): any { return this.pipeline.getSkillIndex(); }
+  getLlm() { return this.pipeline.getLlm(); }
+  getAgentConfig(agentId: string) { return this.pipeline.getAgentConfig(agentId); }
 
   /** Health check for active tasks — diagnostics for "is it working?" */
   getActiveTasksHealth() { return this.pipeline.getActiveTasksHealth(); }
