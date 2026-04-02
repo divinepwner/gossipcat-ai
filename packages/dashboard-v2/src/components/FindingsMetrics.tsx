@@ -51,7 +51,7 @@ function ReportFinding({ f }: { f: ConsensusReportFinding }) {
       </span>
       {f.findingType && f.findingType !== 'finding' && (
         <span className={`shrink-0 rounded-sm px-1 py-0.5 font-mono text-[8px] font-bold ${f.findingType === 'suggestion' ? 'text-blue-400 bg-blue-500/10' : 'text-zinc-400 bg-zinc-500/10'}`}>
-          {f.findingType === 'suggestion' ? '💡' : '🔍'}
+          {f.findingType === 'suggestion' ? '💡' : 'INSIGHT'}
         </span>
       )}
       {f.severity && (
