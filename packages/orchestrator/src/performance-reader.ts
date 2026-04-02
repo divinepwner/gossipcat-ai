@@ -21,6 +21,7 @@ export interface AgentScore {
   hallucinations: number;
   consecutiveFailures: number; // circuit breaker: consecutive negative signals at tail
   circuitOpen: boolean;        // true when consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD
+  categoryStrengths: Record<string, number>;
 }
 
 const CIRCUIT_BREAKER_THRESHOLD = 3; // consecutive failures → open circuit
@@ -38,6 +39,7 @@ const KNOWN_SIGNALS: Record<ConsensusSignal['signal'], true> = {
   category_confirmed: true,
   consensus_verified: true,
   signal_retracted: true,
+  severity_miscalibrated: true,
 };
 
 export class PerformanceReader {
@@ -321,6 +323,7 @@ export class PerformanceReader {
         hallucinations: a.hallucinations,
         consecutiveFailures: consec,
         circuitOpen: consec >= CIRCUIT_BREAKER_THRESHOLD,
+        categoryStrengths: {},
       });
     }
 

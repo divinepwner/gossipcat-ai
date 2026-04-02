@@ -74,7 +74,8 @@ export interface ConsensusSignal {
     | 'hallucination_caught'
     | 'category_confirmed'
     | 'consensus_verified'
-    | 'signal_retracted';
+    | 'signal_retracted'
+    | 'severity_miscalibrated';
   agentId: string;
   counterpartId?: string;
   skill?: string;
@@ -89,6 +90,8 @@ export interface ConsensusSignal {
     | 'orchestrator_disputed';
   category?: string;
   findingId?: string;
+  severity?: 'critical' | 'high' | 'medium' | 'low';
+  claimedSeverity?: 'critical' | 'high' | 'medium' | 'low';
   retractedSignal?: string;
   evidence: string;
   timestamp: string;
