@@ -1538,13 +1538,22 @@ server.tool(
 
       try {
         const result = await ctx.skillGenerator.generate(agent_id, category);
+        const { normalizeSkillName: nsn } = await import('@gossip/orchestrator');
+        const skillName = nsn(category);
 
-        // Register skill on agent config so loadSkills picks it up
+        // Auto-bind to skill index so it's injected on next dispatch
         if (ctx.mainAgent) {
+          const skillIndex = ctx.mainAgent.getSkillIndex();
+          if (skillIndex) {
+            skillIndex.bind(agent_id, skillName, { source: 'auto' });
+          }
+
+          // Also register on agent config for backwards compat
           const registry = (ctx.mainAgent as any).registry;
           const config = registry?.get(agent_id);
-          if (config && !config.skills.includes(category)) {
-            config.skills.push(category);
+          const normalizedCategory = nsn(category);
+          if (config && !config.skills.includes(normalizedCategory)) {
+            config.skills.push(normalizedCategory);
           }
           // Suppress future skill gap alerts for this agent+category
           const pipeline = (ctx.mainAgent as any).pipeline;
@@ -1558,7 +1567,7 @@ server.tool(
           : result.content;
 
         return {
-          content: [{ type: 'text' as const, text: `Skill generated and saved:\n\nPath: ${result.path}\n\n${preview}` }],
+          content: [{ type: 'text' as const, text: `Skill generated and saved:\n\nPath: ${result.path}\n\nAuto-bound "${skillName}" to ${agent_id} in skill index.\n\n${preview}` }],
         };
       } catch (err) {
         return {

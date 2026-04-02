@@ -228,7 +228,7 @@ export class MainAgent {
   setConsensusJudge(judge: any): void { this.pipeline.setConsensusJudge(judge); }
   async runConsensus(results: any[]): Promise<any> { return this.pipeline.runConsensus(results); }
   setLensGenerator(generator: any): void { this.pipeline.setLensGenerator(generator); }
-  getSkillGapSuggestions(): string[] { return this.pipeline.getSkillGapSuggestions(); }
+  getSkillGapSuggestions() { return this.pipeline.getSkillGapSuggestions(); }
   setSkillIndex(index: any): void { this.pipeline.setSkillIndex(index); }
   setSummaryLlm(llm: any): void { this.pipeline.setSummaryLlm(llm); }
   getSessionConsensusHistory() { return this.pipeline.getSessionConsensusHistory(); }

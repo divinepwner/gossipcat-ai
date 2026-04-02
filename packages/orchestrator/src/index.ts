@@ -32,7 +32,7 @@ export { TaskGraphSync } from './task-graph-sync';
 export type { SyncMigrationConfig } from './task-graph-sync';
 export { GossipPublisher } from './gossip-publisher';
 export { DispatchPipeline } from './dispatch-pipeline';
-export type { DispatchPipelineConfig, ToolServerCallbacks } from './dispatch-pipeline';
+export type { DispatchPipelineConfig, ToolServerCallbacks, SkillGapSuggestionResult } from './dispatch-pipeline';
 export { ScopeTracker } from './scope-tracker';
 export { WorktreeManager } from './worktree-manager';
 export { BootstrapGenerator } from './bootstrap';

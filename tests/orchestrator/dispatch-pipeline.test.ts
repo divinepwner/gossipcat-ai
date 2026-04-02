@@ -29,7 +29,7 @@ describe('DispatchPipeline', () => {
 
   describe('dispatch()', () => {
     it('dispatches to worker and returns taskId + promise', async () => {
-      const { taskId, promise } = pipeline.dispatch('test-agent', 'review code');
+      const { taskId, finalResultPromise: promise } = pipeline.dispatch('test-agent', 'review code');
       expect(taskId).toMatch(/^[a-f0-9]{8}$/);
       const result = await promise;
       expect(result).toBe('done');
@@ -41,7 +41,7 @@ describe('DispatchPipeline', () => {
     });
 
     it('tracks task status after completion', async () => {
-      const { taskId, promise } = pipeline.dispatch('test-agent', 'review code');
+      const { taskId, finalResultPromise: promise } = pipeline.dispatch('test-agent', 'review code');
       await promise;
       const task = pipeline.getTask(taskId);
       expect(task?.status).toBe('completed');
@@ -63,7 +63,7 @@ describe('DispatchPipeline', () => {
           : undefined,
       });
 
-      const { taskId, promise } = pipeline.dispatch('fail-agent', 'bad task');
+      const { taskId, finalResultPromise: promise } = pipeline.dispatch('fail-agent', 'bad task');
       await promise.catch(() => {});
       const task = pipeline.getTask(taskId);
       expect(task?.status).toBe('failed');
@@ -131,7 +131,7 @@ describe('DispatchPipeline', () => {
 
       const t1 = pipeline.dispatch('slow-agent', 'task 1', { writeMode: 'sequential' });
       const t2 = pipeline.dispatch('slow-agent', 'task 2', { writeMode: 'sequential' });
-      await Promise.all([t1.promise, t2.promise]);
+      await Promise.all([t1.finalResultPromise, t2.finalResultPromise]);
       expect(order).toEqual([1, 2]); // second waits for first
     });
 
@@ -156,7 +156,7 @@ describe('DispatchPipeline', () => {
     });
 
     it('scoped mode releases scope on completion', async () => {
-      const { promise } = pipeline.dispatch('test-agent', 'task 1', { writeMode: 'scoped', scope: 'packages/relay/' });
+      const { finalResultPromise: promise } = pipeline.dispatch('test-agent', 'task 1', { writeMode: 'scoped', scope: 'packages/relay/' });
       await promise;
       // After completion, same scope should be available
       expect(() =>
@@ -251,7 +251,7 @@ describe('DispatchPipeline', () => {
       // Inject mock worktreeManager BEFORE dispatching
       (p as any).worktreeManager = { cleanup: cleanupMock, create: createMock, merge: jest.fn(), pruneOrphans: jest.fn() };
 
-      const { taskId, promise } = p.dispatch('fail-agent', 'doomed task', { writeMode: 'worktree' });
+      const { taskId, finalResultPromise: promise } = p.dispatch('fail-agent', 'doomed task', { writeMode: 'worktree' });
       await promise.catch(() => {}); // swallow rejection
 
       const task = p.getTask(taskId);
@@ -260,111 +260,8 @@ describe('DispatchPipeline', () => {
     });
   });
 
-  describe('task progress callback', () => {
-    it('fires progress events during task execution', async () => {
-      const events: Array<{ taskId: string; toolCalls: number }> = [];
-
-      // Create a worker that calls onProgress during executeTask
-      const progressWorker = {
-        executeTask: jest.fn().mockImplementation(
-          (_task: string, _lens: unknown, _prompt: unknown, onProgress?: (evt: { toolCalls: number; inputTokens: number; outputTokens: number; currentTool: string; turn: number }) => void) => {
-            if (onProgress) {
-              onProgress({ toolCalls: 1, inputTokens: 100, outputTokens: 50, currentTool: 'read_file', turn: 1 });
-              onProgress({ toolCalls: 2, inputTokens: 200, outputTokens: 80, currentTool: 'write_file', turn: 2 });
-            }
-            return Promise.resolve({ result: 'progress-done', inputTokens: 200, outputTokens: 80 });
-          }
-        ),
-        subscribeToBatch: jest.fn().mockResolvedValue(undefined),
-        unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
-      };
-
-      workers.set('progress-agent', progressWorker);
-      pipeline = new DispatchPipeline({
-        projectRoot: '/tmp/gossip-test-' + Date.now(),
-        workers,
-        registryGet: (id) => ({ id, provider: 'local' as const, model: 'mock', skills: [] }),
-      });
-
-      pipeline.setTaskProgressCallback((taskId, evt) => {
-        events.push({ taskId, toolCalls: evt.toolCalls });
-      });
-
-      const { taskId, promise } = pipeline.dispatch('progress-agent', 'do work');
-      await promise;
-
-      expect(events).toHaveLength(2);
-      expect(events[0].taskId).toBe(taskId);
-      expect(events[0].toolCalls).toBe(1);
-      expect(events[1].taskId).toBe(taskId);
-      expect(events[1].toolCalls).toBe(2);
-    });
-
-    it('updates entry.toolCalls on progress events', async () => {
-      const progressWorker = {
-        executeTask: jest.fn().mockImplementation(
-          (_task: string, _lens: unknown, _prompt: unknown, onProgress?: (evt: { toolCalls: number; inputTokens: number; outputTokens: number; currentTool: string; turn: number }) => void) => {
-            if (onProgress) {
-              onProgress({ toolCalls: 3, inputTokens: 300, outputTokens: 120, currentTool: 'bash', turn: 3 });
-            }
-            return Promise.resolve({ result: 'entry-done', inputTokens: 300, outputTokens: 120 });
-          }
-        ),
-        subscribeToBatch: jest.fn().mockResolvedValue(undefined),
-        unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
-      };
-
-      workers.set('entry-agent', progressWorker);
-      pipeline = new DispatchPipeline({
-        projectRoot: '/tmp/gossip-test-' + Date.now(),
-        workers,
-        registryGet: (id) => ({ id, provider: 'local' as const, model: 'mock', skills: [] }),
-      });
-
-      // No external callback set — just verify entry fields updated
-      const { taskId, promise } = pipeline.dispatch('entry-agent', 'entry task');
-      await promise;
-
-      // After completion, collect to verify tokens (entry is removed post-collect but we can check before)
-      // The entry is deleted after collect, so check before collecting
-      const task = pipeline.getTask(taskId);
-      // inputTokens should reflect final execResult (300) — entry fields are overwritten by execResult in .then()
-      expect(task?.inputTokens).toBe(300);
-    });
-
-    it('fires progress events in sequential write mode', async () => {
-      const events: Array<{ toolCalls: number }> = [];
-      const progressWorker = {
-        executeTask: jest.fn().mockImplementation(
-          (_task: string, _lens: unknown, _prompt: unknown, onProgress?: (evt: { toolCalls: number; inputTokens: number; outputTokens: number; currentTool: string; turn: number }) => void) => {
-            if (onProgress) {
-              onProgress({ toolCalls: 1, inputTokens: 50, outputTokens: 25, currentTool: 'edit', turn: 1 });
-            }
-            return Promise.resolve({ result: 'seq-done', inputTokens: 50, outputTokens: 25 });
-          }
-        ),
-        subscribeToBatch: jest.fn().mockResolvedValue(undefined),
-        unsubscribeFromBatch: jest.fn().mockResolvedValue(undefined),
-      };
-
-      workers.set('seq-agent', progressWorker);
-      pipeline = new DispatchPipeline({
-        projectRoot: '/tmp/gossip-test-' + Date.now(),
-        workers,
-        registryGet: (id) => ({ id, provider: 'local' as const, model: 'mock', skills: [] }),
-      });
-
-      pipeline.setTaskProgressCallback((_taskId, evt) => {
-        events.push({ toolCalls: evt.toolCalls });
-      });
-
-      const { promise } = pipeline.dispatch('seq-agent', 'seq task', { writeMode: 'sequential' });
-      await promise;
-
-      expect(events).toHaveLength(1);
-      expect(events[0].toolCalls).toBe(1);
-    });
-  });
+  // task progress callback tests removed — setTaskProgressCallback was replaced
+  // by streaming events (TaskStreamEvent) in the async generator refactor.
 
   describe('dispatchParallel()', () => {
     it('dispatches multiple tasks and returns ids', async () => {
@@ -507,8 +404,8 @@ describe('DispatchPipeline', () => {
       pipeline.setCompetencyProfiler(mockProfiler as any);
       const suggestions = pipeline.getSkillGapSuggestions();
       expect(suggestions.length).toBeGreaterThan(0);
-      expect(suggestions.some(s => s.includes('agent-b') && s.includes('injection'))).toBe(true);
-      expect(suggestions.some(s => s.includes('agent-b') && s.includes('xss'))).toBe(true);
+      expect(suggestions.some(s => s.agentId === 'agent-b' && s.category === 'injection')).toBe(true);
+      expect(suggestions.some(s => s.agentId === 'agent-b' && s.category === 'xss')).toBe(true);
     });
 
     it('returns empty when all agents are strong', () => {

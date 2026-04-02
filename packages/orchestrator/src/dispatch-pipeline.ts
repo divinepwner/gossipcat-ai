@@ -32,6 +32,13 @@ import { TaskStreamEvent, TaskStreamEventType } from './task-stream';
 
 const log = (msg: string) => process.stderr.write(`[gossipcat] ${msg}\n`);
 
+export interface SkillGapSuggestionResult {
+  agentId: string;
+  category: string;
+  score: number;
+  median: number;
+}
+
 export interface ToolServerCallbacks {
   assignScope: (agentId: string, scope: string) => void;
   assignRoot: (agentId: string, root: string) => void;
@@ -1030,7 +1037,7 @@ export class DispatchPipeline {
     this.suggestedSkillGaps.add(`${agentId}::${category}`);
   }
 
-  getSkillGapSuggestions(): string[] {
+  getSkillGapSuggestions(): SkillGapSuggestionResult[] {
     if (!this.competencyProfiler) return [];
 
     const profiles = this.competencyProfiler.getProfiles();
@@ -1057,7 +1064,7 @@ export class DispatchPipeline {
       categoryMedians.set(cat, sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
     }
 
-    const suggestions: string[] = [];
+    const suggestions: SkillGapSuggestionResult[] = [];
     for (const [, profile] of profiles) {
       for (const [cat, median] of categoryMedians) {
         if (median < 0.6) continue; // peers aren't strong enough to justify suggestion
@@ -1066,10 +1073,8 @@ export class DispatchPipeline {
           // Suppress if already suggested this session
           const key = `${profile.agentId}::${cat}`;
           if (this.suggestedSkillGaps.has(key)) continue;
-          this.suggestedSkillGaps.add(key);
-          suggestions.push(
-            `${profile.agentId} needs a skill in "${cat}" (score: ${agentScore.toFixed(2)}, team median: ${median.toFixed(2)}) — call gossip_skills(action: "develop", agent_id: "${profile.agentId}", category: "${cat}")`
-          );
+          // NOTE: do NOT suppress here — caller must suppress after successful action
+          suggestions.push({ agentId: profile.agentId, category: cat, score: agentScore, median });
         }
       }
     }

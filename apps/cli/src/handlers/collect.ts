@@ -313,11 +313,40 @@ export async function handleCollect(
     }
   } catch { /* best-effort */ }
 
-  // Auto skill gap suggestions: detect agents weak in categories where peers are strong
+  // Auto skill development: detect agents weak in categories where peers are strong
+  // and automatically generate + bind skills instead of just suggesting
   try {
-    const suggestions = ctx.mainAgent.getSkillGapSuggestions();
-    if (suggestions.length > 0) {
-      output += `\n\n📊 Skill gap detected:\n${suggestions.map((s: string) => `  - ${s}`).join('\n')}`;
+    const gaps = ctx.mainAgent.getSkillGapSuggestions();
+    if (gaps.length > 0 && ctx.skillGenerator) {
+      const { normalizeSkillName: nsn } = await import('@gossip/orchestrator');
+      const developed: string[] = [];
+      const failed: string[] = [];
+      for (const gap of gaps) {
+        try {
+          await ctx.skillGenerator.generate(gap.agentId, gap.category);
+          const skillName = nsn(gap.category);
+          const skillIndex = ctx.mainAgent.getSkillIndex();
+          if (skillIndex) skillIndex.bind(gap.agentId, skillName, { source: 'auto' });
+          // Suppress AFTER successful generate — not before
+          const pipeline = (ctx.mainAgent as any).pipeline;
+          if (pipeline?.suppressSkillGapAlert) {
+            pipeline.suppressSkillGapAlert(gap.agentId, gap.category);
+          }
+          developed.push(`${gap.agentId}/${skillName}`);
+        } catch {
+          // Don't suppress — gap will resurface on next collect for retry
+          failed.push(`${gap.agentId}/${gap.category}`);
+        }
+      }
+      if (developed.length > 0) {
+        output += `\n\n📊 Auto-developed ${developed.length} skill(s): ${developed.join(', ')}`;
+      }
+      if (failed.length > 0) {
+        output += `\n\n⚠️ Failed to auto-develop: ${failed.join(', ')} — call gossip_skills(action: "develop") manually`;
+      }
+    } else if (gaps.length > 0) {
+      // Fallback: skill generator not available, just surface suggestions
+      output += `\n\n📊 Skill gap detected:\n${gaps.map(g => `  - ${g.agentId} needs "${g.category}" (score: ${g.score.toFixed(2)}, median: ${g.median.toFixed(2)})`).join('\n')}`;
     }
   } catch { /* best-effort */ }
 
