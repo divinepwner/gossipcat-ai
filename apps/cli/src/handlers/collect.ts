@@ -120,7 +120,7 @@ export async function handleCollect(
     const failedResults = allResults.filter((r: any) =>
       r.status === 'failed' ||
       r.status === 'timed_out' ||
-      (r.status === 'completed' && (!r.result || r.result.trim().length === 0))
+      (r.status === 'completed' && (!r.result || r.result.trim().length === 0 || r.result.includes('[No response from')))
     );
     if (failedResults.length > 0) {
       const { PerformanceWriter } = await import('@gossip/orchestrator');

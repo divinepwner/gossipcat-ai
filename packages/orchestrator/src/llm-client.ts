@@ -285,10 +285,11 @@ export class GeminiProvider implements ILLMProvider {
   private parseGeminiResponse(data: Record<string, unknown>): LLMResponse {
     const candidates = data.candidates as Array<Record<string, unknown>>;
     if (!candidates?.length) {
-      // Log blocked responses for debugging
       const blockReason = (data as any).promptFeedback?.blockReason;
-      if (blockReason) process.stderr.write(`[GeminiProvider] Response blocked: ${blockReason}\n`);
-      return { text: '[No response from Gemini]' };
+      const safetyRatings = (data as any).promptFeedback?.safetyRatings;
+      const details = blockReason ? `blocked: ${blockReason}` : 'no candidates returned';
+      process.stderr.write(`[GeminiProvider] Empty response — ${details}${safetyRatings ? ` safety=${JSON.stringify(safetyRatings)}` : ''}\n`);
+      return { text: `[No response from Gemini: ${details}]` };
     }
     const candidate = candidates[0];
     const finishReason = candidate.finishReason as string | undefined;
