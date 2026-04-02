@@ -268,7 +268,7 @@ Return only valid JSON.` },
       while ((afMatch = agentFindingPattern.exec(summary)) !== null) {
         const attrs = afMatch[1];
         const content = afMatch[2].trim();
-        if (!content || content.length < 10 || content.length > 2000) continue;
+        if (!content || content.length < 15 || content.length > 2000) continue;
 
         const typeMatch = attrs.match(/type="(finding|suggestion|insight)"/);
         if (!typeMatch) continue;
@@ -297,7 +297,7 @@ Return only valid JSON.` },
         const lines = summary.split('\n').filter(l => l.trimStart().startsWith('-'));
         for (const line of lines) {
           let finding = line.replace(/^\s*-\s*/, '').trim();
-          if (!finding || finding.length < 20) continue;
+          if (!finding || finding.length < 15) continue;
           const prefixMatch = finding.match(/^\[(FINDING|SUGGESTION|INSIGHT)\]\s*/i);
           const findingType = prefixMatch ? prefixMatch[1].toLowerCase() as 'finding' | 'suggestion' | 'insight' : 'finding';
           if (prefixMatch) finding = finding.slice(prefixMatch[0].length).trim();
@@ -1211,8 +1211,8 @@ Return ONLY a JSON array:
             // B is more precise — swap: merge A into B
             entryB.confirmedBy.push(entryA.originalAgentId);
             entryB.confidences.push(4);
-            // Preserve findingType: suggestion/insight wins over finding (more specific)
-            if (entryA.findingType && entryA.findingType !== 'finding') entryB.findingType = entryA.findingType;
+            // Preserve findingType: 'finding' wins over suggestion/insight (most actionable)
+            if (entryA.findingType === 'finding') entryB.findingType = 'finding';
             // Severity: highest wins
             if (entryA.severity && (!entryB.severity || (SEVERITY_RANK[entryA.severity] || 0) > (SEVERITY_RANK[entryB.severity] || 0))) entryB.severity = entryA.severity;
             toRemove.add(keyA);
@@ -1224,7 +1224,7 @@ Return ONLY a JSON array:
           // Default: merge B into A
           entryA.confirmedBy.push(entryB.originalAgentId);
           entryA.confidences.push(4); // high confidence — independent discovery
-          if (entryB.findingType && entryB.findingType !== 'finding') entryA.findingType = entryB.findingType;
+          if (entryB.findingType === 'finding') entryA.findingType = 'finding';
           if (entryB.severity && (!entryA.severity || (SEVERITY_RANK[entryB.severity] || 0) > (SEVERITY_RANK[entryA.severity] || 0))) entryA.severity = entryB.severity;
           toRemove.add(keyB);
           process.stderr.write(
@@ -1272,7 +1272,8 @@ Return ONLY a JSON array:
       for (const f of confirmed) {
         const origPreset = this.config.registryGet(f.originalAgentId)?.preset || f.originalAgentId;
         const confirmerPresets = f.confirmedBy.map(id => this.config.registryGet(id)?.preset || id).join(', ');
-        lines.push(`  ✓ [${origPreset} + ${confirmerPresets}] ${f.finding}`);
+        const sev = f.severity ? ` [${f.severity.toUpperCase()}]` : '';
+        lines.push(`  ✓ [${origPreset} + ${confirmerPresets}]${sev} ${f.finding}`);
       }
       lines.push('');
     }
@@ -1296,7 +1297,8 @@ Return ONLY a JSON array:
       for (const f of unverified) {
         const origPreset = this.config.registryGet(f.originalAgentId)?.preset || f.originalAgentId;
         const unvNames = f.unverifiedBy?.map(u => this.config.registryGet(u.agentId)?.preset || u.agentId).join(', ') || '?';
-        lines.push(`  ◇ [${origPreset}, unverified by ${unvNames}] "${f.finding}"`);
+        const sevU = f.severity ? ` [${f.severity.toUpperCase()}]` : '';
+        lines.push(`  ◇ [${origPreset}, unverified by ${unvNames}]${sevU} "${f.finding}"`);
         lines.push(`    → To verify: re-dispatch to a second agent, or read the code directly`);
       }
       lines.push('');
@@ -1306,7 +1308,8 @@ Return ONLY a JSON array:
       lines.push('UNIQUE (one agent only — verify before acting):');
       for (const f of unique) {
         const preset = this.config.registryGet(f.originalAgentId)?.preset || f.originalAgentId;
-        lines.push(`  ? [${preset}] "${f.finding}"`);
+        const sevQ = f.severity ? ` [${f.severity.toUpperCase()}]` : '';
+        lines.push(`  ? [${preset}]${sevQ} "${f.finding}"`);
       }
       lines.push('');
     }
