@@ -59,7 +59,7 @@ export class RelayServer {
       this.httpServer = createServer(this.handleHttp.bind(this));
 
       if (this.config.dashboard) {
-        this.dashboardAuth = new DashboardAuth(this.config.dashboard.projectRoot);
+        this.dashboardAuth = new DashboardAuth();
         this.dashboardAuth.init();
         this.dashboardWs = new DashboardWs();
         this.dashboardUpgrader = new WebSocketServer({ noServer: true });
@@ -275,6 +275,10 @@ export class RelayServer {
 
     res.writeHead(404);
     res.end();
+  }
+
+  get dashboardKey(): string {
+    return this.dashboardAuth?.getKey() ?? '';
   }
 
   get dashboardKeyPrefix(): string {

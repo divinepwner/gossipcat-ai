@@ -1,6 +1,4 @@
 import { randomBytes, timingSafeEqual, createHash } from 'crypto';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
 
 const KEY_LENGTH = 16; // 16 bytes = 32 hex chars
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -12,28 +10,17 @@ interface Session {
 }
 
 export class DashboardAuth {
-  private keyPath: string;
   private key: string = '';
   private sessions: Map<string, Session> = new Map();
 
-  constructor(projectRoot: string) {
-    this.keyPath = join(projectRoot, '.gossip', 'dashboard-key');
-  }
-
   init(): void {
-    if (existsSync(this.keyPath)) {
-      this.key = readFileSync(this.keyPath, 'utf-8').trim();
-      if (this.key.length === KEY_LENGTH * 2) return;
-    }
-    this.regenerateKey();
+    this.key = randomBytes(KEY_LENGTH).toString('hex');
+    this.sessions.clear();
   }
 
   regenerateKey(): void {
     this.key = randomBytes(KEY_LENGTH).toString('hex');
-    const dir = dirname(this.keyPath);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(this.keyPath, this.key + '\n', { mode: 0o600 });
-    this.sessions.clear(); // invalidate all sessions
+    this.sessions.clear();
   }
 
   getKey(): string {

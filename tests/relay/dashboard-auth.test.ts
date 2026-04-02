@@ -1,32 +1,26 @@
 import { DashboardAuth } from '@gossip/relay/dashboard/auth';
-import { mkdtempSync, readFileSync, existsSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
 
 describe('DashboardAuth', () => {
-  let projectRoot: string;
   let auth: DashboardAuth;
 
   beforeEach(() => {
-    projectRoot = mkdtempSync(join(tmpdir(), 'gossip-dash-'));
-    auth = new DashboardAuth(projectRoot);
+    auth = new DashboardAuth();
   });
 
   describe('key management', () => {
-    it('generates a 32-char hex key on first init', () => {
+    it('generates a 32-char hex key on init', () => {
       auth.init();
-      const keyPath = join(projectRoot, '.gossip', 'dashboard-key');
-      expect(existsSync(keyPath)).toBe(true);
-      const key = readFileSync(keyPath, 'utf-8').trim();
+      const key = auth.getKey();
       expect(key).toMatch(/^[0-9a-f]{32}$/);
     });
 
-    it('reuses existing key on subsequent inits', () => {
+    it('generates a new key each init (in-memory, no persistence)', () => {
       auth.init();
-      const key1 = auth.getKey();
-      const auth2 = new DashboardAuth(projectRoot);
+      auth.getKey();
+      const auth2 = new DashboardAuth();
       auth2.init();
-      expect(auth2.getKey()).toBe(key1);
+      // Different instances get different keys (no shared file)
+      expect(auth2.getKey()).toMatch(/^[0-9a-f]{32}$/);
     });
 
     it('regenerates key when forced', () => {
