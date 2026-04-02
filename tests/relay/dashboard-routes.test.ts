@@ -65,7 +65,8 @@ describe('DashboardRouter', () => {
     expect(res._status).toBe(200);
     expect(res._headers['Set-Cookie']).toContain('dashboard_session=');
     expect(res._headers['Set-Cookie']).toContain('HttpOnly');
-    expect(res._headers['Set-Cookie']).toContain('SameSite=Lax');
+    expect(res._headers['Set-Cookie']).toContain('Secure');
+    expect(res._headers['Set-Cookie']).toContain('SameSite=Strict');
   });
 
   it('POST /dashboard/api/auth rejects invalid key', async () => {

@@ -123,7 +123,7 @@ export class DashboardRouter {
       this.authAttempts.delete(ip);
       res.writeHead(200, {
         'Content-Type': 'application/json',
-        'Set-Cookie': `dashboard_session=${token}; HttpOnly; SameSite=Lax; Path=/dashboard; Max-Age=86400`,
+        'Set-Cookie': `dashboard_session=${token}; HttpOnly; Secure; SameSite=Strict; Path=/dashboard; Max-Age=86400`,
       });
       res.end(JSON.stringify({ ok: true }));
     } catch {
