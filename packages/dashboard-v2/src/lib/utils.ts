@@ -1,3 +1,12 @@
+/** Clean <fn>, <cite>, and [FINDING] tags from finding text into HTML for rendering */
+export function cleanFindingTags(text: string): string {
+  let cleaned = text.replace(/^\[(FINDING|SUGGESTION|INSIGHT)\]\s*/i, '');
+  cleaned = cleaned.replace(/<cite\s+tag="file">([^<]+)<\/cite>/g, '<code class="cite-file">$1</code>');
+  cleaned = cleaned.replace(/<cite\s+tag="fn">([^<]+)<\/cite>/g, '<code class="cite-fn">$1</code>');
+  cleaned = cleaned.replace(/<fn>([^<]+)<\/fn>/g, '<code class="cite-fn">$1</code>');
+  return cleaned;
+}
+
 export function timeAgo(ts: string | number): string {
   const now = Date.now();
   const then = typeof ts === 'string' ? new Date(ts).getTime() : ts;
