@@ -1011,24 +1011,35 @@ export class DispatchPipeline {
   getSessionStartTime() { return this.sessionStartTime; }
   getSessionGossip() { return this.sessionGossip; }
 
+  // Track which (agentId, category) pairs have been suggested this session to avoid repeats
+  private suggestedSkillGaps = new Set<string>();
+
+  /** Record that a skill gap has been addressed (e.g., develop action called) */
+  suppressSkillGapAlert(agentId: string, category: string): void {
+    this.suggestedSkillGaps.add(`${agentId}::${category}`);
+  }
+
   getSkillGapSuggestions(): string[] {
     if (!this.competencyProfiler) return [];
 
     const profiles = this.competencyProfiler.getProfiles();
     if (profiles.size < 2) return [];
 
-    // Collect all category scores across agents
-    const categoryScores = new Map<string, number[]>();
+    // Collect ALL categories seen across agents
+    const allCategories = new Set<string>();
     for (const [, profile] of profiles) {
-      for (const [cat, score] of Object.entries(profile.reviewStrengths)) {
-        if (!categoryScores.has(cat)) categoryScores.set(cat, []);
-        categoryScores.get(cat)!.push(score);
+      for (const cat of Object.keys(profile.reviewStrengths)) {
+        allCategories.add(cat);
       }
     }
 
-    // Compute medians
+    // Compute medians — include ALL agents (use 0.5 neutral for missing categories)
     const categoryMedians = new Map<string, number>();
-    for (const [cat, scores] of categoryScores) {
+    for (const cat of allCategories) {
+      const scores: number[] = [];
+      for (const [, profile] of profiles) {
+        scores.push(profile.reviewStrengths[cat] ?? 0.5); // neutral, not zero
+      }
       if (scores.length < 2) continue;
       const sorted = [...scores].sort((a, b) => a - b);
       const mid = Math.floor(sorted.length / 2);
@@ -1039,8 +1050,12 @@ export class DispatchPipeline {
     for (const [, profile] of profiles) {
       for (const [cat, median] of categoryMedians) {
         if (median < 0.6) continue; // peers aren't strong enough to justify suggestion
-        const agentScore = profile.reviewStrengths[cat] ?? 0;
+        const agentScore = profile.reviewStrengths[cat] ?? 0.5; // neutral, not zero
         if (agentScore < 0.3) {
+          // Suppress if already suggested this session
+          const key = `${profile.agentId}::${cat}`;
+          if (this.suggestedSkillGaps.has(key)) continue;
+          this.suggestedSkillGaps.add(key);
           suggestions.push(
             `${profile.agentId} needs a skill in "${cat}" (score: ${agentScore.toFixed(2)}, team median: ${median.toFixed(2)}) — call gossip_skills(action: "develop", agent_id: "${profile.agentId}", category: "${cat}")`
           );

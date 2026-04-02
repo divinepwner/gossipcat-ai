@@ -1509,6 +1509,11 @@ server.tool(
           if (config && !config.skills.includes(category)) {
             config.skills.push(category);
           }
+          // Suppress future skill gap alerts for this agent+category
+          const pipeline = (ctx.mainAgent as any).pipeline;
+          if (pipeline?.suppressSkillGapAlert) {
+            pipeline.suppressSkillGapAlert(agent_id, category);
+          }
         }
 
         const preview = result.content.length > 1000
