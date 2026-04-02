@@ -200,6 +200,27 @@ let planExecutionDepth = 0;
 // Cache modules after first import
 let _modules: any = null;
 
+function lookupFindingSeverity(findingId: string, projectRoot: string): string | null {
+  const { existsSync, readdirSync, readFileSync } = require('fs');
+  const { join } = require('path');
+  const reportsDir = join(projectRoot, '.gossip', 'consensus-reports');
+  if (!existsSync(reportsDir)) return null;
+  try {
+    const files = readdirSync(reportsDir).filter((f: string) => f.endsWith('.json'));
+    for (const file of files) {
+      const report = JSON.parse(readFileSync(join(reportsDir, file), 'utf-8'));
+      for (const bucket of ['confirmed', 'disputed', 'unverified', 'unique']) {
+        for (const finding of (report[bucket] || [])) {
+          if (finding.id === findingId && finding.severity) {
+            return finding.severity;
+          }
+        }
+      }
+    }
+  } catch { /* report not found */ }
+  return null;
+}
+
 async function getModules() {
   if (_modules) return _modules;
   _modules = {
@@ -1327,6 +1348,27 @@ server.tool(
       }));
 
       writer.appendSignals(formatted);
+
+      // Detect severity miscalibration: auto-record when orchestrator overrides agent's severity
+      for (const s of formatted) {
+        if (!s.severity || !s.findingId) continue;
+        const originalSeverity = lookupFindingSeverity(s.findingId, process.cwd());
+        if (originalSeverity && originalSeverity !== s.severity) {
+          try {
+            writer.appendSignal({
+              type: 'consensus',
+              signal: 'severity_miscalibrated',
+              taskId: s.taskId,
+              agentId: s.agentId,
+              evidence: `Agent claimed ${originalSeverity}, orchestrator confirmed ${s.severity}`,
+              severity: s.severity,
+              claimedSeverity: originalSeverity,
+              category: 'severity_calibration',
+              timestamp: new Date().toISOString(),
+            } as any);
+          } catch { /* best-effort */ }
+        }
+      }
 
       // Resolve findings in implementation-findings.jsonl when signal has finding_id
       const RESOLUTION_SIGNALS = new Set(['agreement', 'unique_confirmed']);
