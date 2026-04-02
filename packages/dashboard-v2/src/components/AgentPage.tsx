@@ -108,13 +108,27 @@ export function AgentPage({ agentId, agents, tasks, consensus }: AgentPageProps)
       </section>
 
       {/* Skills */}
-      {agent.skills.length > 0 && (
+      {(agent.skillSlots.length > 0 || agent.skills.length > 0) && (
         <section className="mb-8">
           <h2 className="mb-3 font-mono text-xs font-bold uppercase tracking-widest text-foreground">
-            Skills <span className="text-primary">{agent.skills.length}</span>
+            Skills <span className="text-primary">{agent.skillSlots.length || agent.skills.length}</span>
           </h2>
           <div className="flex flex-wrap gap-1.5">
-            {agent.skills.map(skill => (
+            {agent.skillSlots.length > 0 ? agent.skillSlots.map(slot => (
+              <span
+                key={slot.name}
+                className={`rounded-sm border px-2.5 py-1 font-mono text-xs ${
+                  !slot.enabled
+                    ? 'border-border/50 text-muted-foreground/50 line-through'
+                    : slot.mode === 'contextual'
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+                    : 'border-border bg-card text-muted-foreground'
+                }`}
+                title={`${slot.mode} · ${slot.source} · ${slot.enabled ? 'enabled' : 'disabled'}`}
+              >
+                {slot.mode === 'contextual' && '⚡ '}{slot.name}
+              </span>
+            )) : agent.skills.map(skill => (
               <span key={skill} className="rounded-sm border border-border bg-card px-2.5 py-1 font-mono text-xs text-muted-foreground">
                 {skill}
               </span>

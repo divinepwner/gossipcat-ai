@@ -21,6 +21,7 @@ export interface SkillSlotResponse {
   name: string;
   enabled: boolean;
   source: string;
+  mode: 'permanent' | 'contextual';
   boundAt: string;
 }
 
@@ -148,6 +149,7 @@ export async function agentsHandler(
           name: slot.skill,
           enabled: slot.enabled,
           source: slot.source,
+          mode: slot.mode ?? 'permanent',
           boundAt: slot.boundAt,
         }));
       }

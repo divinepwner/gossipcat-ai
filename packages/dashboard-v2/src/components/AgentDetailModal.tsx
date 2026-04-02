@@ -46,11 +46,25 @@ export function AgentDetailModal({ agent, open, onClose }: AgentDetailModalProps
             </div>
           ))}
         </div>
-        {agent.skills.length > 0 && (
+        {(agent.skillSlots.length > 0 || agent.skills.length > 0) && (
           <div className="mt-4">
             <h4 className="mb-2 font-mono text-xs font-bold uppercase tracking-widest text-muted-foreground">Skills</h4>
             <div className="flex flex-wrap gap-1.5">
-              {agent.skills.map((skill) => (
+              {agent.skillSlots.length > 0 ? agent.skillSlots.map((slot) => (
+                <span
+                  key={slot.name}
+                  className={`rounded-sm border px-2 py-0.5 font-mono text-xs ${
+                    !slot.enabled
+                      ? 'border-border/50 text-muted-foreground/50 line-through'
+                      : slot.mode === 'contextual'
+                      ? 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+                      : 'border-border bg-background text-muted-foreground'
+                  }`}
+                  title={`${slot.mode} · ${slot.source} · ${slot.enabled ? 'enabled' : 'disabled'}`}
+                >
+                  {slot.mode === 'contextual' && '⚡ '}{slot.name}
+                </span>
+              )) : agent.skills.map((skill) => (
                 <span key={skill} className="rounded-sm border border-border bg-background px-2 py-0.5 font-mono text-xs text-muted-foreground">
                   {skill}
                 </span>

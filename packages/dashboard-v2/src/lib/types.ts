@@ -21,7 +21,7 @@ export interface AgentData {
   preset?: string;
   native: boolean;
   skills: string[];
-  skillSlots: { name: string; enabled: boolean; source: string; boundAt: string }[];
+  skillSlots: { name: string; enabled: boolean; source: string; mode: 'permanent' | 'contextual'; boundAt: string }[];
   online: boolean;
   totalTokens: number;
   lastTask: { task: string; timestamp: string } | null;
