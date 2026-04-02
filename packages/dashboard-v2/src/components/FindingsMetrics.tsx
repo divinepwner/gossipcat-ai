@@ -120,7 +120,7 @@ export function FindingsMetrics({ consensus, reports }: FindingsMetricsProps) {
                 {isExpanded && (
                   <div className="mt-3 border-t border-border/30 pt-3">
                     <div className="mb-2 flex gap-2">
-                      {FILTER_TABS.map(tab => (
+                      {FILTER_CHIPS.map(tab => (
                         <button key={tab.key} onClick={() => setFilter(tab.key)}
                           className={`font-mono text-[10px] ${filter === tab.key ? tab.activeCls : tab.cls}`}>
                           {tab.label}
