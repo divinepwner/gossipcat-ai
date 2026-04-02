@@ -2,6 +2,9 @@ import { readFileSync, existsSync, readdirSync } from 'fs';
 import { resolve, sep } from 'path';
 import type { SkillIndex } from './skill-index';
 import { parseSkillFrontmatter } from './skill-parser';
+import { normalizeSkillName } from './skill-name';
+
+const SAFE_AGENT_ID = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 
 const MAX_CONTEXTUAL_SKILLS = 3;
 const MIN_KEYWORD_HITS = 2;
@@ -76,9 +79,11 @@ export function loadSkills(agentId: string, skills: string[], projectRoot: strin
   }
   for (const s of rejected) dropped.push(s.name);
 
+  // Strip delimiter strings from skill content to prevent prompt injection
+  const sanitizeContent = (c: string) => c.replace(/---\s*END SKILLS\s*---/gi, '--- END-SKILLS ---');
   const sections = [
-    ...permanent.map(s => s.content),
-    ...accepted.map(s => s.content),
+    ...permanent.map(s => sanitizeContent(s.content)),
+    ...accepted.map(s => sanitizeContent(s.content)),
   ];
 
   const contentStr = sections.length > 0
@@ -90,14 +95,21 @@ export function loadSkills(agentId: string, skills: string[], projectRoot: strin
 
 /** Cache compiled regex patterns to avoid per-dispatch recompilation */
 const patternCache = new Map<string, RegExp>();
+const MAX_PATTERN_CACHE = 500;
+const MAX_KEYWORD_LENGTH = 100;
 
 function getPattern(keyword: string): RegExp {
-  let pattern = patternCache.get(keyword);
+  const capped = keyword.slice(0, MAX_KEYWORD_LENGTH);
+  let pattern = patternCache.get(capped);
   if (!pattern) {
-    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Word-boundary matching for both single and multi-word keywords
+    if (patternCache.size >= MAX_PATTERN_CACHE) {
+      // Evict oldest entry (first inserted)
+      const first = patternCache.keys().next().value;
+      if (first !== undefined) patternCache.delete(first);
+    }
+    const escaped = capped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     pattern = new RegExp(`\\b${escaped}\\b`, 'i');
-    patternCache.set(keyword, pattern);
+    patternCache.set(capped, pattern);
   }
   return pattern;
 }
@@ -133,10 +145,13 @@ function getKeywords(content: string, skillName: string): string[] {
 }
 
 function resolveSkill(agentId: string, skill: string, projectRoot: string): string | null {
-  const sanitized = skill.replace(/[^a-z0-9_-]/gi, '');
-  if (!sanitized) return null;
-  const filename = `${sanitized}.md`;
-  const hyphenFilename = `${sanitized.replace(/_/g, '-')}.md`;
+  // Sanitize agentId to prevent path traversal
+  if (!SAFE_AGENT_ID.test(agentId)) return null;
+
+  // Use canonical normalization for skill name (consistent with SkillIndex)
+  const normalized = normalizeSkillName(skill);
+  if (!normalized) return null;
+  const filename = `${normalized}.md`;
 
   const bases = [
     resolve(projectRoot, '.gossip', 'agents', agentId, 'skills'),
@@ -145,11 +160,10 @@ function resolveSkill(agentId: string, skill: string, projectRoot: string): stri
   ];
 
   for (const base of bases) {
-    for (const fname of [filename, hyphenFilename]) {
-      const candidate = resolve(base, fname);
-      if (!candidate.startsWith(base + sep)) continue;
-      if (existsSync(candidate)) return readFileSync(candidate, 'utf-8');
-    }
+    const candidate = resolve(base, filename);
+    // Validate resolved path stays within base directory
+    if (!candidate.startsWith(base + sep)) continue;
+    if (existsSync(candidate)) return readFileSync(candidate, 'utf-8');
   }
   return null;
 }

@@ -583,6 +583,18 @@ export class DispatchPipeline {
     if (skillsReadyCount > 0) {
       result.skillsReady = skillsReadyCount;
     }
+
+    // Flush skill counters and check lifecycle (auto-disable stale, promote frequent)
+    try {
+      if (this.skillCounters && this.skillIndex) {
+        const lifecycle = this.skillCounters.checkLifecycle(this.skillIndex);
+        this.skillCounters.flush();
+        if (lifecycle.disabled.length > 0 || lifecycle.promoted.length > 0) {
+          result.skillLifecycle = lifecycle;
+        }
+      }
+    } catch { /* best-effort — don't block collect */ }
+
     return result;
   }
 

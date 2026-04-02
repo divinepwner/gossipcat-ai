@@ -61,9 +61,10 @@ export class SkillCounterTracker {
         counter.activations++;
         counter.lastActivatedAt = new Date().toISOString();
       }
-      // Rolling window: keep last PROMOTION_MIN_WINDOW entries
+      // Rolling window: keep enough entries for both stale detection and promotion
+      const windowSize = Math.max(STALE_THRESHOLD, PROMOTION_MIN_WINDOW);
       counter.recentWindow.push(wasActivated);
-      if (counter.recentWindow.length > PROMOTION_MIN_WINDOW) {
+      if (counter.recentWindow.length > windowSize) {
         counter.recentWindow.shift();
       }
     }
@@ -83,9 +84,11 @@ export class SkillCounterTracker {
         const mode = index.getSkillMode(agentId, skill);
         if (mode !== 'contextual') continue;
 
-        // Auto-disable: no activations in STALE_THRESHOLD dispatches
-        const dispatchesSinceLastActivation = counter.totalDispatches - counter.activations;
-        if (counter.totalDispatches >= STALE_THRESHOLD && dispatchesSinceLastActivation >= STALE_THRESHOLD) {
+        // Auto-disable: last STALE_THRESHOLD dispatches had zero activations (rolling window)
+        // Use recentWindow for recency, not cumulative counts which miss dormancy after early use
+        const windowFull = counter.recentWindow.length >= STALE_THRESHOLD;
+        const windowAllInactive = windowFull && counter.recentWindow.slice(-STALE_THRESHOLD).every(v => !v);
+        if (windowAllInactive) {
           if (index.disable(agentId, skill)) {
             disabled.push(`${agentId}/${skill}`);
             process.stderr.write(`[gossipcat] Auto-disabled stale skill ${skill} for ${agentId} (${counter.totalDispatches} dispatches, ${counter.activations} activations)\n`);
@@ -122,7 +125,18 @@ export class SkillCounterTracker {
   private load(): void {
     try {
       if (existsSync(this.filePath)) {
-        this.data = JSON.parse(readFileSync(this.filePath, 'utf-8'));
+        const raw = JSON.parse(readFileSync(this.filePath, 'utf-8'));
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+        // Validate structure: each agent → skill → counter with recentWindow array
+        for (const [agentId, skills] of Object.entries(raw)) {
+          if (!skills || typeof skills !== 'object') { delete raw[agentId]; continue; }
+          for (const [skill, counter] of Object.entries(skills as Record<string, any>)) {
+            if (!counter || typeof counter !== 'object' || !Array.isArray(counter.recentWindow)) {
+              delete (skills as any)[skill];
+            }
+          }
+        }
+        this.data = raw;
       }
     } catch { /* start fresh */ }
   }

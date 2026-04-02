@@ -55,7 +55,10 @@ export class SkillCatalog {
     const lower = taskText.toLowerCase();
     return this.entries.filter(entry => {
       if ((entry as any)._status === 'disabled') return false;
-      return entry.keywords.some(kw => lower.includes(kw.toLowerCase()));
+      return entry.keywords.some(kw => {
+        const escaped = kw.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`\\b${escaped}\\b`).test(lower);
+      });
     });
   }
 

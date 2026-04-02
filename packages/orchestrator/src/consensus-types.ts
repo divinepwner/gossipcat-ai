@@ -56,6 +56,7 @@ export interface CollectResult {
   results: import('./types').TaskEntry[];
   consensus?: ConsensusReport;
   skillsReady?: number;
+  skillLifecycle?: { disabled: string[]; promoted: string[] };
 }
 
 /** A consensus signal for agent performance tracking */
