@@ -142,11 +142,130 @@ export async function handleCollect(
     }
   } catch { /* best-effort */ }
 
-  // Step 4: Run consensus on merged results (relay + native together)
+  // Step 4: Format individual results (before consensus — needed for early return in two-phase flow)
+  const resultTexts = allResults.map((t: any) => {
+    const dur = t.completedAt && t.startedAt ? `${t.completedAt - t.startedAt}ms` : 'running';
+    const modeTag = t.writeMode ? ` [${t.writeMode}${t.scope ? `:${t.scope}` : ''}]` : '';
+    const nativeTag = ctx.nativeAgentConfigs.has(t.agentId) ? ' (native)' : '';
+    let text: string;
+    if (t.status === 'completed') text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag} (${dur}):\n${t.result}`;
+    else if (t.status === 'failed') text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag} (${dur}): ERROR: ${t.error}\n  → Re-dispatch with gossip_run, or check agent logs in .gossip/agents/${t.agentId}/`;
+    else if (t.status === 'timed_out') text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag} (timed out): ${t.error}\n  → Re-dispatch with gossip_run to retry.`;
+    else text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag}: still running...`;
+
+    if (t.worktreeInfo) {
+      text += `\n📁 Worktree: ${t.worktreeInfo.path} (branch: ${t.worktreeInfo.branch})`;
+    }
+    if (t.skillWarnings?.length) {
+      text += `\n\n⚠️ Skill coverage gaps:\n${t.skillWarnings.map((w: string) => `  - ${w}`).join('\n')}`;
+    }
+    return text;
+  });
+
+  // Step 5: Run consensus on merged results (relay + native together)
   let consensusReport: any = undefined;
+  let provisionalSignalCount = 0;
+  const CONSENSUS_TIMEOUT_MS = 300_000;
   // MIN_AGENTS_FOR_CONSENSUS = 2 (see @gossip/orchestrator/types)
   if (consensus && allResults.filter((r: any) => r.status === 'completed').length >= 2) {
-    consensusReport = await ctx.mainAgent.runConsensus(allResults);
+    // Detect which completed agents are native
+    const nativeAgentIds = new Set<string>();
+    for (const r of allResults) {
+      if (r.status === 'completed' && ctx.nativeAgentConfigs.has(r.agentId)) {
+        nativeAgentIds.add(r.agentId);
+      }
+    }
+
+    if (nativeAgentIds.size === 0) {
+      // All relay — use existing path (each agent cross-reviewed by its own LLM)
+      consensusReport = await ctx.mainAgent.runConsensus(allResults);
+    } else {
+      // Two-phase flow: relay agents cross-reviewed inline, native agents get prompts returned
+      const { ConsensusEngine, createProvider } = await import('@gossip/orchestrator');
+
+      // Build per-agent LLM factory for relay agents
+      const agentLlmCache = new Map<string, any>();
+      for (const r of allResults) {
+        if (r.status !== 'completed' || nativeAgentIds.has(r.agentId)) continue;
+        try {
+          const agentConfig = ctx.mainAgent.getAgentConfig(r.agentId);
+          if (agentConfig) {
+            const key = await ctx.keychain.getKey(agentConfig.provider);
+            if (key) agentLlmCache.set(r.agentId, createProvider(agentConfig.provider, agentConfig.model, key));
+          }
+        } catch { /* best-effort */ }
+      }
+
+      const engine = new ConsensusEngine({
+        llm: ctx.mainAgent.getLlm(),
+        registryGet: (id: string) => ctx.mainAgent.getAgentConfig(id),
+        projectRoot: process.cwd(),
+        agentLlm: (id: string) => agentLlmCache.get(id),
+      });
+
+      // Phase 2a: Generate cross-review prompts for all agents
+      const { prompts, consensusId } = await engine.generateCrossReviewPrompts(allResults, nativeAgentIds);
+
+      // Phase 2b: Run relay agents' cross-review inline (using their own LLM)
+      const relayEntries: any[] = [];
+      const relayPrompts = prompts.filter(p => !p.isNative);
+      await Promise.all(relayPrompts.map(async (p) => {
+        try {
+          const llm = agentLlmCache.get(p.agentId) ?? ctx.mainAgent.getLlm();
+          const response = await llm.generate(
+            [{ role: 'system', content: p.system }, { role: 'user', content: p.user }],
+            { temperature: 0 },
+          );
+          const parsed = engine.parseCrossReviewResponse(p.agentId, response.text, 50);
+          relayEntries.push(...parsed);
+        } catch { /* graceful degradation */ }
+      }));
+
+      // Phase 2c: Check if native agents need external dispatch
+      const nativePrompts = prompts.filter(p => p.isNative);
+      if (nativePrompts.length === 0) {
+        // Edge case: all native agents had no completed results — synthesize immediately
+        consensusReport = await engine.synthesizeWithCrossReview(
+          allResults.filter((r: any) => r.status === 'completed'),
+          relayEntries,
+          consensusId,
+        );
+      } else {
+        // Store pending round for native agents to complete
+        ctx.pendingConsensusRounds.set(consensusId, {
+          consensusId,
+          allResults: allResults.filter((r: any) => r.status === 'completed'),
+          relayCrossReviewEntries: relayEntries,
+          pendingNativeAgents: new Set(nativePrompts.map(p => p.agentId)),
+          nativeCrossReviewEntries: [],
+          deadline: Date.now() + CONSENSUS_TIMEOUT_MS,
+          createdAt: Date.now(),
+        });
+
+        // Build partial output with dispatch instructions for native agents
+        let partialOutput = resultTexts.join('\n\n---\n\n');
+        partialOutput += `\n\n⚠️ NATIVE CROSS-REVIEW NEEDED (consensus_id: ${consensusId}):\n`;
+        for (const np of nativePrompts) {
+          const nativeConfig = ctx.nativeAgentConfigs.get(np.agentId);
+          const model = nativeConfig?.model || 'unknown';
+          partialOutput += `\nAgent ${np.agentId} (model: ${model}) needs to cross-review peers.`;
+          partialOutput += `\nDispatch: Agent(model: '${model}', prompt: <see below>)`;
+          partialOutput += `\nThen relay: gossip_relay_cross_review(consensus_id: '${consensusId}', agent_id: '${np.agentId}', result: '<output>')`;
+          partialOutput += `\n\nPROMPT FOR ${np.agentId}:`;
+          partialOutput += `\n---SYSTEM---\n${np.system}\n---USER---\n${np.user}\n---END---\n`;
+        }
+
+        // Clean up native results (deferred from Step 3)
+        for (const id of collectNativeIds) {
+          if (ctx.nativeResultMap.has(id)) {
+            ctx.nativeResultMap.delete(id);
+            ctx.nativeTaskMap.delete(id);
+          }
+        }
+
+        return { content: [{ type: 'text' as const, text: partialOutput }] };
+      }
+    }
   }
 
   // Clean up native results after consensus is complete (deferred from Step 3)
@@ -182,7 +301,6 @@ export async function handleCollect(
   }
 
   // Auto-persist confirmed findings to implementation-findings.jsonl
-  let provisionalSignalCount = 0;
   if (consensusReport) {
     try {
       const { appendFileSync: af, mkdirSync: md } = require('fs');
@@ -264,26 +382,7 @@ export async function handleCollect(
     } catch { /* best-effort */ }
   }
 
-  // Step 5: Format output
-  const resultTexts = allResults.map((t: any) => {
-    const dur = t.completedAt && t.startedAt ? `${t.completedAt - t.startedAt}ms` : 'running';
-    const modeTag = t.writeMode ? ` [${t.writeMode}${t.scope ? `:${t.scope}` : ''}]` : '';
-    const nativeTag = ctx.nativeAgentConfigs.has(t.agentId) ? ' (native)' : '';
-    let text: string;
-    if (t.status === 'completed') text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag} (${dur}):\n${t.result}`;
-    else if (t.status === 'failed') text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag} (${dur}): ERROR: ${t.error}\n  → Re-dispatch with gossip_run, or check agent logs in .gossip/agents/${t.agentId}/`;
-    else if (t.status === 'timed_out') text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag} (timed out): ${t.error}\n  → Re-dispatch with gossip_run to retry.`;
-    else text = `[${t.id}] ${t.agentId}${nativeTag}${modeTag}: still running...`;
-
-    if (t.worktreeInfo) {
-      text += `\n📁 Worktree: ${t.worktreeInfo.path} (branch: ${t.worktreeInfo.branch})`;
-    }
-    if (t.skillWarnings?.length) {
-      text += `\n\n⚠️ Skill coverage gaps:\n${t.skillWarnings.map((w: string) => `  - ${w}`).join('\n')}`;
-    }
-    return text;
-  });
-
+  // Step 6: Format output
   let output = resultTexts.join('\n\n---\n\n');
 
   if (consensusReport?.summary) {
