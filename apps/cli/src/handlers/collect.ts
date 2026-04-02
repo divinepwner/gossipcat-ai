@@ -197,8 +197,12 @@ export async function handleCollect(
         } catch { /* best-effort */ }
       }
 
+      const mainLlm = ctx.mainAgent.getLlm();
+      if (!mainLlm) {
+        return { content: [{ type: 'text' as const, text: 'Error: No LLM configured for consensus. Check gossip_setup.' }] };
+      }
       const engine = new ConsensusEngine({
-        llm: ctx.mainAgent.getLlm(),
+        llm: mainLlm,
         registryGet: (id: string) => ctx.mainAgent.getAgentConfig(id),
         projectRoot: process.cwd(),
         agentLlm: (id: string) => agentLlmCache.get(id),
@@ -212,7 +216,11 @@ export async function handleCollect(
       const relayPrompts = prompts.filter(p => !p.isNative);
       await Promise.all(relayPrompts.map(async (p) => {
         try {
-          const llm = agentLlmCache.get(p.agentId) ?? ctx.mainAgent.getLlm();
+          let llm = agentLlmCache.get(p.agentId);
+          if (!llm) {
+            process.stderr.write(`[gossipcat] WARNING: ${p.agentId} has no per-agent LLM — falling back to orchestrator LLM for cross-review\n`);
+            llm = mainLlm;
+          }
           const response = await llm.generate(
             [{ role: 'system', content: p.system }, { role: 'user', content: p.user }],
             { temperature: 0 },

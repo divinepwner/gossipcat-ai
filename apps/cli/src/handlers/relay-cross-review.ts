@@ -20,6 +20,9 @@ export function startConsensusTimeout(consensusId: string): void {
     if (!current || current.pendingNativeAgents.size === 0) return;
 
     const missingAgents = [...current.pendingNativeAgents];
+    // Delete round BEFORE async work to prevent double-synthesis race with concurrent relay
+    const snapshot = { allResults: current.allResults, relayCrossReviewEntries: current.relayCrossReviewEntries, nativeCrossReviewEntries: [...current.nativeCrossReviewEntries] };
+    ctx.pendingConsensusRounds.delete(consensusId);
     process.stderr.write(`[gossipcat] Consensus ${consensusId} timed out. Missing: ${missingAgents.join(', ')}. Synthesizing with available entries.\n`);
 
     // Record timeout signals for missing agents
@@ -40,14 +43,19 @@ export function startConsensusTimeout(consensusId: string): void {
     // Synthesize with what we have
     try {
       const { ConsensusEngine } = await import('@gossip/orchestrator');
+      const timeoutLlm = ctx.mainAgent.getLlm();
+      if (!timeoutLlm) {
+        process.stderr.write(`[gossipcat] Timeout synthesis skipped: no LLM configured\n`);
+        return;
+      }
       const engine = new ConsensusEngine({
-        llm: ctx.mainAgent.getLlm(),
+        llm: timeoutLlm,
         registryGet: (id: string) => ctx.mainAgent.getAgentConfig(id),
         projectRoot: process.cwd(),
       });
 
-      const allEntries = [...current.relayCrossReviewEntries, ...current.nativeCrossReviewEntries];
-      const report = await engine.synthesizeWithCrossReview(current.allResults, allEntries, consensusId);
+      const allEntries = [...snapshot.relayCrossReviewEntries, ...snapshot.nativeCrossReviewEntries];
+      const report = await engine.synthesizeWithCrossReview(snapshot.allResults, allEntries, consensusId);
 
       // Persist report
       try {
@@ -74,8 +82,6 @@ export function startConsensusTimeout(consensusId: string): void {
     } catch (err) {
       process.stderr.write(`[gossipcat] Timeout synthesis failed: ${(err as Error).message}\n`);
     }
-
-    ctx.pendingConsensusRounds.delete(consensusId);
   }, remainingMs);
 }
 
@@ -103,16 +109,21 @@ export async function handleRelayCrossReview(
     };
   }
 
-  // Parse the cross-review response
+  // Parse the cross-review response (parseCrossReviewResponse is stateless, llm not used)
   try {
     const { ConsensusEngine } = await import('@gossip/orchestrator');
+    const parseLlm = ctx.mainAgent.getLlm();
+    // parseCrossReviewResponse doesn't call LLM, but ConsensusEngine requires one in config
     const engine = new ConsensusEngine({
-      llm: ctx.mainAgent.getLlm(),
+      llm: parseLlm || ({ generate: async () => ({ text: '', usage: { inputTokens: 0, outputTokens: 0 } }) } as any),
       registryGet: (id: string) => ctx.mainAgent.getAgentConfig(id),
       projectRoot: process.cwd(),
     });
     const entries = engine.parseCrossReviewResponse(agent_id, result, 50);
-    round.nativeCrossReviewEntries.push(...entries);
+    // Filter to round members only — prevents fabricated peerAgentId targeting agents outside the round
+    const validPeerIds = new Set(round.allResults.map((r: any) => r.agentId));
+    const filtered = entries.filter(e => e.peerAgentId !== agent_id && validPeerIds.has(e.peerAgentId));
+    round.nativeCrossReviewEntries.push(...filtered);
   } catch (err) {
     process.stderr.write(`[gossipcat] Failed to parse cross-review from ${agent_id}: ${(err as Error).message}\n`);
   }
@@ -132,29 +143,38 @@ export async function handleRelayCrossReview(
   }
 
   // All agents responded — synthesize
+  // Snapshot and delete BEFORE async synthesis to prevent double-synthesis race with timeout
+  const synthSnapshot = {
+    allResults: round.allResults,
+    relayCrossReviewEntries: round.relayCrossReviewEntries,
+    nativeCrossReviewEntries: [...round.nativeCrossReviewEntries],
+    consensusId: round.consensusId,
+  };
+  ctx.pendingConsensusRounds.delete(consensus_id);
   process.stderr.write(`[gossipcat] All native cross-reviews received. Synthesizing consensus for ${consensus_id}...\n`);
 
   try {
     const { ConsensusEngine, PerformanceWriter } = await import('@gossip/orchestrator');
+    const mainLlm = ctx.mainAgent.getLlm();
+    if (!mainLlm) {
+      return { content: [{ type: 'text' as const, text: 'Error: No LLM configured for consensus synthesis. Check gossip_setup.' }] };
+    }
     const engine = new ConsensusEngine({
-      llm: ctx.mainAgent.getLlm(),
+      llm: mainLlm,
       registryGet: (id: string) => ctx.mainAgent.getAgentConfig(id),
       projectRoot: process.cwd(),
     });
 
     const allCrossReviewEntries = [
-      ...round.relayCrossReviewEntries,
-      ...round.nativeCrossReviewEntries,
+      ...synthSnapshot.relayCrossReviewEntries,
+      ...synthSnapshot.nativeCrossReviewEntries,
     ];
 
     const report = await engine.synthesizeWithCrossReview(
-      round.allResults,
+      synthSnapshot.allResults,
       allCrossReviewEntries,
-      round.consensusId,
+      synthSnapshot.consensusId,
     );
-
-    // Clean up pending round
-    ctx.pendingConsensusRounds.delete(consensus_id);
 
     // Persist report for dashboard
     try {
@@ -192,7 +212,6 @@ export async function handleRelayCrossReview(
       }],
     };
   } catch (err) {
-    ctx.pendingConsensusRounds.delete(consensus_id);
     return {
       content: [{
         type: 'text' as const,
