@@ -28,6 +28,7 @@ import { extractCategories } from './category-extractor';
 import { WorkerLike } from './worker-like';
 import { IConsensusJudge } from './consensus-judge';
 import { SkillIndex } from './skill-index';
+import { SkillCounterTracker } from './skill-counters';
 import { TaskStreamEvent, TaskStreamEventType } from './task-stream';
 
 const log = (msg: string) => process.stderr.write(`[gossipcat] ${msg}\n`);
@@ -98,6 +99,7 @@ export class DispatchPipeline {
   private dispatchDifferentiator: DispatchDifferentiator | null = null;
   private consensusJudge: IConsensusJudge | null = null;
   private skillIndex: SkillIndex | null = null;
+  private skillCounters: SkillCounterTracker | null = null;
   private sessionStartTime: Date = new Date();
   private sessionConsensusHistory: Array<{ timestamp: string; confirmed: number; disputed: number; unverified: number; unique: number; summary: string }> = [];
 
@@ -198,6 +200,15 @@ export class DispatchPipeline {
     const skills = skillResult.content;
     if (skillResult.dropped.length > 0) {
       process.stderr.write(`[gossipcat] Dropped ${skillResult.dropped.length} contextual skill(s) for ${agentId}: ${skillResult.dropped.join(', ')}\n`);
+    }
+    // Track contextual skill activations for lifecycle management
+    if (this.skillCounters && this.skillIndex) {
+      const allContextual = this.skillIndex.getAgentSlots(agentId)
+        .filter(s => s.enabled && s.mode === 'contextual')
+        .map(s => s.skill);
+      if (allContextual.length > 0) {
+        this.skillCounters.recordDispatch(agentId, allContextual, skillResult.activatedContextual);
+      }
     }
 
     // 2. Load memory
@@ -811,6 +822,8 @@ export class DispatchPipeline {
 
   setSkillIndex(index: SkillIndex): void {
     this.skillIndex = index;
+    // Auto-create counter tracker when skill index is set
+    this.skillCounters = new SkillCounterTracker(this.projectRoot);
   }
 
   setSummaryLlm(llm: import('./llm-client').ILLMProvider): void {
@@ -819,6 +832,10 @@ export class DispatchPipeline {
 
   getSkillIndex(): SkillIndex | null {
     return this.skillIndex;
+  }
+
+  getSkillCounters(): SkillCounterTracker | null {
+    return this.skillCounters;
   }
 
   setDispatchDifferentiator(differ: DispatchDifferentiator): void {

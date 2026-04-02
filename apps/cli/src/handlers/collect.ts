@@ -350,6 +350,23 @@ export async function handleCollect(
     }
   } catch { /* best-effort */ }
 
+  // Flush skill counters and check lifecycle (auto-disable stale, promote frequent)
+  try {
+    const pipeline = (ctx.mainAgent as any).pipeline;
+    const counters = pipeline?.getSkillCounters?.();
+    const skillIndex = ctx.mainAgent.getSkillIndex();
+    if (counters && skillIndex) {
+      const { disabled, promoted } = counters.checkLifecycle(skillIndex);
+      counters.flush();
+      if (disabled.length > 0) {
+        output += `\n\n⏸️ Auto-disabled ${disabled.length} stale skill(s): ${disabled.join(', ')}`;
+      }
+      if (promoted.length > 0) {
+        output += `\n\n⬆️ Promoted ${promoted.length} skill(s) to permanent: ${promoted.join(', ')}`;
+      }
+    }
+  } catch { /* best-effort */ }
+
   // Session save reminder — only every 10th task completion to avoid nagging
   try {
     const taskCount = ctx.mainAgent.getSessionGossip().length;
