@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { readFileSync, appendFileSync, mkdirSync, writeFileSync } from 'fs';
+import { readFileSync, appendFileSync, mkdirSync, writeFileSync, realpathSync } from 'fs';
 import { resolve as resolvePath, join, dirname } from 'path';
 import { AgentConfig, DispatchOptions, TaskEntry, TaskExecutionResult, SessionGossipEntry, PlanState, MIN_AGENTS_FOR_CONSENSUS } from './types';
 import { ILLMProvider } from './llm-client';
@@ -228,8 +228,10 @@ export class DispatchPipeline {
     if (specRefs.length > 0) {
       try {
         const specPath = resolvePath(this.projectRoot, specRefs[0]);
-        if (specPath.startsWith(this.projectRoot + '/') || specPath === this.projectRoot) {
-          const specContent = readFileSync(specPath, 'utf-8');
+        const realSpecPath = realpathSync(specPath);
+        const realRoot = realpathSync(this.projectRoot);
+        if (realSpecPath.startsWith(realRoot + '/')) {
+          const specContent = readFileSync(realSpecPath, 'utf-8');
           const implFiles = extractSpecReferences(task, specContent);
           const enrichment = buildSpecReviewEnrichment(implFiles);
           if (enrichment) specReviewContext = enrichment;

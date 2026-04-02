@@ -9,8 +9,8 @@ import { signalsHandler } from './api-signals';
 import { learningsHandler } from './api-learnings';
 import { tasksHandler } from './api-tasks';
 import { activeTasksHandler } from './api-active-tasks';
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, existsSync, realpathSync } from 'fs';
+import { join, resolve } from 'path';
 
 interface AgentConfigLike {
   id: string;
@@ -248,7 +248,14 @@ export class DashboardRouter {
     if (!mime) return false; // Not a static file — fall through to SPA
     const filePath = join(this.projectRoot, 'dist-dashboard', relativePath);
     try {
-      const data = readFileSync(filePath);
+      const realFile = realpathSync(filePath);
+      const realBase = realpathSync(resolve(this.projectRoot, 'dist-dashboard'));
+      if (!realFile.startsWith(realBase + '/')) {
+        res.writeHead(404);
+        res.end();
+        return true;
+      }
+      const data = readFileSync(realFile);
       res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'public, max-age=86400' });
       res.end(data);
       return true;
@@ -276,9 +283,13 @@ export class DashboardRouter {
         .reverse()
         .slice(0, 20); // last 20 reports
 
+      const realReportsDir = realpathSync(reportsDir);
       const reports = files.map((f: string) => {
         try {
-          return JSON.parse(readFileSync(join(reportsDir, f), 'utf-8'));
+          const filePath = join(reportsDir, f);
+          const realFile = realpathSync(filePath);
+          if (!realFile.startsWith(realReportsDir + '/')) return null;
+          return JSON.parse(readFileSync(realFile, 'utf-8'));
         } catch { return null; }
       }).filter(Boolean);
 

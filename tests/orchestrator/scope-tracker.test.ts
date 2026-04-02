@@ -1,10 +1,22 @@
 import { ScopeTracker } from '../../packages/orchestrator/src/scope-tracker';
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 describe('ScopeTracker', () => {
   let tracker: ScopeTracker;
-  const projectRoot = '/test/project';
+  let projectRoot: string;
 
-  beforeEach(() => { tracker = new ScopeTracker(projectRoot); });
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'scope-tracker-'));
+    mkdirSync(join(projectRoot, 'packages', 'relay', 'src'), { recursive: true });
+    mkdirSync(join(projectRoot, 'packages', 'tools'), { recursive: true });
+    tracker = new ScopeTracker(projectRoot);
+  });
+
+  afterEach(() => {
+    rmSync(projectRoot, { recursive: true, force: true });
+  });
 
   describe('overlap detection', () => {
     it('detects parent/child overlap', () => {
@@ -34,6 +46,27 @@ describe('ScopeTracker', () => {
 
     it('rejects root scope via dot', () => {
       expect(() => tracker.register('.', 'task-1')).toThrow('resolves to project root');
+    });
+  });
+
+  describe('symlink traversal protection', () => {
+    it('rejects symlink that escapes project root', () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'scope-outside-'));
+      try {
+        symlinkSync(outsideDir, join(projectRoot, 'packages', 'escape-link'));
+        expect(() => tracker.register('packages/escape-link/', 'task-1'))
+          .toThrow('resolves outside project root');
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('allows symlink that stays within project root', () => {
+      symlinkSync(
+        join(projectRoot, 'packages', 'relay'),
+        join(projectRoot, 'packages', 'relay-alias'),
+      );
+      expect(() => tracker.register('packages/relay-alias/', 'task-1')).not.toThrow();
     });
   });
 

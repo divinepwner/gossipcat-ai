@@ -1,4 +1,5 @@
 import { resolve, relative } from 'path';
+import { realpathSync } from 'fs';
 
 export class ScopeTracker {
   private activeScopes: Map<string, string> = new Map(); // normalized scope → taskId
@@ -9,7 +10,15 @@ export class ScopeTracker {
   private normalize(scope: string): string {
     if (!scope || !scope.trim()) throw new Error('Scope must not be empty');
     const abs = resolve(this.projectRoot, scope);
-    const rel = relative(this.projectRoot, abs);
+    let real: string;
+    try {
+      real = realpathSync(abs);
+    } catch {
+      // Path doesn't exist yet (e.g. new directory) — fall back to resolve-only check
+      real = abs;
+    }
+    const realRoot = realpathSync(this.projectRoot);
+    const rel = relative(realRoot, real);
     if (rel.startsWith('..')) throw new Error(`Scope "${scope}" resolves outside project root`);
     if (rel === '') throw new Error(`Scope "${scope}" resolves to project root — too broad`);
     return rel.endsWith('/') ? rel : rel + '/';
