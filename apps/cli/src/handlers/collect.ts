@@ -3,6 +3,7 @@
  * All state accessed via the shared context object.
  */
 import { ctx } from '../mcp-context';
+import { startConsensusTimeout } from './relay-cross-review';
 
 export async function handleCollect(
   task_ids: string[],
@@ -241,6 +242,9 @@ export async function handleCollect(
           deadline: Date.now() + CONSENSUS_TIMEOUT_MS,
           createdAt: Date.now(),
         });
+
+        // Start timeout watcher — auto-synthesizes if native agents don't respond
+        startConsensusTimeout(consensusId);
 
         // Build partial output with dispatch instructions for native agents
         let partialOutput = resultTexts.join('\n\n---\n\n');

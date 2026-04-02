@@ -3,6 +3,17 @@
  * Single mutable context object avoids passing dozens of parameters.
  */
 import { randomUUID } from 'crypto';
+import type { CrossReviewEntry } from '@gossip/orchestrator';
+
+export interface PendingConsensusRound {
+  consensusId: string;
+  allResults: any[];  // TaskEntry[]
+  relayCrossReviewEntries: CrossReviewEntry[];
+  pendingNativeAgents: Set<string>;
+  nativeCrossReviewEntries: CrossReviewEntry[];
+  deadline: number;
+  createdAt: number;
+}
 
 export interface NativeTaskInfo {
   agentId: string;
@@ -34,6 +45,7 @@ export interface McpContext {
   nativeTaskMap: Map<string, NativeTaskInfo>;
   nativeResultMap: Map<string, NativeResultInfo>;
   nativeAgentConfigs: Map<string, { model: string; instructions: string; description: string }>;
+  pendingConsensusRounds: Map<string, PendingConsensusRound>;
   booted: boolean;
   boot: () => Promise<void>;
   syncWorkersViaKeychain: () => Promise<void>;
@@ -50,6 +62,7 @@ export const ctx: McpContext = {
   nativeTaskMap: new Map(),
   nativeResultMap: new Map(),
   nativeAgentConfigs: new Map(),
+  pendingConsensusRounds: new Map(),
   booted: false,
   boot: async () => { throw new Error('boot not initialized'); },
   syncWorkersViaKeychain: async () => {},

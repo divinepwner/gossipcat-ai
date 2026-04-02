@@ -4,6 +4,81 @@
  */
 import { ctx } from '../mcp-context';
 
+/**
+ * Start a timeout watcher for a pending consensus round.
+ * On expiry: synthesize with whatever entries have arrived, record timeout signals.
+ */
+export function startConsensusTimeout(consensusId: string): void {
+  const round = ctx.pendingConsensusRounds.get(consensusId);
+  if (!round) return;
+
+  const remainingMs = round.deadline - Date.now();
+  if (remainingMs <= 0) return;
+
+  setTimeout(async () => {
+    const current = ctx.pendingConsensusRounds.get(consensusId);
+    if (!current || current.pendingNativeAgents.size === 0) return;
+
+    const missingAgents = [...current.pendingNativeAgents];
+    process.stderr.write(`[gossipcat] Consensus ${consensusId} timed out. Missing: ${missingAgents.join(', ')}. Synthesizing with available entries.\n`);
+
+    // Record timeout signals for missing agents
+    try {
+      const { PerformanceWriter } = await import('@gossip/orchestrator');
+      const writer = new PerformanceWriter(process.cwd());
+      const now = new Date().toISOString();
+      writer.appendSignals(missingAgents.map(agentId => ({
+        type: 'consensus' as const,
+        signal: 'unique_unconfirmed' as const,
+        agentId,
+        taskId: `timeout-${consensusId}`,
+        evidence: 'Cross-review timed out — agent did not respond within deadline',
+        timestamp: now,
+      })));
+    } catch { /* best-effort */ }
+
+    // Synthesize with what we have
+    try {
+      const { ConsensusEngine } = await import('@gossip/orchestrator');
+      const engine = new ConsensusEngine({
+        llm: ctx.mainAgent.getLlm(),
+        registryGet: (id: string) => ctx.mainAgent.getAgentConfig(id),
+        projectRoot: process.cwd(),
+      });
+
+      const allEntries = [...current.relayCrossReviewEntries, ...current.nativeCrossReviewEntries];
+      const report = await engine.synthesizeWithCrossReview(current.allResults, allEntries, consensusId);
+
+      // Persist report
+      try {
+        const { writeFileSync, mkdirSync } = require('fs');
+        const { join } = require('path');
+        const reportsDir = join(process.cwd(), '.gossip', 'consensus-reports');
+        mkdirSync(reportsDir, { recursive: true });
+        writeFileSync(join(reportsDir, `${consensusId}.json`), JSON.stringify({
+          id: consensusId,
+          timestamp: new Date().toISOString(),
+          agentCount: report.agentCount,
+          rounds: report.rounds,
+          confirmed: report.confirmed || [],
+          disputed: report.disputed || [],
+          unverified: report.unverified || [],
+          unique: report.unique || [],
+          insights: report.insights || [],
+          newFindings: report.newFindings || [],
+          timedOut: missingAgents,
+        }, null, 2));
+      } catch { /* best-effort */ }
+
+      process.stderr.write(`[gossipcat] Timeout synthesis complete: ${report.confirmed.length} confirmed, ${report.disputed.length} disputed\n`);
+    } catch (err) {
+      process.stderr.write(`[gossipcat] Timeout synthesis failed: ${(err as Error).message}\n`);
+    }
+
+    ctx.pendingConsensusRounds.delete(consensusId);
+  }, remainingMs);
+}
+
 export async function handleRelayCrossReview(
   consensus_id: string,
   agent_id: string,
