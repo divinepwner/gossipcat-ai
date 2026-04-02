@@ -1468,6 +1468,11 @@ server.tool(
                   for (const f of report.unverified) {
                     if (f.id && (idsForThisReport.has(f.id) || unscopedIds.has(f.id))) {
                       f.tag = 'confirmed';
+                      // Record orchestrator verification — the orchestrator manually confirmed this
+                      f.confirmedBy = f.confirmedBy || [];
+                      if (!f.confirmedBy.includes('orchestrator')) {
+                        f.confirmedBy.push('orchestrator');
+                      }
                       report.confirmed = report.confirmed || [];
                       report.confirmed.push(f);
                       changed = true;
