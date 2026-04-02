@@ -88,6 +88,20 @@ export function loadSkills(agentId: string, skills: string[], projectRoot: strin
   return { content: contentStr, loaded, dropped, activatedContextual };
 }
 
+/** Cache compiled regex patterns to avoid per-dispatch recompilation */
+const patternCache = new Map<string, RegExp>();
+
+function getPattern(keyword: string): RegExp {
+  let pattern = patternCache.get(keyword);
+  if (!pattern) {
+    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Word-boundary matching for both single and multi-word keywords
+    pattern = new RegExp(`\\b${escaped}\\b`, 'i');
+    patternCache.set(keyword, pattern);
+  }
+  return pattern;
+}
+
 /**
  * Count keyword hits for a contextual skill against a task string.
  * Uses word-boundary matching to prevent false positives (e.g., "auth" won't match "author").
@@ -96,18 +110,10 @@ function countKeywordHits(skillContent: string, skillName: string, task: string)
   const keywords = getKeywords(skillContent, skillName);
   if (keywords.length === 0) return 0;
 
-  const taskLower = task.toLowerCase();
   let hits = 0;
-
   for (const keyword of keywords) {
-    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Multi-word keywords match as phrases, single words use \b
-    const pattern = keyword.includes(' ')
-      ? new RegExp(escaped, 'i')
-      : new RegExp(`\\b${escaped}\\b`, 'i');
-    if (pattern.test(taskLower)) hits++;
+    if (getPattern(keyword).test(task)) hits++;
   }
-
   return hits;
 }
 

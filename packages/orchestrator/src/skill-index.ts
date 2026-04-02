@@ -209,7 +209,8 @@ export class SkillIndex {
           if (!agentSlots || typeof agentSlots !== 'object') continue;
           for (const slot of Object.values(agentSlots) as any[]) {
             if (slot && !slot.mode) {
-              slot.mode = slot.source === 'auto' ? 'contextual' : 'permanent';
+              slot.mode = (slot.source === 'auto' || slot.source === 'imported')
+                ? 'contextual' : 'permanent';
             }
           }
         }

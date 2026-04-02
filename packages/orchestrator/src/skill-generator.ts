@@ -188,6 +188,10 @@ Requirements:
     if (lines > 200) {
       throw new Error(`Generated skill is ${lines} lines (max 200). LLM output too verbose.`);
     }
+    // Validate keywords presence for contextual activation
+    if (!content.match(/keywords:\s*\[/)) {
+      throw new Error('Generated skill missing keywords in frontmatter. Contextual activation requires keywords.');
+    }
   }
 
   private loadTemplate(): string {

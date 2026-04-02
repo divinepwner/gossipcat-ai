@@ -13,6 +13,8 @@ baseline_rate: 0.1
 baseline_dispatches: 10
 post_skill_dispatches: 0
 version: 1
+mode: contextual
+keywords: [injection, xss, sql, sanitize]
 ---
 
 # Injection Audit
