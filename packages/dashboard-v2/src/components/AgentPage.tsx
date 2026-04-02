@@ -241,7 +241,7 @@ export function AgentPage({ agentId, agents, tasks, consensus }: AgentPageProps)
                               <div key={j} className="flex items-start gap-2">
                                 <span className={`shrink-0 rounded-sm px-1.5 py-0.5 font-mono text-[9px] font-bold ${tag.cls}`}>{tag.label}</span>
                                 <div className="min-w-0 flex-1">
-                                  <span className="text-xs text-muted-foreground">{(sig.evidence || '').slice(0, 200)}</span>
+                                  <span className="text-xs text-muted-foreground">{sig.evidence || ''}</span>
                                   <span className="ml-2 font-mono text-[10px] text-muted-foreground/50">
                                     {sig.agentId}{sig.counterpartId ? ` + ${sig.counterpartId}` : ''}
                                   </span>

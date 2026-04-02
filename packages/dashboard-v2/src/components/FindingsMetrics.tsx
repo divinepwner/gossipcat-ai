@@ -148,7 +148,7 @@ export function FindingsMetrics({ consensus }: FindingsMetricsProps) {
                               </span>
                               <div className="min-w-0 flex-1">
                                 <span className="text-xs text-muted-foreground [&_.cite-file]:rounded [&_.cite-file]:bg-blue-500/10 [&_.cite-file]:px-1 [&_.cite-file]:font-mono [&_.cite-file]:text-blue-400 [&_.cite-fn]:rounded [&_.cite-fn]:bg-purple-500/10 [&_.cite-fn]:px-1 [&_.cite-fn]:font-mono [&_.cite-fn]:text-purple-400">
-                                  <span dangerouslySetInnerHTML={{ __html: cleanFindingTags((sig.evidence || '').slice(0, 300)) }} />
+                                  <span dangerouslySetInnerHTML={{ __html: cleanFindingTags(sig.evidence || '') }} />
                                 </span>
                                 <span className="ml-2 font-mono text-[10px] text-muted-foreground/50">
                                   {sig.agentId}{sig.counterpartId ? ` + ${sig.counterpartId}` : ''}

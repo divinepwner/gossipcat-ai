@@ -184,7 +184,7 @@ function FindingsPage({ consensus }: { consensus: import('@/lib/types').Consensu
                       <div key={j} className="flex items-start gap-2">
                         <span className={`shrink-0 rounded-sm px-1.5 py-0.5 font-mono text-[9px] font-bold ${tag.cls}`}>{tag.label}</span>
                         <div className="min-w-0 flex-1">
-                          <span className="text-xs text-muted-foreground [&_.cite-file]:rounded [&_.cite-file]:bg-blue-500/10 [&_.cite-file]:px-1 [&_.cite-file]:font-mono [&_.cite-file]:text-blue-400 [&_.cite-fn]:rounded [&_.cite-fn]:bg-purple-500/10 [&_.cite-fn]:px-1 [&_.cite-fn]:font-mono [&_.cite-fn]:text-purple-400" dangerouslySetInnerHTML={{ __html: cleanFindingTags((sig.evidence || '').slice(0, 200)) }} />
+                          <span className="text-xs text-muted-foreground [&_.cite-file]:rounded [&_.cite-file]:bg-blue-500/10 [&_.cite-file]:px-1 [&_.cite-file]:font-mono [&_.cite-file]:text-blue-400 [&_.cite-fn]:rounded [&_.cite-fn]:bg-purple-500/10 [&_.cite-fn]:px-1 [&_.cite-fn]:font-mono [&_.cite-fn]:text-purple-400" dangerouslySetInnerHTML={{ __html: cleanFindingTags(sig.evidence || '') }} />
                           <span className="ml-2 font-mono text-[10px] text-muted-foreground/50">
                             {sig.agentId}{sig.counterpartId ? ` + ${sig.counterpartId}` : ''}
                           </span>
