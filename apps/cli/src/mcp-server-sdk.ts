@@ -804,6 +804,21 @@ server.tool(
   async ({ task_ids, timeout_ms, consensus }) => handleCollect(task_ids, timeout_ms, consensus)
 );
 
+// ── Low-level: feed native cross-review results ────────────────────────────
+server.tool(
+  'gossip_relay_cross_review',
+  'Feed native agent cross-review result back into a pending consensus round. Called after dispatching Agent() for cross-review.',
+  {
+    consensus_id: z.string().describe('The consensus_id from the gossip_collect response'),
+    agent_id: z.string().describe('The agent that performed the cross-review'),
+    result: z.string().describe('The agent cross-review output (JSON array of agree/disagree/unverified/new entries)'),
+  },
+  async ({ consensus_id, agent_id, result }) => {
+    const { handleRelayCrossReview } = await import('./handlers/relay-cross-review');
+    return handleRelayCrossReview(consensus_id, agent_id, result);
+  },
+);
+
 // ── Info: status + agents (merged) ────────────────────────────────────────
 server.tool(
   'gossip_status',
