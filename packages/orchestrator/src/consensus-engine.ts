@@ -381,6 +381,7 @@ Return only valid JSON.` },
             counterpartId: entry.peerAgentId,
             evidence: capEvidence(entry.evidence),
             timestamp: now,
+            severity: f.severity,
           });
         }
         continue;
@@ -413,6 +414,7 @@ Return only valid JSON.` },
               outcome: isCitationFabricated ? 'fabricated_citation' : 'incorrect',
               evidence: capEvidence(entry.evidence),
               timestamp: now,
+              severity: f.severity,
             });
           } else {
             f.disputedBy.push({
@@ -429,6 +431,7 @@ Return only valid JSON.` },
               counterpartId: entry.peerAgentId,
               evidence: capEvidence(entry.evidence),
               timestamp: now,
+              severity: f.severity,
             });
           }
         }
@@ -453,6 +456,7 @@ Return only valid JSON.` },
             counterpartId: entry.peerAgentId,
             evidence: capEvidence(entry.evidence),
             timestamp: now,
+            severity: f.severity,
           });
         }
       }
@@ -509,6 +513,7 @@ Return only valid JSON.` },
             outcome: 'fabricated_citation',
             evidence: capEvidence(`Confirmed finding cites non-existent code: "${entry.finding.slice(0, 200)}"`),
             timestamp: now,
+            severity: entry.severity,
           });
           continue;
         } else if (hasFabricatedCitation) {
@@ -524,6 +529,7 @@ Return only valid JSON.` },
             agentId: entry.originalAgentId,
             evidence: capEvidence(`Confirmed finding has unresolvable citation (stale?): "${entry.finding.slice(0, 200)}"`),
             timestamp: now,
+            severity: entry.severity,
           });
           continue;
         }
@@ -542,6 +548,7 @@ Return only valid JSON.` },
             agentId: entry.originalAgentId,
             evidence: capEvidence(entry.finding),
             timestamp: now,
+            severity: entry.severity,
           });
         }
       } else if (entry.unverifiedBy.length > 0) {
@@ -563,6 +570,7 @@ Return only valid JSON.` },
           agentId: entry.originalAgentId,
           evidence: capEvidence(entry.finding),
           timestamp: now,
+          severity: entry.severity,
         });
       } else {
         finding.tag = 'unique';
@@ -575,6 +583,7 @@ Return only valid JSON.` },
           agentId: entry.originalAgentId,
           evidence: capEvidence(entry.finding),
           timestamp: now,
+          severity: entry.severity,
         });
       }
     }
@@ -742,6 +751,7 @@ Return ONLY a JSON array:
             agentId: fb.finding.originalAgentId,
             evidence: `Phase 3 orchestrator verified: ${(v.evidence || '').slice(0, 200)}`,
             timestamp: now, taskId: getTaskId(fb.finding.originalAgentId),
+            severity: fb.finding.severity,
           });
         } else if (verdict === 'DISPUTED') {
           fb.finding.tag = 'disputed';
@@ -758,6 +768,7 @@ Return ONLY a JSON array:
             outcome: 'orchestrator_disputed',
             evidence: `Phase 3 orchestrator disputed: ${(v.evidence || '').slice(0, 200)}`,
             timestamp: now, taskId: getTaskId(fb.finding.originalAgentId),
+            severity: fb.finding.severity,
           });
         }
         // UNVERIFIED stays in place
