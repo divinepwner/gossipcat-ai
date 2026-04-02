@@ -18,6 +18,18 @@ const KNOWN_CATEGORIES = new Set([
   'resource_exhaustion', 'type_safety', 'error_handling', 'data_integrity',
 ]);
 
+/** Default keywords per category for contextual skill activation */
+const CATEGORY_KEYWORDS: Record<string, string[]> = {
+  trust_boundaries: ['auth', 'authentication', 'authorization', 'session', 'cookie', 'token', 'path', 'traversal', 'injection', 'middleware', 'permission', 'role', 'privilege', 'acl'],
+  injection_vectors: ['injection', 'xss', 'sql', 'sanitize', 'escape', 'template', 'eval', 'exec', 'html', 'uri', 'command'],
+  input_validation: ['validation', 'schema', 'zod', 'parse', 'sanitize', 'input', 'form', 'request', 'coerce', 'transform'],
+  concurrency: ['race condition', 'concurrent', 'mutex', 'lock', 'atomic', 'parallel', 'deadlock', 'semaphore'],
+  resource_exhaustion: ['memory', 'leak', 'unbounded', 'growth', 'limit', 'cap', 'timeout', 'pool', 'cache', 'backpressure', 'buffer', 'queue', 'throttle'],
+  type_safety: ['type guard', 'generic', 'cast', 'assertion', 'narrowing', 'discriminated', 'satisfies'],
+  error_handling: ['error handling', 'catch', 'throw', 'exception', 'retry', 'fallback', 'recovery', 'graceful'],
+  data_integrity: ['data integrity', 'migration', 'serialize', 'deserialize', 'corrupt', 'consistency', 'invariant', 'transaction', 'rollback', 'idempotent'],
+};
+
 const REQUIRED_SECTIONS = ['## Iron Law', '## When This Skill Activates', '## Methodology', '## Anti-Patterns', '## Quality Gate'];
 
 const BUNDLED_TEMPLATE = `---
@@ -127,7 +139,7 @@ Peer scores: ${peerScores.length > 0 ? peerScores.join(', ') : 'no peer data'}
 
 Output a skill markdown file with this exact structure:
 
-1. YAML frontmatter with fields: name, category, agent, generated, effectiveness (0.0), baseline_rate (${baselineRate.toFixed(3)}), baseline_dispatches (${totalDispatches}), post_skill_dispatches (0), version (1)
+1. YAML frontmatter with fields: name, category (${category}), agent (${agentId}), generated, effectiveness (0.0), baseline_rate (${baselineRate.toFixed(3)}), baseline_dispatches (${totalDispatches}), post_skill_dispatches (0), version (1), mode (contextual), keywords ([${(CATEGORY_KEYWORDS[category] || [category]).join(', ')}])
 2. ## Iron Law — one absolute rule (MUST/NEVER language)
 3. ## When This Skill Activates — task patterns that trigger it
 4. ## Methodology — 5-8 step checklist, actionable not vague

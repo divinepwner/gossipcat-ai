@@ -1575,7 +1575,7 @@ server.tool(
         if (ctx.mainAgent) {
           const skillIndex = ctx.mainAgent.getSkillIndex();
           if (skillIndex) {
-            skillIndex.bind(agent_id, skillName, { source: 'auto' });
+            skillIndex.bind(agent_id, skillName, { source: 'auto', mode: 'contextual' });
           }
 
           // Also register on agent config for backwards compat

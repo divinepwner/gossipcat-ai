@@ -4,6 +4,8 @@ export interface SkillFrontmatter {
   name: string;
   description: string;
   keywords: string[];
+  category?: string;
+  mode?: 'permanent' | 'contextual';
   generated_by?: string;
   sources?: string;
   status: 'active' | 'draft' | 'disabled';
@@ -40,6 +42,8 @@ export function parseSkillFrontmatter(content: string): SkillFrontmatter | null 
     name: normalizeSkillName(fields.name),
     description: fields.description,
     keywords,
+    category: fields.category || undefined,
+    mode: (fields.mode === 'contextual' ? 'contextual' : fields.mode === 'permanent' ? 'permanent' : undefined),
     generated_by: fields.generated_by,
     sources: fields.sources,
     status: fields.status as 'active' | 'draft' | 'disabled',

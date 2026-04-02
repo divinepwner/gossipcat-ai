@@ -193,8 +193,12 @@ export class DispatchPipeline {
     const taskId = randomUUID().slice(0, 8);
     const agentSkills = this.registryGet(agentId)?.skills || [];
 
-    // 1. Load skills (index takes precedence when available)
-    const skills = loadSkills(agentId, agentSkills, this.projectRoot, this.skillIndex ?? undefined);
+    // 1. Load skills (index takes precedence when available, contextual filtered by task)
+    const skillResult = loadSkills(agentId, agentSkills, this.projectRoot, this.skillIndex ?? undefined, task);
+    const skills = skillResult.content;
+    if (skillResult.dropped.length > 0) {
+      process.stderr.write(`[gossipcat] Dropped ${skillResult.dropped.length} contextual skill(s) for ${agentId}: ${skillResult.dropped.join(', ')}\n`);
+    }
 
     // 2. Load memory
     const memory = this.memReader.loadMemory(agentId, task);

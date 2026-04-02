@@ -1,5 +1,6 @@
 export { MainAgent } from './main-agent';
 export { loadSkills } from './skill-loader';
+export type { LoadSkillsResult } from './skill-loader';
 export type { MainAgentConfig } from './main-agent';
 export { WorkerAgent } from './worker-agent';
 export type { TaskCompleteCallback } from './worker-agent';

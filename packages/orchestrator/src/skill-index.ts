@@ -9,6 +9,7 @@ export interface SkillSlot {
   skill: string;
   enabled: boolean;
   source: 'config' | 'manual' | 'auto' | 'imported';
+  mode: 'permanent' | 'contextual';
   version: number;
   boundAt: string; // ISO timestamp
 }
@@ -39,16 +40,18 @@ export class SkillIndex {
   }
 
   /** Bind a skill to an agent (creates or updates the slot) */
-  bind(agentId: string, skill: string, options?: { enabled?: boolean; source?: SkillSlot['source'] }): SkillSlot {
+  bind(agentId: string, skill: string, options?: { enabled?: boolean; source?: SkillSlot['source']; mode?: SkillSlot['mode'] }): SkillSlot {
     this.validateAgentId(agentId);
     const name = this.validateSkillName(skill);
     if (!this.data[agentId]) this.data[agentId] = Object.create(null);
 
     const existing = this.data[agentId][name];
+    const source = options?.source ?? existing?.source ?? 'manual';
     const slot: SkillSlot = {
       skill: name,
       enabled: options?.enabled ?? true,
-      source: options?.source ?? existing?.source ?? 'manual',
+      source,
+      mode: options?.mode ?? existing?.mode ?? (source === 'auto' ? 'contextual' : 'permanent'),
       version: existing ? existing.version + 1 : 1,
       boundAt: new Date().toISOString(),
     };
@@ -139,6 +142,12 @@ export class SkillIndex {
     return JSON.parse(JSON.stringify(this.data));
   }
 
+  /** Get the mode for a specific skill slot */
+  getSkillMode(agentId: string, skill: string): 'permanent' | 'contextual' {
+    const slot = this.data[agentId]?.[normalizeSkillName(skill)];
+    return slot?.mode ?? 'permanent';
+  }
+
   /** Get all agent IDs in the index */
   getAgentIds(): string[] { return Object.keys(this.data); }
 
@@ -162,6 +171,7 @@ export class SkillIndex {
             skill: name,
             enabled: true,
             source: 'config',
+            mode: 'permanent',
             version: 1,
             boundAt: new Date().toISOString(),
           };
@@ -193,6 +203,15 @@ export class SkillIndex {
         // Sanitize: remove prototype-polluting keys from disk JSON
         for (const key of Object.keys(parsed)) {
           if (DANGEROUS_KEYS.has(key)) delete parsed[key];
+        }
+        // Backfill mode for existing slots that don't have it
+        for (const agentSlots of Object.values(parsed)) {
+          if (!agentSlots || typeof agentSlots !== 'object') continue;
+          for (const slot of Object.values(agentSlots) as any[]) {
+            if (slot && !slot.mode) {
+              slot.mode = slot.source === 'auto' ? 'contextual' : 'permanent';
+            }
+          }
         }
         this.data = parsed as SkillIndexData;
         this._exists = true;

@@ -326,7 +326,7 @@ export async function handleCollect(
           await ctx.skillGenerator.generate(gap.agentId, gap.category);
           const skillName = nsn(gap.category);
           const skillIndex = ctx.mainAgent.getSkillIndex();
-          if (skillIndex) skillIndex.bind(gap.agentId, skillName, { source: 'auto' });
+          if (skillIndex) skillIndex.bind(gap.agentId, skillName, { source: 'auto', mode: 'contextual' });
           // Suppress AFTER successful generate — not before
           const pipeline = (ctx.mainAgent as any).pipeline;
           if (pipeline?.suppressSkillGapAlert) {
