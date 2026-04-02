@@ -14,6 +14,28 @@ Call `gossip_session_save()` before ending your session to preserve context.
 results. UNVERIFIED means the cross-reviewer couldn't check — you can and must. Do not
 show raw consensus results with unexamined UNVERIFIED findings.
 
+## Agent Accuracy — Skill Development
+
+When an agent has low accuracy or repeated hallucinations, **use the skill system, not
+instruction edits.** Instructions (`.gossip/agents/<id>/instructions.md`) are the base
+prompt — they set role and rules. Skills (`.gossip/agents/<id>/skills/*.md`) are
+specialized knowledge injected per-dispatch based on the agent's actual failure patterns.
+
+**How to improve a struggling agent:**
+1. Check `gossip_scores()` to identify low-accuracy agents
+2. Call `gossip_skills(action: "develop", agent_id: "<id>", category: "<category>")`
+   - This generates an agent-specific skill file from their failure data
+   - Categories: `trust_boundaries`, `injection_vectors`, `input_validation`,
+     `concurrency`, `resource_exhaustion`, `type_safety`, `error_handling`, `data_integrity`
+3. Bind if not auto-bound: `gossip_skills(action: "bind", agent_id: "<id>", skill: "<name>")`
+4. Verify with `gossip_skills(action: "list")` — skill should show as enabled
+
+**Skill resolution order:** agent-local → project-wide → bundled defaults.
+Agent-local skills (from `develop`) override defaults with targeted improvements.
+
+**Do NOT:** Edit `instructions.md` to fix accuracy. Instructions set the base contract.
+Skills are the mechanism for targeted, evidence-based improvement.
+
 ---
 
 ## gstack
