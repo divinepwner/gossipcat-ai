@@ -1360,6 +1360,43 @@ server.tool(
             }
           }
         } catch { /* best-effort */ }
+
+        // Also resolve in consensus report files
+        try {
+          const { readdirSync: rds } = require('fs');
+          const reportsDir = jp(process.cwd(), '.gossip', 'consensus-reports');
+          if (exs(reportsDir)) {
+            const resolveIds = new Set(findingsWithId.map(s => s.finding_id));
+            for (const file of rds(reportsDir).filter((f: string) => f.endsWith('.json'))) {
+              try {
+                const reportPath = jp(reportsDir, file);
+                const report = JSON.parse(rfs(reportPath, 'utf-8'));
+                let changed = false;
+                // Move unverified findings with matching IDs to confirmed
+                if (report.unverified) {
+                  const remaining: any[] = [];
+                  for (const f of report.unverified) {
+                    if (f.id && resolveIds.has(f.id)) {
+                      f.tag = 'confirmed';
+                      report.confirmed = report.confirmed || [];
+                      report.confirmed.push(f);
+                      changed = true;
+                    } else {
+                      remaining.push(f);
+                    }
+                  }
+                  if (changed) report.unverified = remaining;
+                }
+                if (changed) {
+                  const tmpPath = reportPath + '.tmp.' + Date.now();
+                  wfs(tmpPath, JSON.stringify(report, null, 2));
+                  require('fs').renameSync(tmpPath, reportPath);
+                  process.stderr.write(`[gossipcat] Resolved finding(s) in consensus report ${file}\n`);
+                }
+              } catch { /* skip malformed report */ }
+            }
+          }
+        } catch { /* best-effort */ }
       }
 
       // Summary by agent
