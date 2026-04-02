@@ -21,6 +21,11 @@ export function cleanFindingTags(text: string): string {
   // Legacy <fn> → purple code span
   cleaned = cleaned.replace(/&lt;fn&gt;([^&]+)&lt;\/fn&gt;/g, '<code class="cite-fn">$1</code>');
 
+  // Markdown code blocks: ```...``` → <pre><code>
+  cleaned = cleaned.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre class="inline-code-block"><code>$2</code></pre>');
+  // Inline backticks: `...` → <code>
+  cleaned = cleaned.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
+
   return cleaned;
 }
 

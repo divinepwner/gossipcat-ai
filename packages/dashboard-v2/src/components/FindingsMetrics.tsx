@@ -38,7 +38,7 @@ const SEVERITY_CLS: Record<string, string> = {
   low: 'text-muted-foreground bg-muted/50',
 };
 
-const CITE_STYLES = '[&_.cite-file]:rounded [&_.cite-file]:bg-blue-500/10 [&_.cite-file]:px-1 [&_.cite-file]:font-mono [&_.cite-file]:text-blue-400 [&_.cite-fn]:rounded [&_.cite-fn]:bg-purple-500/10 [&_.cite-fn]:px-1 [&_.cite-fn]:font-mono [&_.cite-fn]:text-purple-400';
+const CITE_STYLES = '[&_.cite-file]:rounded [&_.cite-file]:bg-blue-500/10 [&_.cite-file]:px-1 [&_.cite-file]:font-mono [&_.cite-file]:text-blue-400 [&_.cite-fn]:rounded [&_.cite-fn]:bg-purple-500/10 [&_.cite-fn]:px-1 [&_.cite-fn]:font-mono [&_.cite-fn]:text-purple-400 [&_.inline-code]:rounded [&_.inline-code]:bg-muted [&_.inline-code]:px-1 [&_.inline-code]:py-0.5 [&_.inline-code]:font-mono [&_.inline-code]:text-[11px] [&_.inline-code]:text-foreground/80 [&_.inline-code-block]:my-1.5 [&_.inline-code-block]:block [&_.inline-code-block]:rounded [&_.inline-code-block]:bg-muted/70 [&_.inline-code-block]:p-2 [&_.inline-code-block]:font-mono [&_.inline-code-block]:text-[11px] [&_.inline-code-block]:text-foreground/70 [&_.inline-code-block]:overflow-x-auto';
 
 function ReportFinding({ f }: { f: ConsensusReportFinding }) {
   const tagCls = f.tag === 'confirmed' ? 'text-confirmed bg-confirmed/10 border-confirmed/20'
