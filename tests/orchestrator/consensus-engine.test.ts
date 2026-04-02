@@ -835,3 +835,43 @@ describe('anchor detection in synthesize', () => {
     expect(SOURCE_ANCHOR_PATTERN.test('accuracy is 0.95')).toBe(false);
   });
 });
+
+describe('synthesizeWithCrossReview()', () => {
+  it('should produce a consensus report from externally-provided cross-review entries', async () => {
+    const engine = new ConsensusEngine(baseConfig);
+    const results: TaskEntry[] = [
+      createTaskEntry('agent-a', 'completed', '## Consensus Summary\n<agent_finding type="finding" severity="high">Race condition in dispatch.ts:100 — shared map modified across await</agent_finding>'),
+      createTaskEntry('agent-b', 'completed', '## Consensus Summary\n<agent_finding type="finding" severity="medium">Missing null check in handler.ts:42</agent_finding>'),
+    ];
+
+    const crossReviewEntries: CrossReviewEntry[] = [
+      { action: 'agree', agentId: 'agent-a', peerAgentId: 'agent-b', finding: 'Missing null check in handler.ts:42', evidence: 'Confirmed', confidence: 4 },
+      { action: 'agree', agentId: 'agent-b', peerAgentId: 'agent-a', finding: 'Race condition in dispatch.ts:100', evidence: 'Confirmed', confidence: 5 },
+    ];
+
+    const consensusId = 'test1234-test5678';
+    const report = await engine.synthesizeWithCrossReview(results, crossReviewEntries, consensusId);
+
+    expect(report.confirmed.length).toBe(2);
+    expect(report.agentCount).toBe(2);
+    expect(report.signals.length).toBeGreaterThan(0);
+    // consensusId should be the one we provided
+    for (const signal of report.signals) {
+      expect(signal.consensusId).toBe(consensusId);
+    }
+  });
+
+  it('should work with empty cross-review entries', async () => {
+    const engine = new ConsensusEngine(baseConfig);
+    const results: TaskEntry[] = [
+      createTaskEntry('agent-a', 'completed', '## Consensus Summary\n<agent_finding type="finding" severity="high">Unhandled error in server.ts:55 causes crash</agent_finding>'),
+      createTaskEntry('agent-b', 'completed', '## Consensus Summary\n<agent_finding type="finding" severity="medium">Missing input validation in router.ts:22</agent_finding>'),
+    ];
+
+    const report = await engine.synthesizeWithCrossReview(results, [], 'empty000-empty000');
+
+    // No cross-review = all findings should be unique (no confirmation)
+    expect(report.unique.length + report.unverified.length).toBeGreaterThanOrEqual(2);
+    expect(report.confirmed.length).toBe(0);
+  });
+});

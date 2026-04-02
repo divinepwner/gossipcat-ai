@@ -1456,4 +1456,43 @@ Return ONLY a JSON array:
 
     return entries;
   }
+
+  /**
+   * Synthesize a consensus report from externally-provided cross-review entries.
+   * Used in the two-phase flow where native agents perform their own cross-review
+   * and feed results back via gossip_relay_cross_review.
+   */
+  async synthesizeWithCrossReview(
+    results: TaskEntry[],
+    crossReviewEntries: CrossReviewEntry[],
+    consensusId: string,
+  ): Promise<ConsensusReport> {
+    const report = await this.synthesize(results, crossReviewEntries);
+
+    // Overwrite the auto-generated consensusId with the one from phase 1
+    for (const signal of report.signals) {
+      signal.consensusId = consensusId;
+    }
+    // Also update finding IDs to use the provided consensusId
+    const allFindings = [...report.confirmed, ...report.disputed, ...report.unverified, ...report.unique, ...(report.insights || [])];
+    for (const f of allFindings) {
+      if (f.id) {
+        // Replace auto-generated prefix with provided consensusId
+        const suffix = f.id.split(':').pop() || f.id;
+        f.id = `${consensusId}:${suffix}`;
+      }
+    }
+
+    // Run UNVERIFIED verification (Phase 3)
+    const successful = results.filter(r => r.status === 'completed' && r.result);
+    if (report.unverified.length > 0) {
+      await this.verifyUnverified(report, successful);
+      report.summary = this.formatReport(
+        report.confirmed, report.disputed, report.unverified, report.unique,
+        report.newFindings, successful.length, report.rounds, undefined, report.insights,
+      );
+    }
+
+    return report;
+  }
 }
