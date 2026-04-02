@@ -74,7 +74,9 @@ export function FindingsMetrics({ consensus, reports }: FindingsMetricsProps) {
   const [filter, setFilter] = useState<FilterType>('all');
 
   // If we have structured reports, show those instead of signal-based view
-  const latestReports = reports?.reports?.slice(0, MAX_RUNS) || [];
+  const latestReports = (reports?.reports || [])
+    .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+    .slice(0, MAX_RUNS);
 
   return (
     <section>
@@ -103,27 +105,44 @@ export function FindingsMetrics({ consensus, reports }: FindingsMetricsProps) {
               : allFindings.filter(f => f.tag === filter || (filter === 'unique' && f.findingType === 'insight'));
             const isExpanded = expandedId === report.id;
 
+            const total = allFindings.length || 1;
+            const segments = [
+              { count: report.confirmed.length, cls: 'bg-confirmed' },
+              { count: report.disputed.length, cls: 'bg-disputed' },
+              { count: report.unverified.length, cls: 'bg-unverified' },
+              { count: report.unique.length, cls: 'bg-unique' },
+              { count: (report.insights || []).length, cls: 'bg-purple-500' },
+            ].filter(s => s.count > 0);
+
             return (
-              <div key={report.id} className="rounded-md border border-border/50 bg-card/50 px-3 py-2">
-                <button className="flex w-full items-center justify-between text-left" onClick={() => setExpandedId(isExpanded ? null : report.id)}>
-                  <div>
-                    <span className="font-mono text-[10px] text-primary/70">{report.id}</span>
-                    <span className="ml-2 font-mono text-sm font-bold text-foreground">{allFindings.length} findings</span>
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      {report.agentCount} agents · {report.rounds} rounds
-                    </span>
-                    <div className="mt-0.5">
-                      {report.confirmed.length > 0 && <span className="text-[10px] font-bold text-confirmed">{report.confirmed.length} confirmed </span>}
-                      {report.disputed.length > 0 && <span className="text-[10px] font-bold text-disputed">{report.disputed.length} disputed </span>}
-                      {report.unverified.length > 0 && <span className="text-[10px] font-bold text-unverified">{report.unverified.length} unverified </span>}
-                      {report.unique.length > 0 && <span className="text-[10px] font-bold text-unique">{report.unique.length} unique </span>}
-                      {(report.insights || []).length > 0 && <span className="text-[10px] font-bold text-purple-400">{report.insights.length} insights </span>}
+              <div key={report.id} className={`rounded-lg border transition ${isExpanded ? 'border-primary/30 bg-card' : 'border-border/40 bg-card/50 hover:border-border/60'}`}>
+                <button className="flex w-full items-start justify-between p-4 text-left" onClick={() => setExpandedId(isExpanded ? null : report.id)}>
+                  <div className="flex-1">
+                    {/* Row 1: ID + findings count + time */}
+                    <div className="flex items-center gap-3">
+                      <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{report.id}</span>
+                      <span className="font-mono text-sm font-bold text-foreground">{allFindings.length} findings</span>
+                      <span className="text-[11px] text-muted-foreground">{report.agentCount} agents · {report.rounds} rounds</span>
+                      <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">{timeAgo(report.timestamp)}</span>
+                    </div>
+                    {/* Row 2: Progress bar */}
+                    <div className="mt-2 flex h-1.5 w-full overflow-hidden rounded-full bg-muted/30">
+                      {segments.map((s, si) => (
+                        <div key={si} className={`${s.cls} transition-all`} style={{ width: `${(s.count / total) * 100}%` }} />
+                      ))}
+                    </div>
+                    {/* Row 3: Stat chips */}
+                    <div className="mt-1.5 flex gap-3">
+                      {report.confirmed.length > 0 && <span className="text-[10px] font-semibold text-confirmed">{report.confirmed.length} confirmed</span>}
+                      {report.disputed.length > 0 && <span className="text-[10px] font-semibold text-disputed">{report.disputed.length} disputed</span>}
+                      {report.unverified.length > 0 && <span className="text-[10px] font-semibold text-unverified">{report.unverified.length} unverified</span>}
+                      {report.unique.length > 0 && <span className="text-[10px] font-semibold text-unique">{report.unique.length} unique</span>}
+                      {(report.insights || []).length > 0 && <span className="text-[10px] font-semibold text-purple-400">{report.insights.length} insights</span>}
                     </div>
                   </div>
-                  <span className="font-mono text-[10px] text-muted-foreground">{timeAgo(report.timestamp)}</span>
                 </button>
                 {isExpanded && (
-                  <div className="mt-3 border-t border-border/30 pt-3">
+                  <div className="border-t border-border/20 px-4 pb-4 pt-3">
                     <div className="mb-2 flex gap-2">
                       {FILTER_CHIPS.map(tab => (
                         <button key={tab.key} onClick={() => setFilter(tab.key)}
