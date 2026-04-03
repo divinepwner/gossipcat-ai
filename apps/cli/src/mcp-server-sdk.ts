@@ -1944,6 +1944,40 @@ server.tool(
 );
 
 server.tool(
+  'gossip_remember',
+  'Search an agent\'s archived knowledge files.',
+  {
+    agent_id: z.string().describe('Agent ID to search knowledge for'),
+    query: z.string().describe('Search query'),
+    max_results: z.number().optional().describe('Max results (default 3, max 10)'),
+  },
+  async ({ agent_id, query, max_results }) => {
+    await boot();
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(agent_id)) {
+      return { content: [{ type: 'text' as const, text: 'Error: agent_id must match /^[a-zA-Z0-9_-]{1,64}$/' }] };
+    }
+    const { MemorySearcher } = await import('@gossip/orchestrator');
+    const searcher = new MemorySearcher(process.cwd());
+    const results = searcher.search(agent_id, query, max_results);
+    if (results.length === 0) {
+      return { content: [{ type: 'text' as const, text: `No knowledge found for agent "${agent_id}" matching query: "${query}"` }] };
+    }
+    const lines: string[] = [`Knowledge search results for agent "${agent_id}" (query: "${query}"):\n`];
+    for (const r of results) {
+      lines.push(`## ${r.name} (score: ${r.score.toFixed(2)})`);
+      lines.push(`Source: ${r.source}`);
+      if (r.description) lines.push(`Description: ${r.description}`);
+      if (r.snippets.length > 0) {
+        lines.push('Snippets:');
+        for (const s of r.snippets) lines.push(`  - ${s}`);
+      }
+      lines.push('');
+    }
+    return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+  }
+);
+
+server.tool(
   'gossip_tools',
   'List all available gossipcat MCP tools with descriptions. Call after /mcp reconnect to discover new tools.',
   {},
@@ -1958,10 +1992,11 @@ server.tool(
       { name: 'gossip_status', desc: 'Show system status, agent list, relay, workers, and dashboard URL/key.' },
       { name: 'gossip_setup', desc: 'Create or update team. mode:"merge", "replace", or "update_instructions".' },
       { name: 'gossip_session_save', desc: 'Save cognitive session summary for next session context. Call before ending session.' },
-      // Power-user (4)
+      // Power-user (5)
       { name: 'gossip_plan', desc: 'Plan a task with write-mode suggestions. Returns dispatch-ready JSON for approval.' },
       { name: 'gossip_scores', desc: 'View agent performance scores and dispatch weights.' },
       { name: 'gossip_skills', desc: 'Manage skills. action: list, bind, unbind, build, develop.' },
+      { name: 'gossip_remember', desc: 'Search an agent\'s archived knowledge files by keyword query.' },
       { name: 'gossip_tools', desc: 'List available tools (this command).' },
     ];
     const list = tools.map(t => `- ${t.name}: ${t.desc}`).join('\n');
