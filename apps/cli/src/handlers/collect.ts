@@ -131,7 +131,7 @@ export async function handleCollect(
         type: 'consensus' as const,
         taskId: r.id || '',
         // Use disagreement for empty/timeout (reliability failure), hallucination only for actual errors
-        signal: (r.status === 'failed' ? 'disagreement' : 'unique_unconfirmed') as const,
+        signal: r.status === 'failed' ? 'disagreement' as const : 'unique_unconfirmed' as const,
         agentId: r.agentId,
         evidence: r.status === 'failed' ? `Task failed: ${r.error || 'unknown error'}`
           : r.status === 'timed_out' ? 'Task timed out — no response'
@@ -357,7 +357,7 @@ export async function handleCollect(
       const writer = new PerformanceWriter(process.cwd());
       const timestamp = new Date().toISOString();
 
-      const tagToSignal: Record<string, string> = {
+      const tagToSignal: Record<string, 'unique_confirmed' | 'disagreement' | 'unique_unconfirmed'> = {
         confirmed: 'unique_confirmed',
         disputed: 'disagreement',
         unverified: 'unique_unconfirmed',
@@ -460,7 +460,7 @@ export async function handleCollect(
       }
     } else if (gaps.length > 0) {
       // Fallback: skill generator not available, just surface suggestions
-      output += `\n\n📊 Skill gap detected:\n${gaps.map(g => `  - ${g.agentId} needs "${g.category}" (score: ${g.score.toFixed(2)}, median: ${g.median.toFixed(2)})`).join('\n')}`;
+      output += `\n\n📊 Skill gap detected:\n${gaps.map((g: any) => `  - ${g.agentId} needs "${g.category}" (score: ${g.score.toFixed(2)}, median: ${g.median.toFixed(2)})`).join('\n')}`;
     }
   } catch { /* best-effort */ }
 

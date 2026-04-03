@@ -167,12 +167,10 @@ export async function handleNativeRelay(task_id: string, result: string, error?:
 
   // Late relay wins: check nativeTaskMap first, then fall back to timed_out result
   let taskInfo = ctx.nativeTaskMap.get(task_id);
-  let lateRelay = false;
   if (!taskInfo) {
     const timedOutResult = ctx.nativeResultMap.get(task_id);
     if (timedOutResult && timedOutResult.status === 'timed_out') {
       taskInfo = { agentId: timedOutResult.agentId, task: timedOutResult.task, startedAt: timedOutResult.startedAt };
-      lateRelay = true;
       process.stderr.write(`[gossipcat] Late relay for ${task_id} — overwriting timed_out result with real data\n`);
       // Retract the timeout signal — agent completed successfully, don't penalize
       try {

@@ -4,7 +4,7 @@
  */
 import { randomUUID } from 'crypto';
 import { CONSENSUS_OUTPUT_FORMAT } from '@gossip/orchestrator';
-import { ctx, generateTaskId, NATIVE_TASK_TTL_MS } from '../mcp-context';
+import { ctx, NATIVE_TASK_TTL_MS } from '../mcp-context';
 import { evictStaleNativeTasks, persistNativeTaskMap, spawnTimeoutWatcher } from './native-tasks';
 
 export async function handleDispatchSingle(
