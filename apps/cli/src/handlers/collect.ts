@@ -166,7 +166,7 @@ export async function handleCollect(
   // Step 5: Run consensus on merged results (relay + native together)
   let consensusReport: any = undefined;
   let provisionalSignalCount = 0;
-  const CONSENSUS_TIMEOUT_MS = 300_000;
+  const CONSENSUS_TIMEOUT_MS = 900_000;   // 15 min — gives orchestrator time to dispatch native cross-review
   // MIN_AGENTS_FOR_CONSENSUS = 2 (see @gossip/orchestrator/types)
   if (consensus && allResults.filter((r: any) => r.status === 'completed').length >= 2) {
     // Detect which completed agents are native
@@ -257,18 +257,42 @@ export async function handleCollect(
         // Start timeout watcher — auto-synthesizes if native agents don't respond
         startConsensusTimeout(consensusId);
 
-        // Build partial output with dispatch instructions for native agents
-        let partialOutput = resultTexts.join('\n\n---\n\n');
-        partialOutput += `\n\n⚠️ NATIVE CROSS-REVIEW NEEDED (consensus_id: ${consensusId}):\n`;
+        // Build partial output: action block FIRST, results AFTER
+        // Matches ⚠️ EXECUTE NOW pattern from gossip_run (mcp-server-sdk.ts:1254)
+        const actionLines: string[] = [];
+        actionLines.push(`⚠️ EXECUTE NOW — native cross-review required before consensus completes.`);
+        actionLines.push(`consensus_id: ${consensusId}\n`);
+        actionLines.push(`For each agent below, dispatch Agent() then call gossip_relay_cross_review:\n`);
+
         for (const np of nativePrompts) {
           const nativeConfig = ctx.nativeAgentConfigs.get(np.agentId);
-          const model = nativeConfig?.model || 'unknown';
-          partialOutput += `\nAgent ${np.agentId} (model: ${model}) needs to cross-review peers.`;
-          partialOutput += `\nDispatch: Agent(model: '${model}', prompt: <see below>)`;
-          partialOutput += `\nThen relay: gossip_relay_cross_review(consensus_id: '${consensusId}', agent_id: '${np.agentId}', result: '<output>')`;
-          partialOutput += `\n\nPROMPT FOR ${np.agentId}:`;
-          partialOutput += `\n---SYSTEM---\n${np.system}\n---USER---\n${np.user}\n---END---\n`;
+          const model = nativeConfig?.model || 'sonnet';
+          actionLines.push(`--- AGENT: ${np.agentId} (model: ${model}) ---`);
+          actionLines.push(`Step 1: Agent(model: "${model}", prompt: <see PROMPTS section below>, run_in_background: true)`);
+          actionLines.push(`Step 2: gossip_relay_cross_review(consensus_id: "${consensusId}", agent_id: "${np.agentId}", result: "<output>")\n`);
         }
+
+        actionLines.push(`⚠️ You MUST execute ALL cross-review Agent() calls and relay results BEFORE reading agent results below.\n`);
+
+        // Truncated agent results for context (not for verification)
+        actionLines.push(`--- AGENT RESULTS (context only — do not verify from truncated output) ---`);
+        for (const rt of resultTexts) {
+          const truncated = rt.length > 2000
+            ? rt.slice(0, 2000) + `\n... [truncated, 2000/${rt.length} chars — full results available after cross-review]`
+            : rt;
+          actionLines.push(truncated);
+          actionLines.push('---');
+        }
+
+        // Full prompts at the end
+        for (const np of nativePrompts) {
+          const nativeConfig = ctx.nativeAgentConfigs.get(np.agentId);
+          const model = nativeConfig?.model || 'sonnet';
+          actionLines.push(`\n--- PROMPT FOR ${np.agentId} (model: ${model}) ---`);
+          actionLines.push(`---SYSTEM---\n${np.system}\n---USER---\n${np.user}\n---END---`);
+        }
+
+        const partialOutput = actionLines.join('\n');
 
         // Clean up native results (deferred from Step 3)
         for (const id of collectNativeIds) {
