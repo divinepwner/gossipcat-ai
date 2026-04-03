@@ -561,7 +561,7 @@ Only mark a file STALE if the git log clearly shows the described work has shipp
   }
 
   private deriveImportance(scores: { relevance: number; accuracy: number; uniqueness: number }): number {
-    return (scores.relevance + scores.accuracy + scores.uniqueness) / 15;
+    return Math.min(0.85, (scores.relevance + scores.accuracy + scores.uniqueness) / 15);
   }
 
   writeConsensusKnowledge(agentId: string, findings: Array<{ originalAgentId: string; finding: string; tag?: string }>): void {

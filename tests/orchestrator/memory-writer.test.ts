@@ -45,6 +45,21 @@ describe('MemoryWriter', () => {
     expect(entry.warmth).toBe(1.0);
   });
 
+  it('caps importance at 0.85 even with perfect scores', async () => {
+    const writer = new MemoryWriter(testDir);
+    await writer.writeTaskEntry(agentId, {
+      taskId: 'perfect',
+      task: 'perfect scoring task',
+      skills: ['test'],
+      scores: { relevance: 5, accuracy: 5, uniqueness: 5 },
+    });
+
+    const content = readFileSync(join(memDir, 'tasks.jsonl'), 'utf-8');
+    const entry = JSON.parse(content.trim());
+    expect(entry.importance).toBeLessThanOrEqual(0.85);
+    expect(entry.importance).toBeCloseTo(0.85, 2);
+  });
+
   it('rebuilds MEMORY.md index with recent tasks', async () => {
     const writer = new MemoryWriter(testDir);
     await writer.writeTaskEntry(agentId, {
@@ -318,6 +333,6 @@ describe('MemoryWriter', () => {
     });
     const tasksPath = join(testDir, '.gossip', 'agents', 'test-agent', 'memory', 'tasks.jsonl');
     const entry = JSON.parse(readFileSync(tasksPath, 'utf-8').trim());
-    expect(entry.importance).toBe(1.0); // (5+5+5)/15 = 1.0
+    expect(entry.importance).toBe(0.85); // (5+5+5)/15 = 1.0, capped at 0.85
   });
 });
