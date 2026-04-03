@@ -84,6 +84,7 @@ export class DispatchPipeline {
 
   private tasks: Map<string, TrackedTask> = new Map();
   private batches: Map<string, Set<string>> = new Map();
+  private sequentialQueues: Map<string, Promise<unknown>> = new Map(); // agentId → tail promise
 
   private readonly scopeTracker: ScopeTracker;
   private readonly worktreeManager: WorktreeManager;
@@ -186,6 +187,15 @@ export class DispatchPipeline {
     }
     log(`dispatch → ${agentId}: "${task.slice(0, 80)}..." writeMode=${options?.writeMode || 'default'}`);
 
+    // Scoped write mode: validate scope and check for overlaps
+    if (options?.writeMode === 'scoped') {
+      if (!options.scope) throw new Error('scoped write mode requires a scope path');
+      const overlap = this.scopeTracker.hasOverlap(options.scope);
+      if (overlap.overlaps) {
+        throw new Error(`Scope "${options.scope}" overlaps with active scope "${overlap.conflictScope}" (task ${overlap.conflictTaskId})`);
+      }
+    }
+
     const taskId = randomUUID().slice(0, 8);
     const agentSkills = this.registryGet(agentId)?.skills || [];
 
@@ -286,34 +296,62 @@ export class DispatchPipeline {
     entry.planId = options?.planId;
     entry.planStep = options?.step;
 
-    const stream = worker.executeTask(task, options?.lens, promptContent);
-    entry.stream = stream;
+    // Register scope for overlap tracking
+    if (options?.writeMode === 'scoped' && options.scope) {
+      this.scopeTracker.register(options.scope, taskId);
+    }
 
-    entry.finalResultPromise = (async () => {
-        for await (const event of stream) {
-            switch (event.type) {
-                case TaskStreamEventType.PROGRESS:
-                    entry.toolCalls = event.payload.toolCalls;
-                    entry.inputTokens = event.payload.inputTokens;
-                    entry.outputTokens = event.payload.outputTokens;
-                    break;
-                case TaskStreamEventType.FINAL_RESULT:
-                    entry.status = 'completed';
-                    entry.result = event.payload.result;
-                    entry.inputTokens = event.payload.inputTokens;
-                    entry.outputTokens = event.payload.outputTokens;
-                    entry.completedAt = Date.now();
-                    return event.payload;
-                case TaskStreamEventType.ERROR:
-                    entry.status = 'failed';
-                    entry.error = event.payload.error;
-                    entry.completedAt = Date.now();
-                    throw new Error(event.payload.error);
+    // Sequential write mode: chain after the previous task for this agent
+    const prevSequential = options?.writeMode === 'sequential'
+      ? this.sequentialQueues.get(agentId)
+      : undefined;
+
+    const runTask = async () => {
+      if (prevSequential) await prevSequential.catch(() => {}); // wait for previous, ignore its errors
+
+      // Worktree write mode: create an isolated worktree before running the task
+      if (options?.writeMode === 'worktree') {
+        const wtInfo = await this.worktreeManager.create(taskId);
+        entry.worktreeInfo = wtInfo;
+        this.toolServer?.assignRoot(agentId, wtInfo.path);
+      }
+      const stream = worker.executeTask(task, options?.lens, promptContent);
+      entry.stream = stream;
+      for await (const event of stream) {
+        switch (event.type) {
+          case TaskStreamEventType.PROGRESS:
+            entry.toolCalls = event.payload.toolCalls;
+            entry.inputTokens = event.payload.inputTokens;
+            entry.outputTokens = event.payload.outputTokens;
+            break;
+          case TaskStreamEventType.FINAL_RESULT:
+            entry.status = 'completed';
+            entry.result = event.payload.result;
+            entry.inputTokens = event.payload.inputTokens;
+            entry.outputTokens = event.payload.outputTokens;
+            entry.completedAt = Date.now();
+            if (entry.writeMode === 'scoped') this.scopeTracker.release(entry.id);
+            return event.payload;
+          case TaskStreamEventType.ERROR:
+            entry.status = 'failed';
+            entry.error = event.payload.error;
+            entry.completedAt = Date.now();
+            if (entry.writeMode === 'scoped') this.scopeTracker.release(entry.id);
+            if (entry.writeMode === 'worktree' && entry.worktreeInfo) {
+              this.worktreeManager.cleanup(entry.id, entry.worktreeInfo.path).catch(() => {});
             }
+            throw new Error(event.payload.error);
         }
-        // Should not be reached if stream always provides a FINAL_RESULT or ERROR
-        throw new Error('Task stream ended without a final result or error.');
-    })();
+      }
+      throw new Error('Task stream ended without a final result or error.');
+    };
+
+    entry.finalResultPromise = runTask();
+
+    // Update sequential queue tail
+    if (options?.writeMode === 'sequential') {
+      this.sequentialQueues.set(agentId, entry.finalResultPromise);
+    }
 
     this.tasks.set(taskId, entry);
     return { taskId, finalResultPromise: entry.finalResultPromise };
