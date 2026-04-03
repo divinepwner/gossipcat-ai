@@ -1,5 +1,9 @@
-import { readFileSync, readdirSync, existsSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { join, basename } from 'path';
+
+const MAX_QUERY_LENGTH = 500;
+const MAX_KEYWORDS = 20;
+const MAX_TASK_FILE_BYTES = 2 * 1024 * 1024; // 2MB
 
 export interface SearchResult {
   source: string;
@@ -21,8 +25,14 @@ export class MemorySearcher {
   search(agentId: string, query: string, maxResults = 3): SearchResult[] {
     if (!query || !query.trim()) return [];
 
+    // Validate agentId to prevent path traversal (defense-in-depth; MCP handler also validates)
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(agentId)) return [];
+
+    // Cap query length to prevent DoS via keyword extraction
+    const safeQuery = query.slice(0, MAX_QUERY_LENGTH);
+
     const limit = Math.min(maxResults, 10);
-    const keywords = this.extractKeywords(query);
+    const keywords = this.extractKeywords(safeQuery);
     if (keywords.length === 0) return [];
 
     const memDir = join(this.projectRoot, '.gossip', 'agents', agentId, 'memory');
@@ -36,50 +46,60 @@ export class MemorySearcher {
       const files = readdirSync(knowledgeDir).filter(f => f.endsWith('.md'));
       for (const file of files) {
         const filePath = join(knowledgeDir, file);
-        const content = readFileSync(filePath, 'utf-8');
-        const frontmatter = this.parseFrontmatter(content);
-        const body = content.replace(/^---[\s\S]*?---\n*/, '');
+        try {
+          const content = readFileSync(filePath, 'utf-8');
+          const frontmatter = this.parseFrontmatter(content);
+          const body = content.replace(/^---[\s\S]*?---\n*/, '');
 
-        const name = frontmatter?.name || basename(file, '.md');
-        const description = frontmatter?.description || '';
-        const importance = frontmatter?.importance ?? 0.5;
+          const name = frontmatter?.name || basename(file, '.md');
+          const description = frontmatter?.description || '';
+          const importance = frontmatter?.importance ?? 0.5;
 
-        const score = this.scoreContent(keywords, name, description, body, importance);
-        if (score > 0) {
-          results.push({
-            source: file,
-            name,
-            description,
-            score,
-            snippets: this.extractSnippets(body, keywords),
-          });
+          const score = this.scoreContent(keywords, name, description, body, importance);
+          if (score > 0) {
+            results.push({
+              source: file,
+              name,
+              description,
+              score,
+              snippets: this.extractSnippets(body, keywords),
+            });
+          }
+        } catch {
+          // skip inaccessible files
         }
       }
     }
 
-    // Search tasks.jsonl
+    // Search tasks.jsonl (with size guard to prevent event-loop stall)
     const tasksPath = join(memDir, 'tasks.jsonl');
     if (existsSync(tasksPath)) {
-      const lines = readFileSync(tasksPath, 'utf-8').split('\n').filter(l => l.trim());
-      for (const line of lines) {
-        try {
-          const entry = JSON.parse(line) as { taskId?: string; task?: string; skills?: string[] };
-          const taskText = entry.task || '';
-          const skillsText = (entry.skills || []).join(' ');
-          const combined = `${taskText} ${skillsText}`;
-          const score = this.scoreTaskEntry(keywords, taskText, skillsText);
-          if (score > 0) {
-            results.push({
-              source: 'tasks.jsonl',
-              name: entry.taskId || 'task',
-              description: taskText.slice(0, 120),
-              score,
-              snippets: this.extractSnippets(combined, keywords),
-            });
+      try {
+        const stat = statSync(tasksPath);
+        if (stat.size > MAX_TASK_FILE_BYTES) return results.sort((a, b) => b.score - a.score).slice(0, limit);
+        const lines = readFileSync(tasksPath, 'utf-8').split('\n').filter(l => l.trim());
+        for (const line of lines) {
+          try {
+            const entry = JSON.parse(line) as { taskId?: string; task?: string; skills?: string[] };
+            const taskText = entry.task || '';
+            const skillsText = (entry.skills || []).join(' ');
+            const combined = `${taskText} ${skillsText}`;
+            const score = this.scoreTaskEntry(keywords, taskText, skillsText);
+            if (score > 0) {
+              results.push({
+                source: 'tasks.jsonl',
+                name: entry.taskId || 'task',
+                description: taskText.slice(0, 120),
+                score,
+                snippets: this.extractSnippets(combined, keywords),
+              });
+            }
+          } catch {
+            // skip malformed lines
           }
-        } catch {
-          // skip malformed lines
         }
+      } catch {
+        // skip inaccessible tasks file
       }
     }
 
@@ -96,6 +116,7 @@ export class MemorySearcher {
         seen.add(clean);
         result.push(clean);
       }
+      if (result.length >= MAX_KEYWORDS) break;
     }
     return result;
   }
@@ -145,12 +166,23 @@ export class MemorySearcher {
     const snippets: string[] = [];
     const seen = new Set<number>();
 
+    // Precompute line start offsets to avoid O(n²) string splitting
+    const lineStarts: number[] = [0];
+    for (let i = 0; i < body.length; i++) {
+      if (body[i] === '\n') lineStarts.push(i + 1);
+    }
+
     for (const kw of keywords) {
       let idx = 0;
       while (snippets.length < 3 && (idx = bodyLower.indexOf(kw, idx)) !== -1) {
-        // Find line index for this position
-        const before = body.slice(0, idx);
-        const lineIdx = before.split('\n').length - 1;
+        // Binary search for the line containing this offset
+        let lo = 0, hi = lineStarts.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (lineStarts[mid] <= idx) lo = mid; else hi = mid - 1;
+        }
+        const lineIdx = lo;
+
         if (!seen.has(lineIdx)) {
           const line = lines[lineIdx]?.trim();
           if (line && line.length > 0) {
@@ -168,7 +200,9 @@ export class MemorySearcher {
   }
 
   private parseFrontmatter(content: string): ParsedFrontmatter | null {
-    const match = content.match(/^---\n([\s\S]*?)\n---/);
+    // Normalize CRLF to LF for cross-platform compatibility
+    const normalized = content.replace(/\r\n/g, '\n');
+    const match = normalized.match(/^---\n([\s\S]*?)\n---/);
     if (!match) return null;
     const lines = match[1].split('\n');
     const obj: Record<string, string> = {};
@@ -179,10 +213,12 @@ export class MemorySearcher {
       const value = line.slice(colonIdx + 1).trim();
       obj[key] = value;
     }
+    const rawImportance = obj.importance !== undefined ? parseFloat(obj.importance) : NaN;
+    const importance = Number.isNaN(rawImportance) ? 0.5 : Math.max(0, Math.min(1, rawImportance));
     return {
       name: obj.name || '',
       description: obj.description || '',
-      importance: parseFloat(obj.importance) || 0.5,
+      importance,
     };
   }
 }

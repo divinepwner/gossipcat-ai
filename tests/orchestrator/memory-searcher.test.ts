@@ -181,6 +181,98 @@ describe('MemorySearcher', () => {
     expect(searcher.search('agent1', 'the an or')).toEqual([]);
   });
 
+  it('rejects path traversal in agentId', () => {
+    setupAgent(testDir, 'agent1');
+    const searcher = new MemorySearcher(testDir);
+    expect(searcher.search('../../../etc', 'relay connection')).toEqual([]);
+    expect(searcher.search('agent1/../../etc', 'relay connection')).toEqual([]);
+    expect(searcher.search('', 'relay connection')).toEqual([]);
+  });
+
+  it('caps query length at 500 characters', () => {
+    const { knowledgeDir } = setupAgent(testDir, 'agent1');
+    writeFileSync(join(knowledgeDir, 'test.md'), [
+      '---',
+      'name: relay server',
+      'description: relay connection handling',
+      'importance: 0.8',
+      '---',
+      '',
+      'The relay server manages connections.',
+    ].join('\n'));
+
+    const searcher = new MemorySearcher(testDir);
+    // Very long query should not crash — just gets truncated
+    const longQuery = 'relay '.repeat(200);
+    const results = searcher.search('agent1', longQuery);
+    // Should still find results (keyword "relay" is in first 500 chars)
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it('caps keywords at MAX_KEYWORDS', () => {
+    setupAgent(testDir, 'agent1');
+    const searcher = new MemorySearcher(testDir);
+    // 30 unique words > 3 chars — should be capped
+    const manyWords = Array.from({ length: 30 }, (_, i) => `keyword${i}`).join(' ');
+    // Should not crash
+    const results = searcher.search('agent1', manyWords);
+    expect(results).toEqual([]);
+  });
+
+  it('clamps importance to [0, 1] range', () => {
+    const { knowledgeDir } = setupAgent(testDir, 'agent1');
+
+    writeFileSync(join(knowledgeDir, 'extreme.md'), [
+      '---',
+      'name: relay extreme',
+      'description: relay internals',
+      'importance: 1e308',
+      '---',
+      '',
+      'relay content here',
+    ].join('\n'));
+
+    const searcher = new MemorySearcher(testDir);
+    const results = searcher.search('agent1', 'relay content');
+    expect(results.length).toBe(1);
+    // Score should be finite (importance clamped to 1, not 1e308)
+    expect(results[0].score).toBeLessThan(100);
+    expect(Number.isFinite(results[0].score)).toBe(true);
+  });
+
+  it('handles CRLF frontmatter', () => {
+    const { knowledgeDir } = setupAgent(testDir, 'agent1');
+
+    // Write with CRLF line endings
+    writeFileSync(join(knowledgeDir, 'crlf.md'),
+      '---\r\nname: relay crlf\r\ndescription: relay with windows newlines\r\nimportance: 0.7\r\n---\r\n\r\nrelay content here\r\n'
+    );
+
+    const searcher = new MemorySearcher(testDir);
+    const results = searcher.search('agent1', 'relay content');
+    expect(results.length).toBe(1);
+    expect(results[0].name).toBe('relay crlf');
+  });
+
+  it('handles importance=0 correctly with nullish coalescing', () => {
+    const { knowledgeDir } = setupAgent(testDir, 'agent1');
+
+    writeFileSync(join(knowledgeDir, 'zero.md'), [
+      '---',
+      'name: relay zero',
+      'description: relay internals',
+      'importance: 0',
+      '---',
+      '',
+      'relay content here',
+    ].join('\n'));
+
+    const searcher = new MemorySearcher(testDir);
+    const results = searcher.search('agent1', 'relay content');
+    // importance=0 should produce score=0 (not fall back to 0.5)
+    expect(results).toEqual([]);
+  });
+
   it('importance boosts score — higher importance ranks first', () => {
     const { knowledgeDir } = setupAgent(testDir, 'agent1');
 

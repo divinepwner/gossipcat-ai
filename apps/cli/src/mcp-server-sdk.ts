@@ -1948,8 +1948,8 @@ server.tool(
   'Search an agent\'s archived knowledge files.',
   {
     agent_id: z.string().describe('Agent ID to search knowledge for'),
-    query: z.string().describe('Search query'),
-    max_results: z.number().optional().describe('Max results (default 3, max 10)'),
+    query: z.string().max(500).describe('Search query (max 500 chars)'),
+    max_results: z.number().optional().default(3).describe('Max results (default 3, max 10)'),
   },
   async ({ agent_id, query, max_results }) => {
     await boot();
