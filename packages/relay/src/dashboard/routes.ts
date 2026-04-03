@@ -159,7 +159,7 @@ export class DashboardRouter {
       }
 
       if (url === '/dashboard/api/consensus' && req.method === 'GET') {
-        const data = await consensusHandler(this.projectRoot);
+        const data = await consensusHandler(this.projectRoot, query ?? undefined);
         this.json(res, 200, data);
         return true;
       }

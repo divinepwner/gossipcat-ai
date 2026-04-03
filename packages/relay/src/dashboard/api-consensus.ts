@@ -23,15 +23,24 @@ interface ConsensusRun {
 
 export interface ConsensusResponse {
   runs: ConsensusRun[];
+  totalRuns: number;
   totalSignals: number;
+  page: number;
+  pageSize: number;
 }
 
 // Signals that resolve an UNVERIFIED finding
 const RESOLUTION_SIGNALS = new Set(['agreement', 'unique_confirmed', 'consensus_verified']);
+const DEFAULT_PAGE_SIZE = 10;
+const MAX_PAGE_SIZE = 50;
 
-export async function consensusHandler(projectRoot: string): Promise<ConsensusResponse> {
+export async function consensusHandler(projectRoot: string, query?: URLSearchParams): Promise<ConsensusResponse> {
+  const rawPage = parseInt(query?.get('page') ?? '1', 10);
+  const rawPageSize = parseInt(query?.get('pageSize') ?? '', 10);
+  const page = isNaN(rawPage) || rawPage < 1 ? 1 : rawPage;
+  const pageSize = isNaN(rawPageSize) || rawPageSize < 1 ? DEFAULT_PAGE_SIZE : Math.min(rawPageSize, MAX_PAGE_SIZE);
   const perfPath = join(projectRoot, '.gossip', 'agent-performance.jsonl');
-  if (!existsSync(perfPath)) return { runs: [], totalSignals: 0 };
+  if (!existsSync(perfPath)) return { runs: [], totalRuns: 0, totalSignals: 0, page, pageSize };
 
   const signals: ConsensusSignal[] = [];
   try {
@@ -44,7 +53,7 @@ export async function consensusHandler(projectRoot: string): Promise<ConsensusRe
         }
       } catch { /* skip malformed */ }
     }
-  } catch { return { runs: [], totalSignals: 0 }; }
+  } catch { return { runs: [], totalRuns: 0, totalSignals: 0, page, pageSize }; }
 
   // Build a set of resolved findingIds — any findingId that has a resolution signal
   const resolvedFindings = new Set<string>();
@@ -110,5 +119,10 @@ export async function consensusHandler(projectRoot: string): Promise<ConsensusRe
   // Most recent first
   runs.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 
-  return { runs, totalSignals: signals.length };
+  // Paginate
+  const totalRuns = runs.length;
+  const offset = (page - 1) * pageSize;
+  const paginatedRuns = runs.slice(offset, offset + pageSize);
+
+  return { runs: paginatedRuns, totalRuns, totalSignals: signals.length, page, pageSize };
 }

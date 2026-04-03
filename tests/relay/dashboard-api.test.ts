@@ -4,6 +4,7 @@ import { skillsGetHandler, skillsBindHandler } from '@gossip/relay/dashboard/api
 import { memoryHandler } from '@gossip/relay/dashboard/api-memory';
 import { tasksHandler } from '@gossip/relay/dashboard/api-tasks';
 import { signalsHandler } from '@gossip/relay/dashboard/api-signals';
+import { consensusHandler } from '@gossip/relay/dashboard/api-consensus';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -320,5 +321,71 @@ describe('Signals API', () => {
     const result = await signalsHandler(projectRoot, undefined);
     expect(result.items).toHaveLength(50);
     expect(result.total).toBe(150);
+  });
+});
+
+describe('Consensus API pagination', () => {
+  let projectRoot: string;
+
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'gossip-consensus-'));
+    mkdirSync(join(projectRoot, '.gossip'), { recursive: true });
+  });
+
+  function writeConsensusSignals(runs: number) {
+    // Each "run" needs >= 2 agents and >= 3 signals to be included
+    const signals: string[] = [];
+    for (let r = 0; r < runs; r++) {
+      const consensusId = `run-${String(r).padStart(3, '0')}`;
+      const ts = new Date(Date.now() - r * 60000).toISOString();
+      signals.push(JSON.stringify({ type: 'consensus', taskId: `t${r}-a`, consensusId, signal: 'agreement', agentId: 'agent-a', counterpartId: 'agent-b', timestamp: ts }));
+      signals.push(JSON.stringify({ type: 'consensus', taskId: `t${r}-b`, consensusId, signal: 'unique_confirmed', agentId: 'agent-b', timestamp: ts }));
+      signals.push(JSON.stringify({ type: 'consensus', taskId: `t${r}-c`, consensusId, signal: 'disagreement', agentId: 'agent-a', counterpartId: 'agent-c', timestamp: ts }));
+      signals.push(JSON.stringify({ type: 'consensus', taskId: `t${r}-d`, consensusId, signal: 'hallucination_caught', agentId: 'agent-c', timestamp: ts }));
+    }
+    writeFileSync(join(projectRoot, '.gossip', 'agent-performance.jsonl'), signals.join('\n') + '\n');
+  }
+
+  it('returns empty for fresh project', async () => {
+    const result = await consensusHandler(projectRoot);
+    expect(result.runs).toEqual([]);
+    expect(result.totalRuns).toBe(0);
+    expect(result.page).toBe(1);
+    expect(result.pageSize).toBe(10);
+  });
+
+  it('returns all runs when under page size', async () => {
+    writeConsensusSignals(3);
+    const result = await consensusHandler(projectRoot);
+    expect(result.runs).toHaveLength(3);
+    expect(result.totalRuns).toBe(3);
+  });
+
+  it('paginates with page and pageSize params', async () => {
+    writeConsensusSignals(25);
+    const page1 = await consensusHandler(projectRoot, new URLSearchParams({ page: '1', pageSize: '10' }));
+    expect(page1.runs).toHaveLength(10);
+    expect(page1.totalRuns).toBe(25);
+    expect(page1.page).toBe(1);
+
+    const page3 = await consensusHandler(projectRoot, new URLSearchParams({ page: '3', pageSize: '10' }));
+    expect(page3.runs).toHaveLength(5);
+    expect(page3.totalRuns).toBe(25);
+    expect(page3.page).toBe(3);
+  });
+
+  it('caps pageSize at 50', async () => {
+    writeConsensusSignals(60);
+    const result = await consensusHandler(projectRoot, new URLSearchParams({ pageSize: '100' }));
+    expect(result.runs).toHaveLength(50);
+    expect(result.pageSize).toBe(50);
+    expect(result.totalRuns).toBe(60);
+  });
+
+  it('returns empty runs for page beyond total', async () => {
+    writeConsensusSignals(5);
+    const result = await consensusHandler(projectRoot, new URLSearchParams({ page: '10' }));
+    expect(result.runs).toHaveLength(0);
+    expect(result.totalRuns).toBe(5);
   });
 });
