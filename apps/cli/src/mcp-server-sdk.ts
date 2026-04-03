@@ -247,6 +247,22 @@ async function boot() {
   return bootPromise;
 }
 
+/** Re-read next-session.md and regenerate bootstrap.md without restarting relay/workers. */
+async function refreshBootstrap() {
+  try {
+    const { BootstrapGenerator } = await import('@gossip/orchestrator');
+    const generator = new BootstrapGenerator(process.cwd());
+    const result = generator.generate();
+    const { writeFileSync: wf, mkdirSync: md } = require('fs');
+    const { join: j } = require('path');
+    md(j(process.cwd(), '.gossip'), { recursive: true });
+    wf(j(process.cwd(), '.gossip', 'bootstrap.md'), result.prompt);
+    process.stderr.write(`[gossipcat] Bootstrap refreshed on reconnect (${result.agentCount} agents)\n`);
+  } catch (err) {
+    process.stderr.write(`[gossipcat] Bootstrap refresh failed: ${(err as Error).message}\n`);
+  }
+}
+
 async function doBoot() {
   const m = await getModules();
 
@@ -1958,7 +1974,12 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // Eager boot — start relay, workers, and ATI profiler immediately on connect
-  boot().catch(err => process.stderr.write(`[gossipcat] Boot failed: ${err.message}\n`));
+  if (booted) {
+    // Reconnect — relay/workers already running, just refresh bootstrap context
+    refreshBootstrap().catch(() => {});
+  } else {
+    boot().catch(err => process.stderr.write(`[gossipcat] Boot failed: ${err.message}\n`));
+  }
 }
 
 main().catch(err => { process.stderr.write(`[gossipcat] Fatal: ${err.message}\n`); process.exit(1); });

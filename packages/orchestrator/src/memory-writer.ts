@@ -289,7 +289,23 @@ Only mark a file STALE if the git log clearly shows the described work has shipp
         ];
 
         const response = await this.summaryLlm.generate(messages, { temperature: 0 });
-        summaryBody = (response.text || '').slice(0, 3000);
+        const raw = response.text || '';
+
+        // Validate completeness before truncating
+        const hasSummaryLine = /^SUMMARY:\s*.+/m.test(raw);
+        const hasSectionHeader = /^##\s+\w/m.test(raw);
+
+        if (!hasSummaryLine || !hasSectionHeader) {
+          process.stderr.write('[gossipcat] Session summary missing required structure, using raw fallback\n');
+          summaryBody = `> ⚠️ LLM summary malformed — raw data below.\n\n${rawInput.slice(0, 3000)}`;
+        } else if (raw.length > 2900 && !/[.!)\n]$/.test(raw.trimEnd())) {
+          // Likely truncated by model output limit — trim to last complete paragraph
+          const lastPara = raw.lastIndexOf('\n\n');
+          summaryBody = (lastPara > 1000 ? raw.slice(0, lastPara) : raw).slice(0, 3000);
+          process.stderr.write('[gossipcat] Session summary truncated — trimmed to last complete paragraph\n');
+        } else {
+          summaryBody = raw.slice(0, 3000);
+        }
 
         // Check if LLM flagged as pinned
         if (summaryBody.startsWith('PINNED:true')) {
@@ -412,9 +428,17 @@ Only mark a file STALE if the git log clearly shows the described work has shipp
 
       scored.sort((a, b) => a.warmth - b.warmth);
 
-      const toRemove = scored.slice(0, existing.length - maxFiles + 1);
-      for (const item of toRemove) {
-        if (item.isPinned) continue;
+      const targetCount = maxFiles - 1; // leave room for incoming file
+      const unpinned = scored.filter(s => !s.isPinned);
+      const toEvict = unpinned.slice(0, Math.max(0, existing.length - targetCount));
+
+      if (toEvict.length === 0 && existing.length >= maxFiles) {
+        process.stderr.write(
+          `[gossipcat] pruneKnowledgeDir: all ${existing.length} files are pinned, cannot evict to stay under ${maxFiles}\n`
+        );
+      }
+
+      for (const item of toEvict) {
         unlinkSync(join(knowledgeDir, item.file));
       }
     } catch { /* best-effort */ }
