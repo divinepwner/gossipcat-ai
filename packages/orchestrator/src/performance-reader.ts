@@ -14,6 +14,7 @@ export interface AgentScore {
   accuracy: number;      // 0-1, higher = more accurate findings
   uniqueness: number;    // 0-1, higher = finds things others miss
   reliability: number;   // 0-1, combined score for dispatch weighting
+  impactScore: number;   // 0-1, weighted toward agents catching CRITICAL/HIGH findings
   totalSignals: number;
   agreements: number;
   disagreements: number;
@@ -158,6 +159,8 @@ export class PerformanceReader {
       weightedTotal: number;
       weightedUnique: number;
       weightedHallucinations: number;
+      weightedImpact: number;   // severity-weighted confirmed findings (CRITICAL=4x, HIGH=2x)
+      confirmedCount: number;   // count of confirmed signals (denominator for impactScore)
       tasksSeen: Map<string, number>;
       taskCounter: number;
       agreements: number;
@@ -173,6 +176,7 @@ export class PerformanceReader {
       if (!acc.has(id)) acc.set(id, {
         weightedCorrect: 0, weightedTotal: 0,
         weightedUnique: 0, weightedHallucinations: 0,
+        weightedImpact: 0, confirmedCount: 0,
         tasksSeen: new Map(), taskCounter: 0,
         agreements: 0, disagreements: 0, uniqueFindings: 0, hallucinations: 0,
         totalSignals: 0, lastSignalMs: 0, categoryStrengths: {},
@@ -224,8 +228,10 @@ export class PerformanceReader {
           a.weightedCorrect += sevMul * decay * diversityMul;
           a.weightedTotal += sevMul * decay;
           a.agreements++;
-          if (signal.signal === 'category_confirmed' && signal.category) {
-            a.categoryStrengths[signal.category] = (a.categoryStrengths[signal.category] ?? 0) + decay * 0.15;
+          a.weightedImpact += sevMul * decay;
+          a.confirmedCount++;
+          if (signal.category) {
+            a.categoryStrengths[signal.category] = (a.categoryStrengths[signal.category] ?? 0) + sevMul * decay * 0.15;
           }
           break;
         }
@@ -252,6 +258,8 @@ export class PerformanceReader {
           a.weightedTotal += sevMul * decay;
           a.weightedUnique += 0.2 * sevMul * decay;
           a.uniqueFindings++;
+          a.weightedImpact += sevMul * decay;
+          a.confirmedCount++;
           break;
         }
         case 'unique_unconfirmed': {
@@ -319,8 +327,17 @@ export class PerformanceReader {
       // 10 unique_confirmed (2.0) → 0.5 + 0.45 = 0.95
       const uniqueness = clamp(0.5 + 0.5 * (1 - Math.exp(-a.weightedUnique * 1.5)), 0, 1);
 
-      // Accuracy dominates (0.8), uniqueness is minor modifier (0.2)
-      let reliability = clamp(accuracy * 0.8 + uniqueness * 0.2, 0, 1);
+      // Impact score: ratio of severity-weighted confirmed findings to confirmed count.
+      // Agent catching only LOW findings → ~0.25. Agent catching CRITICAL → ~1.0.
+      // Neutral (0.5) when no data. Confidence-gated to avoid overweighting sparse data.
+      const rawImpact = a.confirmedCount > 0
+        ? clamp(a.weightedImpact / a.confirmedCount, 0, 4) / 4  // max sevMul=4 → normalize to [0,1]
+        : 0.5;
+      const impactConfidence = 1 - Math.exp(-a.confirmedCount / 10);
+      const impactScore = clamp(0.5 + (rawImpact - 0.5) * impactConfidence, 0, 1);
+
+      // Accuracy dominates (0.75), uniqueness minor (0.15), impact breaks ties (0.10)
+      let reliability = clamp(accuracy * 0.75 + uniqueness * 0.15 + impactScore * 0.10, 0, 1);
 
       // Time-based decay: pull reliability toward neutral (0.5) based on inactivity.
       // Good agents (reliability >= 0.5) lose their edge with a 7-day half-life.
@@ -335,7 +352,7 @@ export class PerformanceReader {
 
       const consec = consecutiveFailures.get(id) || 0;
       scores.set(id, {
-        agentId: id, accuracy, uniqueness, reliability,
+        agentId: id, accuracy, uniqueness, reliability, impactScore,
         totalSignals: a.totalSignals,
         agreements: a.agreements,
         disagreements: a.disagreements,
