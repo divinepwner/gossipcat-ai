@@ -1,0 +1,581 @@
+/**
+ * Tests for gossip_signals handler validation and gap pipeline logic.
+ *
+ * Because the handler is tightly coupled to boot() context, we test the
+ * underlying libraries directly: PerformanceWriter (signal validation/formatting)
+ * and SkillGapTracker (hallucination → gap suggestion pipeline).
+ *
+ * The gap pipeline logic (lines 1382-1403 in mcp-server-sdk.ts) is replicated
+ * inline so we can exercise the keyword matching → appendSuggestion flow without
+ * spinning up the full MCP server.
+ */
+
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { PerformanceWriter, SkillGapTracker, DEFAULT_KEYWORDS } from '@gossip/orchestrator';
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function makeTmpDir(label: string): string {
+  return mkdtempSync(join(tmpdir(), `gossip-signals-val-${label}-`));
+}
+
+function readGapLog(dir: string): Array<Record<string, unknown>> {
+  const path = join(dir, '.gossip', 'skill-gaps.jsonl');
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf-8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line));
+}
+
+/**
+ * Replicates the hallucination → gap pipeline from mcp-server-sdk.ts:1382-1403.
+ * Returns the category selected (or '' if nothing matched).
+ */
+function runGapPipeline(
+  gapTracker: SkillGapTracker,
+  signal: { agentId: string; evidence?: string; taskId: string },
+): string {
+  const text = `${signal.evidence || ''} ${signal.agentId || ''}`.toLowerCase();
+  let bestCategory = '';
+  let bestHits = 0;
+  for (const [category, keywords] of Object.entries(DEFAULT_KEYWORDS)) {
+    const hits = keywords.filter(kw => text.includes(kw)).length;
+    if (hits > bestHits) {
+      bestHits = hits;
+      bestCategory = category;
+    }
+  }
+  if (bestCategory && bestHits >= 1) {
+    gapTracker.appendSuggestion({
+      type: 'suggestion',
+      skill: bestCategory.replace(/_/g, '-'),
+      reason: `Auto: hallucination_caught — ${(signal.evidence || '').slice(0, 120)}`,
+      agent: signal.agentId,
+      task_context: signal.taskId,
+      timestamp: new Date().toISOString(),
+    });
+  }
+  return bestCategory;
+}
+
+// ── 1. Punitive signals require evidence ─────────────────────────────────────
+
+describe('gossip_signals validation — punitive signals require evidence', () => {
+  const PUNITIVE_SIGNALS = new Set(['hallucination_caught', 'disagreement']);
+  const COUNTERPART_REQUIRED = new Set(['agreement', 'disagreement']);
+
+  function validateSignals(
+    signals: Array<{ signal: string; agent_id: string; evidence?: string; counterpart_id?: string }>,
+  ): string | null {
+    for (const s of signals) {
+      if (PUNITIVE_SIGNALS.has(s.signal) && (!s.evidence || s.evidence.trim().length === 0)) {
+        return `Error: ${s.signal} signals require non-empty evidence for audit trail. Agent: ${s.agent_id}`;
+      }
+      if (COUNTERPART_REQUIRED.has(s.signal) && (!s.counterpart_id || s.counterpart_id.trim().length === 0)) {
+        return `Error: ${s.signal} signals require counterpart_id. Agent: ${s.agent_id}`;
+      }
+    }
+    return null;
+  }
+
+  it('rejects hallucination_caught with empty evidence', () => {
+    const err = validateSignals([{
+      signal: 'hallucination_caught',
+      agent_id: 'haiku-researcher',
+      evidence: '',
+    }]);
+    expect(err).not.toBeNull();
+    expect(err).toContain('hallucination_caught');
+    expect(err).toContain('evidence');
+    expect(err).toContain('haiku-researcher');
+  });
+
+  it('rejects hallucination_caught with whitespace-only evidence', () => {
+    const err = validateSignals([{
+      signal: 'hallucination_caught',
+      agent_id: 'haiku-researcher',
+      evidence: '   ',
+    }]);
+    expect(err).not.toBeNull();
+    expect(err).toContain('hallucination_caught');
+  });
+
+  it('rejects disagreement with empty evidence', () => {
+    const err = validateSignals([{
+      signal: 'disagreement',
+      agent_id: 'gemini-reviewer',
+      counterpart_id: 'sonnet-reviewer',
+      evidence: '',
+    }]);
+    expect(err).not.toBeNull();
+    expect(err).toContain('disagreement');
+    expect(err).toContain('evidence');
+  });
+
+  it('accepts hallucination_caught when evidence is provided', () => {
+    const err = validateSignals([{
+      signal: 'hallucination_caught',
+      agent_id: 'haiku-researcher',
+      evidence: 'Agent claimed ScopeTracker persists to disk — it does not.',
+    }]);
+    expect(err).toBeNull();
+  });
+
+  it('accepts disagreement when evidence and counterpart_id are provided', () => {
+    const err = validateSignals([{
+      signal: 'disagreement',
+      agent_id: 'gemini-reviewer',
+      counterpart_id: 'sonnet-reviewer',
+      evidence: 'gemini flagged real race condition, sonnet dismissed it.',
+    }]);
+    expect(err).toBeNull();
+  });
+
+  it('rejects the first failing signal in a batch and stops', () => {
+    const err = validateSignals([
+      { signal: 'unique_confirmed', agent_id: 'a1' }, // fine
+      { signal: 'hallucination_caught', agent_id: 'a2', evidence: '' }, // fails
+      { signal: 'hallucination_caught', agent_id: 'a3', evidence: '' }, // never reached
+    ]);
+    expect(err).not.toBeNull();
+    expect(err).toContain('a2');
+    expect(err).not.toContain('a3');
+  });
+});
+
+// ── 2. Counterpart-required signals need counterpart_id ───────────────────────
+
+describe('gossip_signals validation — counterpart_id required', () => {
+  const PUNITIVE_SIGNALS = new Set(['hallucination_caught', 'disagreement']);
+  const COUNTERPART_REQUIRED = new Set(['agreement', 'disagreement']);
+
+  function validateSignals(
+    signals: Array<{ signal: string; agent_id: string; evidence?: string; counterpart_id?: string }>,
+  ): string | null {
+    for (const s of signals) {
+      if (PUNITIVE_SIGNALS.has(s.signal) && (!s.evidence || s.evidence.trim().length === 0)) {
+        return `Error: ${s.signal} signals require non-empty evidence for audit trail. Agent: ${s.agent_id}`;
+      }
+      if (COUNTERPART_REQUIRED.has(s.signal) && (!s.counterpart_id || s.counterpart_id.trim().length === 0)) {
+        return `Error: ${s.signal} signals require counterpart_id. Agent: ${s.agent_id}`;
+      }
+    }
+    return null;
+  }
+
+  it('rejects agreement without counterpart_id', () => {
+    const err = validateSignals([{
+      signal: 'agreement',
+      agent_id: 'agent-a',
+      // counterpart_id omitted
+    }]);
+    expect(err).not.toBeNull();
+    expect(err).toContain('agreement');
+    expect(err).toContain('counterpart_id');
+  });
+
+  it('rejects agreement with empty string counterpart_id', () => {
+    const err = validateSignals([{
+      signal: 'agreement',
+      agent_id: 'agent-a',
+      counterpart_id: '',
+    }]);
+    expect(err).not.toBeNull();
+    expect(err).toContain('counterpart_id');
+  });
+
+  it('rejects disagreement without counterpart_id (even with evidence)', () => {
+    const err = validateSignals([{
+      signal: 'disagreement',
+      agent_id: 'agent-a',
+      evidence: 'agent-a found real bug, agent-b missed it',
+      // counterpart_id omitted
+    }]);
+    expect(err).not.toBeNull();
+    expect(err).toContain('counterpart_id');
+  });
+
+  it('accepts agreement with valid counterpart_id', () => {
+    const err = validateSignals([{
+      signal: 'agreement',
+      agent_id: 'agent-a',
+      counterpart_id: 'agent-b',
+    }]);
+    expect(err).toBeNull();
+  });
+
+  it('unique_confirmed does not require counterpart_id', () => {
+    const err = validateSignals([{
+      signal: 'unique_confirmed',
+      agent_id: 'gemini-reviewer',
+      // no counterpart_id
+    }]);
+    expect(err).toBeNull();
+  });
+
+  it('new_finding does not require counterpart_id', () => {
+    const err = validateSignals([{
+      signal: 'new_finding',
+      agent_id: 'sonnet-reviewer',
+    }]);
+    expect(err).toBeNull();
+  });
+});
+
+// ── 3. Hallucination signal triggers gap suggestion ───────────────────────────
+
+describe('hallucination → gap pipeline — concurrency evidence creates suggestion', () => {
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = makeTmpDir('gap-concurrency');
+  });
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('creates a concurrency gap suggestion for race condition evidence', () => {
+    const gapTracker = new SkillGapTracker(testDir);
+    const category = runGapPipeline(gapTracker, {
+      agentId: 'haiku-researcher',
+      evidence: 'Agent missed the race condition in the async Map mutation.',
+      taskId: 'task-race-001',
+    });
+
+    expect(category).toBe('concurrency');
+
+    const entries = readGapLog(testDir);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].type).toBe('suggestion');
+    expect(entries[0].skill).toBe('concurrency');
+    expect(entries[0].agent).toBe('haiku-researcher');
+    expect(entries[0].task_context).toBe('task-race-001');
+    expect((entries[0].reason as string)).toContain('hallucination_caught');
+  });
+
+  it('creates a resource_exhaustion gap for unbounded growth evidence', () => {
+    const gapTracker = new SkillGapTracker(testDir);
+    const category = runGapPipeline(gapTracker, {
+      agentId: 'gemini-reviewer',
+      evidence: 'Agent missed the unbounded growth in the cache — no limit or cap was suggested.',
+      taskId: 'task-mem-002',
+    });
+
+    expect(category).toBe('resource_exhaustion');
+
+    const entries = readGapLog(testDir);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].skill).toBe('resource-exhaustion');
+  });
+
+  it('truncates long evidence in the reason field to 120 chars', () => {
+    const gapTracker = new SkillGapTracker(testDir);
+    const longEvidence = 'race condition '.repeat(30); // well over 120 chars
+    runGapPipeline(gapTracker, {
+      agentId: 'haiku-researcher',
+      evidence: longEvidence,
+      taskId: 'task-trunc-003',
+    });
+
+    const entries = readGapLog(testDir);
+    expect(entries).toHaveLength(1);
+    const reason = entries[0].reason as string;
+    // reason = "Auto: hallucination_caught — <evidence[:120]>"
+    const evidencePart = reason.replace('Auto: hallucination_caught — ', '');
+    expect(evidencePart.length).toBeLessThanOrEqual(120);
+  });
+
+  it('writes a valid ISO timestamp to the suggestion', () => {
+    const gapTracker = new SkillGapTracker(testDir);
+    runGapPipeline(gapTracker, {
+      agentId: 'sonnet-reviewer',
+      evidence: 'Hallucinated about lock semantics — deadlock was not possible here.',
+      taskId: 'task-ts-004',
+    });
+
+    const entries = readGapLog(testDir);
+    expect(entries).toHaveLength(1);
+    const ts = entries[0].timestamp as string;
+    expect(isFinite(new Date(ts).getTime())).toBe(true);
+  });
+});
+
+// ── 4. No keyword match → no gap suggestion ───────────────────────────────────
+
+describe('hallucination → gap pipeline — no keyword match skips suggestion', () => {
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = makeTmpDir('gap-nomatch');
+  });
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('does not write a gap entry when evidence has no category keywords', () => {
+    const gapTracker = new SkillGapTracker(testDir);
+    const category = runGapPipeline(gapTracker, {
+      agentId: 'sonnet-reviewer',
+      evidence: 'The finding was completely fabricated with no recognizable pattern.',
+      taskId: 'task-none-001',
+    });
+
+    // 'pattern' and 'fabricated' are not in DEFAULT_KEYWORDS
+    expect(category).toBe('');
+    const entries = readGapLog(testDir);
+    expect(entries).toHaveLength(0);
+  });
+
+  it('does not write a gap entry when evidence is an empty string', () => {
+    const gapTracker = new SkillGapTracker(testDir);
+    const category = runGapPipeline(gapTracker, {
+      agentId: 'haiku-researcher',
+      evidence: '',
+      taskId: 'task-empty-002',
+    });
+
+    expect(category).toBe('');
+    expect(readGapLog(testDir)).toHaveLength(0);
+  });
+
+  it('picks the category with the most keyword hits when multiple match', () => {
+    const gapTracker = new SkillGapTracker(testDir);
+    // concurrency: 'race condition', 'concurrent'  (2 hits)
+    // resource_exhaustion: 'timeout' (1 hit)
+    const category = runGapPipeline(gapTracker, {
+      agentId: 'agent-x',
+      evidence: 'There is a race condition in the concurrent map mutation, and a timeout was not set.',
+      taskId: 'task-best-003',
+    });
+
+    expect(category).toBe('concurrency');
+  });
+});
+
+// ── 5. Signal formatting ──────────────────────────────────────────────────────
+
+describe('gossip_signals formatting — taskId synthesis, evidence truncation, timestamp', () => {
+  const MAX_EVIDENCE_LENGTH = 2000;
+
+  function formatSignals(
+    signals: Array<{
+      signal: string;
+      agent_id: string;
+      finding?: string;
+      evidence?: string;
+      counterpart_id?: string;
+      finding_id?: string;
+      severity?: string;
+    }>,
+    task_id?: string,
+  ) {
+    const timestamp = new Date().toISOString();
+    return signals.map((s, i) => ({
+      type: 'consensus' as const,
+      taskId: task_id || `manual-${timestamp.replace(/[:.]/g, '')}-${i}`,
+      signal: s.signal,
+      agentId: s.agent_id,
+      counterpartId: s.counterpart_id,
+      findingId: s.finding_id,
+      severity: s.severity,
+      evidence: ((s.evidence || s.finding) ?? '').slice(0, MAX_EVIDENCE_LENGTH),
+      timestamp,
+    }));
+  }
+
+  it('uses provided task_id in formatted signal', () => {
+    const formatted = formatSignals([{
+      signal: 'agreement',
+      agent_id: 'agent-a',
+      counterpart_id: 'agent-b',
+      evidence: 'Both agree on the race condition.',
+    }], 'explicit-task-id');
+
+    expect(formatted[0].taskId).toBe('explicit-task-id');
+  });
+
+  it('synthesises a taskId when none is provided', () => {
+    const formatted = formatSignals([{
+      signal: 'unique_confirmed',
+      agent_id: 'agent-a',
+      evidence: 'Confirmed unbounded growth.',
+    }]);
+
+    expect(formatted[0].taskId).toMatch(/^manual-/);
+    // Colons and dots should be stripped from the timestamp portion
+    expect(formatted[0].taskId).not.toMatch(/[:.]/);
+  });
+
+  it('each signal in a batch gets a unique index suffix in synthetic taskId', () => {
+    const formatted = formatSignals([
+      { signal: 'unique_confirmed', agent_id: 'a1', evidence: 'e1' },
+      { signal: 'unique_confirmed', agent_id: 'a2', evidence: 'e2' },
+    ]);
+
+    expect(formatted[0].taskId).toMatch(/-0$/);
+    expect(formatted[1].taskId).toMatch(/-1$/);
+  });
+
+  it('truncates evidence to 2000 chars', () => {
+    const longEvidence = 'x'.repeat(5000);
+    const formatted = formatSignals([{
+      signal: 'unique_confirmed',
+      agent_id: 'agent-a',
+      evidence: longEvidence,
+    }]);
+
+    expect(formatted[0].evidence.length).toBe(MAX_EVIDENCE_LENGTH);
+  });
+
+  it('falls back to finding when evidence is absent', () => {
+    const formatted = formatSignals([{
+      signal: 'unique_confirmed',
+      agent_id: 'agent-a',
+      finding: 'Race condition in dispatch loop',
+      // no evidence field
+    }]);
+
+    expect(formatted[0].evidence).toBe('Race condition in dispatch loop');
+  });
+
+  it('produces an empty string when both evidence and finding are absent', () => {
+    const formatted = formatSignals([{
+      signal: 'unique_confirmed',
+      agent_id: 'agent-a',
+    }]);
+
+    expect(formatted[0].evidence).toBe('');
+  });
+
+  it('all signals in a batch share the same timestamp', () => {
+    const formatted = formatSignals([
+      { signal: 'agreement', agent_id: 'a1', counterpart_id: 'a2' },
+      { signal: 'agreement', agent_id: 'a2', counterpart_id: 'a1' },
+    ], 'shared-task');
+
+    expect(formatted[0].timestamp).toBe(formatted[1].timestamp);
+  });
+
+  it('PerformanceWriter accepts the formatted signal objects', () => {
+    const testDir = makeTmpDir('format-write');
+    try {
+      const writer = new PerformanceWriter(testDir);
+      const formatted = formatSignals([{
+        signal: 'unique_confirmed',
+        agent_id: 'gemini-reviewer',
+        evidence: 'Confirmed unbounded file growth.',
+      }], 'write-task-001');
+
+      // Cast to PerformanceSignal[] — the formatSignals helper widens signal to string
+      // for test flexibility; PerformanceWriter validates the actual value at runtime.
+      expect(() => writer.appendSignals(formatted as any)).not.toThrow();
+
+      const path = join(testDir, '.gossip', 'agent-performance.jsonl');
+      const line = JSON.parse(readFileSync(path, 'utf-8').trim());
+      expect(line.agentId).toBe('gemini-reviewer');
+      expect(line.signal).toBe('unique_confirmed');
+      expect(line.taskId).toBe('write-task-001');
+    } finally {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── 6. Retraction validation ──────────────────────────────────────────────────
+
+describe('gossip_signals retraction validation', () => {
+  function validateRetract(params: { agent_id?: string; task_id?: string; reason?: string }): string | null {
+    if (!params.agent_id || params.agent_id.trim().length === 0) {
+      return 'Error: agent_id is required for retraction.';
+    }
+    if (!params.task_id || params.task_id.trim().length === 0) {
+      return 'Error: task_id is required for retraction. Use the task ID from the original signal.';
+    }
+    if (!params.reason || params.reason.trim().length === 0) {
+      return 'Error: reason is required for retraction.';
+    }
+    return null;
+  }
+
+  it('rejects retraction without agent_id', () => {
+    const err = validateRetract({ task_id: 'task-1', reason: 'Wrong finding' });
+    expect(err).not.toBeNull();
+    expect(err).toContain('agent_id');
+    expect(err).toContain('required');
+  });
+
+  it('rejects retraction with empty agent_id', () => {
+    const err = validateRetract({ agent_id: '', task_id: 'task-1', reason: 'Wrong finding' });
+    expect(err).not.toBeNull();
+    expect(err).toContain('agent_id');
+  });
+
+  it('rejects retraction without task_id', () => {
+    const err = validateRetract({ agent_id: 'agent-a', reason: 'Wrong finding' });
+    expect(err).not.toBeNull();
+    expect(err).toContain('task_id');
+    expect(err).toContain('required');
+  });
+
+  it('rejects retraction with empty task_id', () => {
+    const err = validateRetract({ agent_id: 'agent-a', task_id: '   ', reason: 'Wrong finding' });
+    expect(err).not.toBeNull();
+    expect(err).toContain('task_id');
+  });
+
+  it('rejects retraction without reason', () => {
+    const err = validateRetract({ agent_id: 'agent-a', task_id: 'task-1' });
+    expect(err).not.toBeNull();
+    expect(err).toContain('reason');
+    expect(err).toContain('required');
+  });
+
+  it('rejects retraction with whitespace-only reason', () => {
+    const err = validateRetract({ agent_id: 'agent-a', task_id: 'task-1', reason: '  ' });
+    expect(err).not.toBeNull();
+    expect(err).toContain('reason');
+  });
+
+  it('accepts retraction with all required fields present', () => {
+    const err = validateRetract({
+      agent_id: 'haiku-researcher',
+      task_id: 'task-abc',
+      reason: 'The finding was verified as incorrect — code does not persist to disk.',
+    });
+    expect(err).toBeNull();
+  });
+
+  it('retraction signal is written to PerformanceWriter as signal_retracted', () => {
+    const testDir = makeTmpDir('retract-write');
+    try {
+      const writer = new PerformanceWriter(testDir);
+      const task_id = 'task-retract-001';
+      const agent_id = 'haiku-researcher';
+      const reason = 'Verified the finding was fabricated.';
+
+      writer.appendSignals([{
+        type: 'consensus' as const,
+        taskId: task_id,
+        signal: 'signal_retracted',
+        agentId: agent_id,
+        evidence: `Retracted: ${reason}`,
+        timestamp: new Date().toISOString(),
+      }]);
+
+      const path = join(testDir, '.gossip', 'agent-performance.jsonl');
+      const line = JSON.parse(readFileSync(path, 'utf-8').trim());
+      expect(line.signal).toBe('signal_retracted');
+      expect(line.agentId).toBe('haiku-researcher');
+      expect(line.evidence).toContain('Retracted:');
+      expect(line.evidence).toContain(reason);
+    } finally {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+});
