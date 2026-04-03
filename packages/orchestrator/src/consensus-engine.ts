@@ -183,11 +183,14 @@ export class ConsensusEngine {
       const pattern = new RegExp(agentFindingPattern.source, agentFindingPattern.flags);
       let findingIdx = 0;
       while ((afMatch = pattern.exec(peerSummary)) !== null) {
+        const attrs = afMatch[1];
         const content = afMatch[2].trim();
-        if (content && content.length >= 15) {
-          findingIdx++;
-          findings.push({ id: `${peerId}:f${findingIdx}`, attrs: afMatch[1], content });
-        }
+        // MUST match synthesize() filtering exactly: length 15-2000, type attribute required.
+        // If these filters diverge, findingIdx goes out of sync → wrong finding confirmed/disputed.
+        if (!content || content.length < 15 || content.length > 2000) continue;
+        if (!attrs.match(/type="(finding|suggestion|insight)"/)) continue;
+        findingIdx++;
+        findings.push({ id: `${peerId}:f${findingIdx}`, attrs, content });
       }
 
       let peerBlock: string;
@@ -427,6 +430,11 @@ Return only valid JSON.`;
     // (a.2) Semantic dedup: merge findings across agents that describe the same issue
     this.deduplicateFindings(findingMap);
 
+    // Prune findingIdToKey: dedup may have deleted keys from findingMap
+    for (const [fid, key] of findingIdToKey) {
+      if (!findingMap.has(key)) findingIdToKey.delete(fid);
+    }
+
     // Build taskId lookup from results
     const agentTaskIds = new Map<string, string>();
     for (const r of successful) agentTaskIds.set(r.agentId, r.id);
@@ -479,8 +487,8 @@ Return only valid JSON.`;
 
       if (entry.action === 'agree') {
         const matchKey = resolveEntry(entry);
-        if (matchKey) {
-          const f = findingMap.get(matchKey)!;
+        const f = matchKey ? findingMap.get(matchKey) : undefined;
+        if (matchKey && f) {
           f.confirmedBy.push(entry.agentId);
           f.confidences.push(entry.confidence);
           signals.push({
@@ -500,8 +508,8 @@ Return only valid JSON.`;
 
       if (entry.action === 'disagree') {
         const matchKey = resolveEntry(entry);
-        if (matchKey) {
-          const f = findingMap.get(matchKey)!;
+        const f = matchKey ? findingMap.get(matchKey) : undefined;
+        if (matchKey && f) {
           f.confidences.push(entry.confidence);
 
           const isKeywordHallucination = this.detectHallucination(entry.evidence);
@@ -550,8 +558,8 @@ Return only valid JSON.`;
 
       if (entry.action === 'unverified') {
         const matchKey = resolveEntry(entry);
-        if (matchKey) {
-          const f = findingMap.get(matchKey)!;
+        const f = matchKey ? findingMap.get(matchKey) : undefined;
+        if (matchKey && f) {
           f.unverifiedBy.push({
             agentId: entry.agentId,
             reason: entry.evidence,
