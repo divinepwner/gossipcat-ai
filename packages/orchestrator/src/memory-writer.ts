@@ -397,12 +397,29 @@ Only mark a file STALE if the git log clearly shows the described work has shipp
     const nextSessionContent = `# Next Session Plan\n\n${summaryBody}\n`;
     writeFileSync(nextSessionPath, nextSessionContent);
 
+    // One-time migration: normalize old importance=1.0 entries
+    const migrationTasksPath = join(memDir, 'tasks.jsonl');
+    if (existsSync(migrationTasksPath)) {
+      try {
+        const mLines = readFileSync(migrationTasksPath, 'utf-8').trim().split('\n').filter(Boolean);
+        let migrated = false;
+        const fixed = mLines.map(line => {
+          try {
+            const e = JSON.parse(line);
+            if (e.importance > 0.5) { e.importance = 0.4; migrated = true; }
+            return JSON.stringify(e);
+          } catch { return line; }
+        });
+        if (migrated) writeFileSync(migrationTasksPath, fixed.join('\n') + '\n');
+      } catch { /* best-effort */ }
+    }
+
     // Write task entry for session tracking
     await this.writeTaskEntry('_project', {
       taskId: `session-${timestamp}`,
       task: `Session ${today}: ${summaryOneLiner}`,
       skills: [],
-      scores: { relevance: 5, accuracy: 5, uniqueness: 5 },
+      scores: { relevance: 2, accuracy: 2, uniqueness: 2 },
     });
 
     this.rebuildIndex('_project');

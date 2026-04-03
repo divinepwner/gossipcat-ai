@@ -335,4 +335,47 @@ describe('MemoryWriter', () => {
     const entry = JSON.parse(readFileSync(tasksPath, 'utf-8').trim());
     expect(entry.importance).toBe(0.85); // (5+5+5)/15 = 1.0, capped at 0.85
   });
+
+  it('writes session summary entries with low importance', async () => {
+    const writer = new MemoryWriter(testDir);
+    const projectMemDir = join(testDir, '.gossip', 'agents', '_project', 'memory');
+
+    await writer.writeSessionSummary({
+      gossip: 'test gossip',
+      consensus: 'test consensus',
+      performance: 'test performance',
+      gitLog: 'test git log',
+    });
+
+    const tasksPath = join(projectMemDir, 'tasks.jsonl');
+    expect(existsSync(tasksPath)).toBe(true);
+    const content = readFileSync(tasksPath, 'utf-8').trim();
+    const entry = JSON.parse(content.split('\n').pop()!);
+    expect(entry.importance).toBeCloseTo(0.4, 2);
+  });
+
+  it('migrates old high-importance _project entries on session save', async () => {
+    const writer = new MemoryWriter(testDir);
+    const projectMemDir = join(testDir, '.gossip', 'agents', '_project', 'memory');
+    const { mkdirSync, writeFileSync: wfs } = require('fs');
+    mkdirSync(projectMemDir, { recursive: true });
+    const tasksPath = join(projectMemDir, 'tasks.jsonl');
+
+    // Write old entries with importance=1.0 (legacy)
+    const oldEntries = [
+      JSON.stringify({ taskId: 'old-1', task: 'Session old', importance: 1.0, warmth: 1.0, timestamp: new Date().toISOString(), version: 1, skills: [], scores: { relevance: 5, accuracy: 5, uniqueness: 5 }, findings: 0, hallucinated: 0 }),
+      JSON.stringify({ taskId: 'old-2', task: 'Session old 2', importance: 0.9, warmth: 1.0, timestamp: new Date().toISOString(), version: 1, skills: [], scores: { relevance: 5, accuracy: 5, uniqueness: 5 }, findings: 0, hallucinated: 0 }),
+    ].join('\n') + '\n';
+    wfs(tasksPath, oldEntries);
+
+    await writer.writeSessionSummary({
+      gossip: 'test', consensus: 'test', performance: 'test', gitLog: 'test',
+    });
+
+    const lines = readFileSync(tasksPath, 'utf-8').trim().split('\n');
+    for (const line of lines) {
+      const entry = JSON.parse(line);
+      expect(entry.importance).toBeLessThanOrEqual(0.5);
+    }
+  });
 });
