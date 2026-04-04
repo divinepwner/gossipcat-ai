@@ -459,6 +459,59 @@ describe('handleNativeRelay', () => {
   });
 });
 
+// ── handleNativeRelay — utility tasks ────────────────────────────────────────
+
+describe('handleNativeRelay — utility task relay', () => {
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = makeTmpDir('utility-relay');
+    resetCtx({}, testDir);
+  });
+
+  afterEach(() => {
+    restoreCtx();
+    rmSync(testDir, { recursive: true, force: true });
+    ctx.nativeTaskMap.clear();
+    ctx.nativeResultMap.clear();
+  });
+
+  it('stores result with completed status for a utility task', async () => {
+    const now = Date.now();
+    ctx.nativeTaskMap.set('util-task-1', {
+      agentId: '_utility',
+      task: 'lens summary',
+      startedAt: now - 500,
+      timeoutMs: 30000,
+      utilityType: 'lens',
+    });
+
+    await handleNativeRelay('util-task-1', 'lens result data');
+
+    const stored = ctx.nativeResultMap.get('util-task-1');
+    expect(stored).toBeDefined();
+    expect(stored!.status).toBe('completed');
+    expect(stored!.result).toBe('lens result data');
+  });
+
+  it('does not create a memory directory for utility agent', async () => {
+    const now = Date.now();
+    ctx.nativeTaskMap.set('util-task-2', {
+      agentId: '_utility',
+      task: 'lens summary',
+      startedAt: now - 500,
+      timeoutMs: 30000,
+      utilityType: 'lens',
+    });
+
+    await handleNativeRelay('util-task-2', 'some lens output');
+
+    const { existsSync } = await import('fs');
+    const memDir = join(testDir, '.gossip', 'memory', '_utility');
+    expect(existsSync(memDir)).toBe(false);
+  });
+});
+
 // ── evictStaleNativeTasks ─────────────────────────────────────────────────────
 
 describe('evictStaleNativeTasks', () => {

@@ -106,8 +106,12 @@ export function persistNativeTaskMap(): void {
         status: info.status, startedAt: info.startedAt, completedAt: info.completedAt, error: info.error,
       };
     }
+    // Filter utility tasks — they're ephemeral, don't persist
+    const persistableTasks = new Map(
+      [...ctx.nativeTaskMap].filter(([, info]) => !info.utilityType)
+    );
     const data = {
-      tasks: Object.fromEntries([...ctx.nativeTaskMap]),
+      tasks: Object.fromEntries(persistableTasks),
       results: slimResults,
     };
     wf(j(dir, 'native-tasks.json'), JSON.stringify(data));
@@ -229,7 +233,7 @@ export async function handleNativeRelay(task_id: string, result: string, error?:
     try { ctx.mainAgent.recordPlanStepResult(taskInfo.planId, taskInfo.step, result); } catch { /* best-effort */ }
   }
 
-  if (!error) {
+  if (!error && !taskInfo.utilityType) {
     // 1. Write task entry to memory
     try {
       const { MemoryWriter, MemoryCompactor } = await import('@gossip/orchestrator');
@@ -262,8 +266,12 @@ export async function handleNativeRelay(task_id: string, result: string, error?:
   }
 
   // 4. Publish gossip so other running agents can see this result
-  if (!error) {
+  if (!error && !taskInfo.utilityType) {
     await ctx.mainAgent.publishNativeGossip(agentId, result.slice(0, 50000)).catch(() => {}); // intentional 50k cap — memory protection
+  }
+
+  if (!error && taskInfo.utilityType) {
+    process.stderr.write(`[gossipcat] utility ← ${ctx.nativeUtilityConfig?.model || 'native'} [${task_id}]: completed (${elapsed}ms, ${result?.length ?? 0} chars)\n`);
   }
 
   // Result already stored in nativeResultMap at top of handler (crash-safe)
