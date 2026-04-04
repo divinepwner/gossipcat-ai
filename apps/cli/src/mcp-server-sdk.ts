@@ -457,7 +457,12 @@ async function doBoot() {
     let utilityLlm = m.createProvider(mainProvider as any, mainModel, mainKey ?? undefined);
     let utilityModelId = `${mainProvider}/${mainModel}`;
 
-    if (config.utility_model) {
+    if (config.utility_model?.provider === 'native') {
+      // Native utility: calls go through Agent() dispatch + gossip_relay, not direct LLM
+      ctx.nativeUtilityConfig = { model: config.utility_model.model };
+      utilityModelId = `native/${config.utility_model.model}`;
+      // Don't override utilityLlm — native path branches at call sites, not at provider level
+    } else if (config.utility_model) {
       const utilityKey = await ctx.keychain.getKey(config.utility_model.provider);
       if (utilityKey) {
         // If a utility model is configured AND its key exists, override the default
