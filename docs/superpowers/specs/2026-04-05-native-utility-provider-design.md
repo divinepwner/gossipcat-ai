@@ -82,9 +82,9 @@ When a tool needs a utility LLM call and `ctx.nativeUtilityConfig` is set:
 
 ### Relay Handling
 
-`handleNativeRelay` in `native-tasks.ts` checks `utilityType`:
+`handleNativeRelay` in `native-tasks.ts` checks `taskInfo.utilityType` (per-task, not the global `ctx.nativeUtilityConfig` — the global flag applies to all tasks, including real agent tasks that DO need memory writes):
 
-- **If set:** Skip memory pipeline, gossip publishing, TaskGraph recording. Just store result in `nativeResultMap`. These are internal plumbing, not agent work product.
+- **If `taskInfo.utilityType` is set:** Skip memory pipeline, gossip publishing, TaskGraph recording. Just store result in `nativeResultMap`. These are internal plumbing, not agent work product.
 - **If not set:** Current behavior unchanged.
 
 ### Timeout
@@ -93,7 +93,7 @@ Utility tasks get a 60s TTL (vs 2hr for agent tasks). On timeout, calling tool f
 
 ### No Persistence
 
-Utility tasks don't survive MCP reconnects. They're ephemeral. Skip writing them to `native-tasks.json`.
+Utility tasks don't survive MCP reconnects. They're ephemeral. Utility tasks are stored in `nativeTaskMap` (so `handleNativeRelay` can find them), but `persistNativeTaskMap()` filters them out during serialization — entries with `utilityType` set are excluded from the JSON written to `native-tasks.json`.
 
 ## Call Site Changes
 
@@ -105,22 +105,24 @@ Tool returns early, orchestrator dispatches Agent(), relays result, re-calls the
 
 ### Pattern B: Fire-and-forget (deferred)
 
-Utility task is queued alongside the main relay response. Orchestrator dispatches it, relays result. No re-call — the parent operation already completed.
+Utility task is created in `nativeTaskMap` and appended to the `gossip_relay` response text as an EXECUTE NOW block. The current `handleNativeRelay` return (`native-tasks.ts:272`) is a simple text response — this is extended to include utility task dispatch instructions after the relay confirmation. Orchestrator dispatches utility Agent() calls and relays results. No re-call of the original tool — the parent relay operation already completed.
 
 ### Call Sites
 
 | # | Call site | File | Pattern | Re-entry tool |
 |---|-----------|------|---------|---------------|
-| 1 | Lens generation | dispatch-pipeline.ts | A (blocking) | gossip_dispatch |
-| 2 | Cognitive summary | memory-writer.ts via native-tasks.ts | B (fire-and-forget) | N/A |
-| 3 | Gossip publishing | gossip-publisher.ts via native-tasks.ts | B (fire-and-forget) | N/A |
-| 4 | Session summary | mcp-server-sdk.ts | A (blocking) | gossip_session_save |
+| 1 | Lens generation | dispatch-pipeline.ts:711 (private, inside `dispatchParallel`) | A (blocking) | gossip_dispatch |
+| 2 | Cognitive summary | memory-writer.ts:97 via native-tasks.ts:249 | B (fire-and-forget) | N/A |
+| 3 | Gossip publishing | native-tasks.ts:266 → main-agent.ts:270 → session-context.ts | B (fire-and-forget) | N/A |
+| 4 | Session summary | mcp-server-sdk.ts:1976-1978 (wired via `mainAgent.getLLM()`, not `utilityLlm`) | A (blocking) | gossip_session_save |
 
 ### 1. Lens Generation (blocking)
 
-**Current:** `LensGenerator.generateLenses()` called inline during `gossip_dispatch`.
+**Current:** `LensGenerator.generateLenses()` called inline at `dispatch-pipeline.ts:711` inside `DispatchPipeline.dispatchParallel()`. The `lensGenerator` is a private field, tightly coupled with overlap detection (`dispatch-pipeline.ts:692-721`).
 
-**Native path:** Dispatch handler detects `ctx.nativeUtilityConfig`, creates utility task, returns EXECUTE NOW with lens prompt. Orchestrator dispatches Agent(), relays result, re-calls `gossip_dispatch` with same arguments + `_utility_task_id`. On re-entry, handler finds lens result in `nativeResultMap` and continues with dispatch.
+**Native path:** Requires a new public method on `DispatchPipeline` that factors out overlap detection + lens generation into a separate callable step. The dispatch handler (`handleDispatchConsensus` in `dispatch.ts`) calls this method first. If native utility is configured, it creates a utility task and returns EXECUTE NOW. Orchestrator dispatches Agent(), relays result, re-calls `gossip_dispatch` with same arguments + `_utility_task_id`. On re-entry, handler passes the lens result into `dispatchParallel()`.
+
+**Schema change required:** Add `_utility_task_id: z.string().optional()` to the `gossip_dispatch` tool schema at `mcp-server-sdk.ts:780-795`. Thread through `handleDispatchConsensus`.
 
 **Fallback:** Agents dispatch without lenses (overlapping focus). Already handled — this is what happens when lens generation fails today.
 
@@ -134,17 +136,17 @@ Utility task is queued alongside the main relay response. Orchestrator dispatche
 
 ### 3. Gossip Publishing (fire-and-forget)
 
-**Current:** After relay, `publishGossip()` summarizes result for siblings.
+**Current:** After relay, `publishNativeGossip()` at `native-tasks.ts:266` calls `main-agent.ts:270` → `session-context.ts` to summarize result for siblings. Note: this is the **native agent gossip path**, not `GossipPublisher` (which handles relay-agent gossip only).
 
-**Native path:** Same as #2. Queue as deferred utility task in relay response.
+**Native path:** Same as #2. Queue as deferred utility task in relay response. The gating happens at `native-tasks.ts:266` (the `publishNativeGossip` call), not in `gossip-publisher.ts`.
 
 **Fallback:** Other agents don't get gossip about this result. Minor quality degradation.
 
 ### 4. Session Summary (blocking)
 
-**Current:** `MemoryWriter.writeSessionSummary()` called inline during `gossip_session_save`.
+**Current:** `MemoryWriter.writeSessionSummary()` called inline during `gossip_session_save`. Note: `mcp-server-sdk.ts:1976` wires `ctx.mainAgent.getLLM()` as the summary LLM, **not** `utilityLlm`. When native utility is configured, this wiring must also be updated to detect the native path and skip the inline LLM call.
 
-**Native path:** `gossip_session_save` returns EXECUTE NOW with session summary prompt. Orchestrator dispatches Agent(), relays result, re-calls `gossip_session_save` with `_utility_task_id`. On re-entry, picks up summary from `nativeResultMap` and writes session file.
+**Native path:** `gossip_session_save` returns EXECUTE NOW with a **single** session summary prompt (there is only 1 LLM call here — `memory-writer.ts:297` — not 2). Orchestrator dispatches Agent(), relays result, re-calls `gossip_session_save` with `_utility_task_id`. On re-entry, picks up summary from `nativeResultMap` and writes session file.
 
 **Fallback:** Raw data written ("LLM summary failed — raw data below").
 
@@ -183,9 +185,9 @@ Tools that support blocking utility calls accept an optional `_utility_task_id` 
 
 This is explicit — no hidden state, no guessing.
 
-## Multiple Utility Calls in One Tool
+## Single Utility Call Per Blocking Tool
 
-`gossip_session_save` makes two LLM calls (cognitive + session summary). Batch them into a single EXECUTE NOW with two Agent() dispatches. Re-call happens after both are relayed. Tool checks for both task IDs on re-entry.
+`gossip_session_save` makes **one** LLM call (session summary at `memory-writer.ts:297`). The cognitive summary call (`writeKnowledgeFromResult` at `memory-writer.ts:97`) happens per-relay, not per-session-save — it's handled by the fire-and-forget pattern in call site #2. Each blocking tool returns a single EXECUTE NOW with one Agent() dispatch.
 
 ## Edge Cases
 
@@ -235,9 +237,9 @@ One paragraph added to the utility section:
 
 | File | Change |
 |------|--------|
-| `apps/cli/src/config.ts` | Add `"native"` to `VALID_PROVIDERS`, validate model against `CLAUDE_MODEL_MAP` |
+| `apps/cli/src/config.ts` | Add `"native"` to `VALID_PROVIDERS`, validate `utility_model.model` against `CLAUDE_MODEL_MAP` when provider is native |
 | `apps/cli/src/mcp-context.ts` | Add `utilityType` to `NativeTaskInfo`, add `nativeUtilityConfig` to `McpContext` |
-| `apps/cli/src/mcp-server-sdk.ts` | Boot: set `ctx.nativeUtilityConfig`. `gossip_dispatch`: lens utility branch + re-entry. `gossip_session_save`: session summary utility branch + re-entry |
-| `apps/cli/src/handlers/native-tasks.ts` | Skip memory pipeline for `utilityType` tasks, shorter TTL, log lines |
-| `apps/cli/src/handlers/dispatch.ts` | Pass `_utility_task_id` through, check for lens result on re-entry |
-| `packages/orchestrator/src/dispatch-pipeline.ts` | Expose lens generation call point for native branch |
+| `apps/cli/src/mcp-server-sdk.ts` | Boot: set `ctx.nativeUtilityConfig`. `gossip_dispatch` schema: add `_utility_task_id` param. `gossip_session_save`: session summary utility branch + re-entry (wire native path instead of `mainAgent.getLLM()`) |
+| `apps/cli/src/handlers/native-tasks.ts` | `handleNativeRelay`: gate on `taskInfo.utilityType` to skip memory pipeline + gossip for utility tasks. Extend relay response text to include fire-and-forget EXECUTE NOW blocks. Filter utility tasks from `persistNativeTaskMap`. Shorter TTL (60s). Log lines. |
+| `apps/cli/src/handlers/dispatch.ts` | Accept `_utility_task_id`, check for lens result in `nativeResultMap` on re-entry, pass pre-computed lenses to `dispatchParallel` |
+| `packages/orchestrator/src/dispatch-pipeline.ts` | Extract lens generation (overlap detection + LensGenerator call) into a new public method. Accept optional pre-computed lenses in `dispatchParallel`. Currently private at lines 692-721. |
