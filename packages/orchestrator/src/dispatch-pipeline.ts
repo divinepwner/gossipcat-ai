@@ -82,7 +82,7 @@ export class DispatchPipeline {
   private batches: Map<string, Set<string>> = new Map();
   private sequentialQueues: Map<string, Promise<unknown>> = new Map(); // agentId → tail promise
 
-  private readonly scopeTracker: ScopeTracker;
+  readonly scopeTracker: ScopeTracker;
   private readonly worktreeManager: WorktreeManager;
   private overlapDetector: OverlapDetector | null = null;
   private lensGenerator: LensGenerator | null = null;

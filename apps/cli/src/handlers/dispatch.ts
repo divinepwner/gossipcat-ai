@@ -109,7 +109,7 @@ export async function handleDispatchParallel(
   }
 
   // [C2 fix] Split native vs custom tasks — native agents have no relay worker
-  const nativeTasks: Array<{ agent_id: string; task: string; write_mode?: string }> = [];
+  const nativeTasks: Array<{ agent_id: string; task: string; write_mode?: string; scope?: string }> = [];
   const relayTasks: Array<{ agent_id: string; task: string; write_mode?: string; scope?: string }> = [];
   for (const def of taskDefs) {
     if (ctx.nativeAgentConfigs.has(def.agent_id)) {
@@ -136,6 +136,25 @@ export async function handleDispatchParallel(
       lines.push(`  ${tid} → ${t?.agentId || 'unknown'} (relay)`);
     }
     if (errors.length) lines.push(`Relay errors: ${errors.join(', ')}`);
+  }
+
+  // Validate scoped native tasks against active scopes (relay tasks already checked via dispatchParallel)
+  // and against each other in this batch — prevents native tasks from bypassing ScopeTracker.
+  const scopedNative = nativeTasks.filter(d => d.write_mode === 'scoped' && d.scope);
+  for (const def of scopedNative) {
+    const overlap = ctx.mainAgent.scopeTracker.hasOverlap(def.scope!);
+    if (overlap.overlaps) {
+      return { content: [{ type: 'text' as const, text: `Error: Scope "${def.scope}" for native agent ${def.agent_id} conflicts with running task ${overlap.conflictTaskId} at "${overlap.conflictScope}"` }] };
+    }
+  }
+  for (let i = 0; i < scopedNative.length; i++) {
+    for (let j = i + 1; j < scopedNative.length; j++) {
+      const a = scopedNative[i].scope!.endsWith('/') ? scopedNative[i].scope! : scopedNative[i].scope + '/';
+      const b = scopedNative[j].scope!.endsWith('/') ? scopedNative[j].scope! : scopedNative[j].scope + '/';
+      if (a.startsWith(b) || b.startsWith(a)) {
+        return { content: [{ type: 'text' as const, text: `Error: Native scoped tasks have overlapping paths: "${scopedNative[i].scope}" (${scopedNative[i].agent_id}) and "${scopedNative[j].scope}" (${scopedNative[j].agent_id})` }] };
+      }
+    }
   }
 
   // Create native dispatch instructions for Claude Code Agent tool
