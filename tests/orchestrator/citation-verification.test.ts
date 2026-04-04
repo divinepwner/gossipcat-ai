@@ -198,5 +198,4 @@ describe('ConsensusEngine.synthesize — citation verification integration', () 
   });
 });
 
-// verifyNegativeClaim tests removed — replaced by ConsensusJudge (consensus-judge.test.ts)
 // verifyCitations on confirmed findings is tested via the synthesize integration test above

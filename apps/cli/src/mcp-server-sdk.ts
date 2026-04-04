@@ -477,29 +477,6 @@ async function doBoot() {
     process.stderr.write(`[gossipcat] Adaptive team intelligence failed: ${(err as Error).message}\n`);
   }
 
-  // Wire Consensus Judge (uses dedicated LLM, optionally from consensus_judge config)
-  try {
-    const { ConsensusJudge } = await import('@gossip/orchestrator');
-    let judgeProvider = mainProvider;
-    let judgeModel = mainModel;
-    let judgeKey = mainKey;
-    if (config.consensus_judge) {
-      const cj = config.consensus_judge;
-      const cjKey = await ctx.keychain.getKey(cj.provider);
-      if (cjKey) {
-        judgeProvider = cj.provider;
-        judgeModel = cj.model;
-        judgeKey = cjKey;
-      }
-    }
-    const judgeLlm = m.createProvider(judgeProvider as any, judgeModel, judgeKey ?? undefined);
-    const judge = new ConsensusJudge(judgeLlm, process.cwd());
-    ctx.mainAgent.setConsensusJudge(judge);
-    process.stderr.write(`[gossipcat] Consensus Judge ready (${judgeProvider}/${judgeModel})\n`);
-  } catch (err) {
-    process.stderr.write(`[gossipcat] Consensus Judge failed to initialize: ${(err as Error).message}\n`);
-  }
-
   // Create skill generator for gossip_skills develop action
   try {
     const { PerformanceReader: PR, SkillGenerator: SG } = await import('@gossip/orchestrator');
