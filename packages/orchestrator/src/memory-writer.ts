@@ -196,24 +196,18 @@ Rules:
     return (response.text || '').slice(0, 1500);
   }
 
-  /**
-   * Write a session summary to the _project virtual agent's memory.
-   * Dedicated method with higher output cap (4000 chars) and session-specific prompt.
-   * Falls back to raw data save if LLM fails.
-   */
-  async writeSessionSummary(data: {
+  /** Session summary data shared across public methods */
+  private sessionSummaryData(data: {
     gossip: string;
     consensus: string;
     performance: string;
     gitLog: string;
     notes?: string;
-  }): Promise<string> {
-    const SESSION_SUMMARY_MAX_CHARS = 4000;
+  }) {
     const memDir = this.ensureDirs('_project');
     const knowledgeDir = join(memDir, 'knowledge');
     const now = new Date();
     const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const filename = `${timestamp}-session.md`;
     const today = now.toISOString().split('T')[0];
 
     // Assemble raw data for LLM input
@@ -245,17 +239,23 @@ Rules:
       }
     } catch { /* no existing files */ }
 
-    let summaryBody: string;
-    let rawLlmResponse = ''; // Full LLM output before truncation (for STALE: parsing)
-    let pinned = false;
-    let summaryOneLiner = 'Session summary'; // Will be replaced by LLM extraction
+    return { memDir, knowledgeDir, timestamp, today, rawInput, projectContext, existingMemoriesContext, existingFiles };
+  }
 
-    if (this.summaryLlm) {
-      try {
-        const messages: LLMMessage[] = [
-          {
-            role: 'system',
-            content: `You are writing a project memory entry that will be loaded into the orchestrator's context at the start of the next session. This helps the orchestrator make better decisions about agent dispatch, task planning, and avoiding past mistakes.
+  /**
+   * Build the system + user prompts for session summary LLM call.
+   * Used by the native utility path to dispatch via Agent() instead of calling LLM directly.
+   */
+  getSessionSummaryPrompt(data: {
+    gossip: string;
+    consensus: string;
+    performance: string;
+    gitLog: string;
+    notes?: string;
+  }): { system: string; user: string } {
+    const { rawInput, projectContext, existingMemoriesContext } = this.sessionSummaryData(data);
+
+    const system = `You are writing a project memory entry that will be loaded into the orchestrator's context at the start of the next session. This helps the orchestrator make better decisions about agent dispatch, task planning, and avoiding past mistakes.
 
 ${projectContext}
 
@@ -286,64 +286,136 @@ EXISTING MEMORY FILES:
 ${existingMemoriesContext}
 After your summary, if any of these memory files describe work that is NOW COMPLETED based on the Git Log above, add one line per file:
 STALE: <exact filename>
-Only mark a file STALE if the git log clearly shows the described work has shipped. Do not guess. Omit the STALE section entirely if nothing is stale.` : ''}`,
-          },
-          {
-            role: 'user',
-            content: truncateStartAndEnd(rawInput, 6000),
-          },
+Only mark a file STALE if the git log clearly shows the described work has shipped. Do not guess. Omit the STALE section entirely if nothing is stale.` : ''}`;
+
+    const user = truncateStartAndEnd(rawInput, 6000);
+    return { system, user };
+  }
+
+  /**
+   * Write session summary from raw LLM output (skips the LLM call).
+   * Used by the native utility path after Agent() completes.
+   */
+  async writeSessionSummaryFromRaw(data: {
+    gossip: string;
+    consensus: string;
+    performance: string;
+    gitLog: string;
+    notes?: string;
+    raw: string;
+  }): Promise<string> {
+    const { memDir, knowledgeDir, timestamp, today, rawInput, existingFiles } = this.sessionSummaryData(data);
+    return this.processSessionResponse(data.raw, rawInput, knowledgeDir, memDir, today, timestamp, existingFiles);
+  }
+
+  /**
+   * Write a session summary to the _project virtual agent's memory.
+   * Dedicated method with higher output cap (4000 chars) and session-specific prompt.
+   * Falls back to raw data save if LLM fails.
+   */
+  async writeSessionSummary(data: {
+    gossip: string;
+    consensus: string;
+    performance: string;
+    gitLog: string;
+    notes?: string;
+  }): Promise<string> {
+    const SESSION_SUMMARY_MAX_CHARS = 4000;
+    const { memDir, knowledgeDir, timestamp, today, rawInput, existingFiles } = this.sessionSummaryData(data);
+
+    let raw = '';
+    if (this.summaryLlm) {
+      try {
+        const { system, user } = this.getSessionSummaryPrompt(data);
+        const messages: LLMMessage[] = [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
         ];
 
         const response = await this.summaryLlm.generate(messages, { temperature: 0 });
-        const raw = response.text || '';
-        rawLlmResponse = raw;
-
-        // Validate completeness before truncating
-        const hasSummaryLine = /^SUMMARY:\s*.+/m.test(raw);
-        const hasSectionHeader = /^##\s+\w/m.test(raw);
-
-        if (!hasSummaryLine || !hasSectionHeader) {
-          process.stderr.write('[gossipcat] Session summary missing required structure, using raw fallback\n');
-          summaryBody = `> ⚠️ LLM summary malformed — raw data below.\n\n${rawInput.slice(0, SESSION_SUMMARY_MAX_CHARS)}`;
-        } else if (raw.length > SESSION_SUMMARY_MAX_CHARS - 100 && !/[.!)\n]$/.test(raw.trimEnd())) {
-          // Likely truncated by model output limit — trim to last complete paragraph
-          const lastPara = raw.lastIndexOf('\n\n');
-          summaryBody = (lastPara > 1000 ? raw.slice(0, lastPara) : raw).slice(0, SESSION_SUMMARY_MAX_CHARS);
-          process.stderr.write('[gossipcat] Session summary truncated — trimmed to last complete paragraph\n');
-        } else {
-          summaryBody = raw.slice(0, SESSION_SUMMARY_MAX_CHARS);
-        }
-
-        // Check if LLM flagged as pinned
-        if (summaryBody.startsWith('PINNED:true')) {
-          pinned = true;
-          summaryBody = summaryBody.replace(/^PINNED:true\s*\n?/, '');
-        }
-
-        // Extract SUMMARY: line from LLM output (explicitly requested in prompt)
-        const summaryMatch = summaryBody.match(/^SUMMARY:\s*(.+)$/m);
-        if (summaryMatch) {
-          summaryOneLiner = sanitizeYamlValue(summaryMatch[1].trim().slice(0, 100));
-          // Strip the SUMMARY line from the body — it's metadata, not content
-          summaryBody = summaryBody.replace(/^SUMMARY:.*\n?\n?/m, '').trim();
-        } else {
-          // Fallback: extract from first bold bullet or first meaningful sentence
-          const firstBullet = summaryBody.match(/[-*]\s+\*\*([^*\n]+)\*\*/);
-          const firstSentence = summaryBody.replace(/^#+\s+.+$/gm, '').trim().split('\n').find(l => l.trim().length > 10);
-          if (firstBullet) {
-            summaryOneLiner = sanitizeYamlValue(firstBullet[1].replace(/[:(].*/,'').trim().slice(0, 80));
-          } else if (firstSentence) {
-            summaryOneLiner = sanitizeYamlValue(firstSentence.replace(/^[-*]\s+/, '').replace(/\*\*/g, '').trim().slice(0, 80));
-          }
-        }
+        raw = response.text || '';
       } catch (err) {
-        // Fallback: save raw data with warning header
         process.stderr.write(`[gossipcat] Session summary LLM failed: ${(err as Error).message}\n`);
-        summaryBody = `> ⚠️ LLM summary failed — raw data below. Review and restructure manually.\n\n${rawInput.slice(0, SESSION_SUMMARY_MAX_CHARS)}`;
+        raw = ''; // Will trigger fallback in processSessionResponse
       }
+    }
+
+    if (!raw) {
+      // No LLM available or LLM failed — save raw data with note
+      const fallback = this.summaryLlm
+        ? `> ⚠️ LLM summary failed — raw data below. Review and restructure manually.\n\n${rawInput.slice(0, SESSION_SUMMARY_MAX_CHARS)}`
+        : `> ⚠️ No summary LLM configured — raw data below.\n\n${rawInput.slice(0, SESSION_SUMMARY_MAX_CHARS)}`;
+      return this.processSessionResponse(fallback, rawInput, knowledgeDir, memDir, today, timestamp, existingFiles, true);
+    }
+
+    return this.processSessionResponse(raw, rawInput, knowledgeDir, memDir, today, timestamp, existingFiles);
+  }
+
+  /**
+   * Shared post-processing for session summary responses.
+   * Validates, truncates, extracts metadata, handles STALE/PINNED, writes files.
+   */
+  private async processSessionResponse(
+    raw: string,
+    rawInput: string,
+    knowledgeDir: string,
+    memDir: string,
+    today: string,
+    timestamp: string,
+    existingFiles: string[],
+    isFallback = false,
+  ): Promise<string> {
+    const SESSION_SUMMARY_MAX_CHARS = 4000;
+    const filename = `${timestamp}-session.md`;
+    let summaryBody: string;
+    let rawLlmResponse = '';
+    let pinned = false;
+    let summaryOneLiner = 'Session summary';
+
+    if (isFallback) {
+      // Fallback content passed directly — skip validation
+      summaryBody = raw;
     } else {
-      // No LLM available — save raw data with note
-      summaryBody = `> ⚠️ No summary LLM configured — raw data below.\n\n${rawInput.slice(0, SESSION_SUMMARY_MAX_CHARS)}`;
+      rawLlmResponse = raw;
+
+      // Validate completeness before truncating
+      const hasSummaryLine = /^SUMMARY:\s*.+/m.test(raw);
+      const hasSectionHeader = /^##\s+\w/m.test(raw);
+
+      if (!hasSummaryLine || !hasSectionHeader) {
+        process.stderr.write('[gossipcat] Session summary missing required structure, using raw fallback\n');
+        summaryBody = `> ⚠️ LLM summary malformed — raw data below.\n\n${rawInput.slice(0, SESSION_SUMMARY_MAX_CHARS)}`;
+      } else if (raw.length > SESSION_SUMMARY_MAX_CHARS - 100 && !/[.!)\n]$/.test(raw.trimEnd())) {
+        // Likely truncated by model output limit — trim to last complete paragraph
+        const lastPara = raw.lastIndexOf('\n\n');
+        summaryBody = (lastPara > 1000 ? raw.slice(0, lastPara) : raw).slice(0, SESSION_SUMMARY_MAX_CHARS);
+        process.stderr.write('[gossipcat] Session summary truncated — trimmed to last complete paragraph\n');
+      } else {
+        summaryBody = raw.slice(0, SESSION_SUMMARY_MAX_CHARS);
+      }
+
+      // Check if LLM flagged as pinned
+      if (summaryBody.startsWith('PINNED:true')) {
+        pinned = true;
+        summaryBody = summaryBody.replace(/^PINNED:true\s*\n?/, '');
+      }
+
+      // Extract SUMMARY: line from LLM output (explicitly requested in prompt)
+      const summaryMatch = summaryBody.match(/^SUMMARY:\s*(.+)$/m);
+      if (summaryMatch) {
+        summaryOneLiner = sanitizeYamlValue(summaryMatch[1].trim().slice(0, 100));
+        // Strip the SUMMARY line from the body — it's metadata, not content
+        summaryBody = summaryBody.replace(/^SUMMARY:.*\n?\n?/m, '').trim();
+      } else {
+        // Fallback: extract from first bold bullet or first meaningful sentence
+        const firstBullet = summaryBody.match(/[-*]\s+\*\*([^*\n]+)\*\*/);
+        const firstSentence = summaryBody.replace(/^#+\s+.+$/gm, '').trim().split('\n').find(l => l.trim().length > 10);
+        if (firstBullet) {
+          summaryOneLiner = sanitizeYamlValue(firstBullet[1].replace(/[:(].*/,'').trim().slice(0, 80));
+        } else if (firstSentence) {
+          summaryOneLiner = sanitizeYamlValue(firstSentence.replace(/^[-*]\s+/, '').replace(/\*\*/g, '').trim().slice(0, 80));
+        }
+      }
     }
 
     // Parse STALE: lines from FULL LLM output (before truncation) to avoid losing

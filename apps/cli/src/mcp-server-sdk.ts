@@ -1855,8 +1855,9 @@ server.tool(
   'Save a cognitive session summary to project memory. The next session will load this context automatically on MCP connect. Call before ending your session to preserve what was learned.',
   {
     notes: z.string().optional().describe('Optional freeform user context (e.g., "focusing on security hardening")'),
+    _utility_task_id: z.string().optional().describe('Internal: utility task ID for re-entry after native session summary'),
   },
-  async ({ notes }) => {
+  async ({ notes, _utility_task_id }) => {
     await boot();
 
     // 1. Gather session gossip from disk (crash-safe)
@@ -1981,10 +1982,63 @@ server.tool(
     const writer = new MemoryWriter(process.cwd());
     try { if (ctx.mainAgent.getLLM()) writer.setSummaryLlm(ctx.mainAgent.getLLM()); } catch {}
 
-    const summary = await writer.writeSessionSummary({
+    const summaryData = {
       gossip: gossipText, consensus: consensusText,
       performance: performanceText, gitLog, notes,
-    });
+    };
+
+    let summary: string;
+
+    // Native utility branch: dispatch Agent() for session summary instead of calling LLM directly
+    if (ctx.nativeUtilityConfig && !_utility_task_id) {
+      const { system, user } = writer.getSessionSummaryPrompt(summaryData);
+      const taskId = randomUUID().slice(0, 8);
+      const UTILITY_TTL_MS = 60_000;
+      ctx.nativeTaskMap.set(taskId, {
+        agentId: '_utility',
+        task: 'session_summary',
+        startedAt: Date.now(),
+        timeoutMs: UTILITY_TTL_MS,
+        utilityType: 'session_summary',
+      });
+      spawnTimeoutWatcher(taskId, ctx.nativeTaskMap.get(taskId)!);
+
+      const agentPrompt = `${system}\n\n---\n\n${user}`;
+      const modelShort = ctx.nativeUtilityConfig.model;
+      return {
+        content: [{ type: 'text' as const, text:
+          `Session data gathered. Dispatching native utility for summary.\n\n` +
+          `⚠️ EXECUTE NOW — launch this Agent and re-call gossip_session_save:\n\n` +
+          `1. Agent(model: "${modelShort}", prompt: ${JSON.stringify(agentPrompt)}, run_in_background: true)\n` +
+          `2. When agent completes → gossip_relay(task_id: "${taskId}", result: "<full agent output>")\n` +
+          `3. Then re-call: gossip_session_save(notes: ${JSON.stringify(notes || '')}, _utility_task_id: "${taskId}")\n\n` +
+          `Do ALL steps in order. Do not wait for user input between them.`
+        }],
+      };
+    }
+
+    // Re-entry path: native utility completed, process its result
+    if (_utility_task_id) {
+      const utilityResult = ctx.nativeResultMap.get(_utility_task_id);
+      if (utilityResult?.status === 'completed' && utilityResult.result) {
+        try {
+          summary = await writer.writeSessionSummaryFromRaw({ ...summaryData, raw: utilityResult.result });
+        } catch (err) {
+          process.stderr.write(`[gossipcat] Native session summary post-processing failed: ${(err as Error).message}\n`);
+          summary = await writer.writeSessionSummary(summaryData);
+        }
+      } else {
+        // Failed or timed out — fall through to normal LLM path
+        process.stderr.write(`[gossipcat] Native session summary utility ${_utility_task_id} failed/timed out, falling back to LLM\n`);
+        summary = await writer.writeSessionSummary(summaryData);
+      }
+      // Clean up utility task from maps
+      ctx.nativeResultMap.delete(_utility_task_id);
+      ctx.nativeTaskMap.delete(_utility_task_id);
+    } else {
+      // Normal path: call LLM directly
+      summary = await writer.writeSessionSummary(summaryData);
+    }
 
     // 5d. Append open findings to next-session.md as structured data (outside LLM prose)
     if (findingsTable) {
