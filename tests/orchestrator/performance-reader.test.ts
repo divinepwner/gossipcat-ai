@@ -107,15 +107,17 @@ describe('PerformanceReader', () => {
     ]);
     const reader = new PerformanceReader(TEST_DIR);
     const score = reader.getAgentScore('rev')!;
-    // Ratio-based: rawAccuracy = 2/2 = 1.0, accuracy = 1.0
-    // Uniqueness: exponential diminishing returns. 1 unique_confirmed (0.2 weighted)
-    //   = 0.5 + 0.5 * (1 - exp(-0.2 * 1.5)) ≈ 0.63
+    // Ratio-based: rawAccuracy = 3/3 = 1.0, accuracy = 1.0
+    // Uniqueness: ratio-based with confidence gating.
+    //   unique=1, agreements=2 → rawUniqueness = 1/3 = 0.33
+    //   uniqueTotal=3, confidence = 1 - exp(-3/10) ≈ 0.26
+    //   uniqueness = 0.5 + (0.33 - 0.5) * 0.26 ≈ 0.46
     // Reliability = accuracy*0.75 + uniqueness*0.15 + impactScore*0.10
-    //   ≈ 0.75 + 0.095 + 0.05 = 0.895 (impactScore defaults to 0.5 with no severity data)
+    //   ≈ 0.75 + 0.069 + 0.05 = 0.869
     expect(score.accuracy).toBeCloseTo(1.0, 1);
-    expect(score.uniqueness).toBeGreaterThan(0.6);
-    expect(score.uniqueness).toBeLessThan(0.75);
-    expect(score.reliability).toBeGreaterThan(0.85);
+    expect(score.uniqueness).toBeGreaterThan(0.4);
+    expect(score.uniqueness).toBeLessThan(0.55);
+    expect(score.reliability).toBeGreaterThan(0.8);
     expect(score.reliability).toBeLessThan(0.95);
   });
 

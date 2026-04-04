@@ -321,11 +321,14 @@ export class PerformanceReader {
       const hallucinationMultiplier = 1 / (1 + a.weightedHallucinations * 0.3);
       const accuracy = clamp(rawAccuracy * hallucinationMultiplier, 0, 1);
 
-      // Diminishing returns: log scale so early findings matter most but more always helps
-      // 1 unique_confirmed (0.2) → 0.5 + 0.18 = 0.68
-      // 3 unique_confirmed (0.6) → 0.5 + 0.36 = 0.86
-      // 10 unique_confirmed (2.0) → 0.5 + 0.45 = 0.95
-      const uniqueness = clamp(0.5 + 0.5 * (1 - Math.exp(-a.weightedUnique * 1.5)), 0, 1);
+      // Ratio-based uniqueness: unique findings / (unique + agreements).
+      // Differentiates agents who find novel issues vs those who only confirm others.
+      // Confidence-gated: blends toward 0.5 with sparse data (< 10 relevant signals).
+      // sonnet (149u/59a) → 0.72, haiku (96u/62a) → 0.61, gemini (33u/70a) → 0.32
+      const uniqueTotal = a.uniqueFindings + a.agreements;
+      const rawUniqueness = uniqueTotal > 0 ? a.uniqueFindings / uniqueTotal : 0.5;
+      const uniqueConfidence = 1 - Math.exp(-uniqueTotal / 10);
+      const uniqueness = clamp(0.5 + (rawUniqueness - 0.5) * uniqueConfidence, 0, 1);
 
       // Impact score: ratio of severity-weighted confirmed findings to confirmed count.
       // Agent catching only LOW findings → ~0.25. Agent catching CRITICAL → ~1.0.
