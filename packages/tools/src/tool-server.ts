@@ -168,9 +168,13 @@ export class ToolServer {
     }
 
     if (toolName === 'shell_exec') {
-      // Block shell entirely for scoped agents (can't constrain arbitrary commands)
+      // Allow ONLY read-only git commands for scoped agents
       if (scope) {
-        throw new Error('shell_exec is permanently unavailable in scoped write mode. Use file_read to verify your work instead. Do not retry.');
+        const cmd = (args.command as string || '').trim();
+        const isReadOnlyGit = /^git\s+(status|diff|log|show)\b/.test(cmd);
+        if (!isReadOnlyGit) {
+          throw new Error('shell_exec is restricted in scoped write mode. Only git status/diff/log/show are allowed. Use run_tests and run_typecheck for verification.');
+        }
       }
       // Worktree agents: block dangerous patterns
       if (root) {
@@ -267,6 +271,10 @@ export class ToolServer {
         );
       case 'verify_write':
         return this.handleVerifyWrite(callerId || 'unknown', args.test_file as string | undefined);
+      case 'run_tests':
+        return this.handleRunTests(args as { fileGlob: string }, callerId);
+      case 'run_typecheck':
+        return this.handleRunTypecheck(callerId);
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -384,5 +392,67 @@ export class ToolServer {
     }
 
     return reviewPromise;
+  }
+
+  private async handleRunTests(args: { fileGlob: string }, callerId?: string): Promise<string> {
+    const { fileGlob } = args;
+
+    // Validate: no path traversal
+    if (fileGlob.includes('../')) {
+      throw new Error('run_tests: fileGlob must not contain path traversal (../)');
+    }
+    // Validate: no flag injection
+    if (fileGlob.startsWith('--')) {
+      throw new Error('run_tests: fileGlob must be a file path, not a flag');
+    }
+    const blockedFlags = /--(?:config|setupFiles|globalSetup|transform)\b/;
+    if (blockedFlags.test(fileGlob)) {
+      throw new Error('run_tests: fileGlob must not contain config override flags');
+    }
+
+    const scope = callerId ? this.agentScopes.get(callerId) : undefined;
+    const cwd = scope
+      ? resolve(this.sandbox.projectRoot, scope)
+      : this.sandbox.projectRoot;
+
+    let output: string;
+    let success: boolean;
+    try {
+      output = await this.shellTools.shellExec({
+        command: `npx jest "${fileGlob}" --no-coverage --passWithNoTests --no-cache`,
+        cwd,
+        timeout: 60000,
+      });
+      success = true;
+    } catch (err) {
+      output = (err as Error).message;
+      success = false;
+    }
+
+    const truncated = output.length > 4000 ? output.slice(output.length - 4000) : output;
+    return JSON.stringify({ success, output: truncated });
+  }
+
+  private async handleRunTypecheck(callerId?: string): Promise<string> {
+    const scope = callerId ? this.agentScopes.get(callerId) : undefined;
+    const cwd = scope
+      ? resolve(this.sandbox.projectRoot, scope)
+      : this.sandbox.projectRoot;
+
+    let output: string;
+    let success: boolean;
+    try {
+      output = await this.shellTools.shellExec({
+        command: 'npx tsc --noEmit',
+        cwd,
+        timeout: 120000,
+      });
+      success = true;
+    } catch (err) {
+      output = (err as Error).message;
+      success = false;
+    }
+
+    return JSON.stringify({ success, output });
   }
 }
