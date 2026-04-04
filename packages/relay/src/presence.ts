@@ -7,16 +7,16 @@
 
 import { MessageEnvelope } from '@gossip/types';
 
-export type PresenceStatus = 'online' | 'offline' | 'away' | 'busy' | string;
+type PresenceStatus = 'online' | 'offline' | 'away' | 'busy' | string;
 
-export interface PresenceEntry {
+interface PresenceEntry {
   agentId: string;
   status: PresenceStatus;
   lastSeen: number;
   metadata?: Record<string, any>;
 }
 
-export interface PresenceConfig {
+interface PresenceConfig {
   ttlMs?: number;             // default: 60 minutes
   cleanupIntervalMs?: number; // default: 60 seconds
 }
