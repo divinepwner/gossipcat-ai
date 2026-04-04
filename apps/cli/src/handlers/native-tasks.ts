@@ -2,6 +2,7 @@
  * Native task lifecycle — eviction, persistence, restore, relay handling.
  * All state accessed via the shared context object.
  */
+import { randomUUID } from 'crypto';
 import { ctx, NATIVE_TASK_TTL_MS, defaultImportanceScores } from '../mcp-context';
 
 /** Active timeout watchers — keyed by task ID */
@@ -276,6 +277,64 @@ export async function handleNativeRelay(task_id: string, result: string, error?:
 
   // Result already stored in nativeResultMap at top of handler (crash-safe)
 
+  const utilityBlocks: string[] = [];
+
+  if (!error && !taskInfo.utilityType && ctx.nativeUtilityConfig) {
+    const UTILITY_TTL_MS = 60_000;
+    const model = ctx.nativeUtilityConfig.model;
+
+    // 1. Cognitive summary utility task
+    const summaryTaskId = randomUUID().slice(0, 8);
+    const summaryPrompt =
+      `You are a cognitive summarizer for an AI agent system. Extract key learnings, findings, and insights from the following agent result.\n\n` +
+      `Agent: ${agentId}\nTask: ${taskInfo.task}\n\nResult:\n${result.slice(0, 20000)}\n\n` +
+      `Summarize the most important learnings in 3-5 bullet points. Focus on facts, discoveries, and decisions that should be remembered.`;
+    ctx.nativeTaskMap.set(summaryTaskId, {
+      agentId: '_utility',
+      task: 'cognitive summary',
+      startedAt: Date.now(),
+      timeoutMs: UTILITY_TTL_MS,
+      utilityType: 'summary',
+    });
+    spawnTimeoutWatcher(summaryTaskId, ctx.nativeTaskMap.get(summaryTaskId)!);
+    utilityBlocks.push(
+      `Task: cognitive summary [${summaryTaskId}]\n` +
+      `1. Agent(model: "${model}", prompt: ${JSON.stringify(summaryPrompt)}, run_in_background: true)\n` +
+      `2. When agent completes → gossip_relay(task_id: "${summaryTaskId}", result: "<full agent output>")`
+    );
+
+    // 2. Gossip utility task — only if there are pending non-utility peers
+    const hasPendingPeers = [...ctx.nativeTaskMap.values()].some(
+      (info) => info.agentId !== '_utility' && !info.utilityType
+    );
+    if (hasPendingPeers) {
+      const gossipTaskId = randomUUID().slice(0, 8);
+      const gossipPrompt =
+        `You are a gossip publisher for an AI agent system. Summarize the following result into a short gossip message (2-3 sentences) that other running agents should know about.\n\n` +
+        `Agent: ${agentId}\nTask: ${taskInfo.task}\n\nResult:\n${result.slice(0, 10000)}\n\n` +
+        `Write a concise gossip update. Start with the agent name and key finding.`;
+      ctx.nativeTaskMap.set(gossipTaskId, {
+        agentId: '_utility',
+        task: 'gossip publish',
+        startedAt: Date.now(),
+        timeoutMs: UTILITY_TTL_MS,
+        utilityType: 'gossip',
+      });
+      spawnTimeoutWatcher(gossipTaskId, ctx.nativeTaskMap.get(gossipTaskId)!);
+      utilityBlocks.push(
+        `Task: gossip publish [${gossipTaskId}]\n` +
+        `1. Agent(model: "${model}", prompt: ${JSON.stringify(gossipPrompt)}, run_in_background: true)\n` +
+        `2. When agent completes → gossip_relay(task_id: "${gossipTaskId}", result: "<full agent output>")`
+      );
+    }
+  }
+
   const status = error ? `failed (${elapsed}ms): ${error}` : `completed (${elapsed}ms)`;
-  return { content: [{ type: 'text' as const, text: `Result relayed for ${agentId} [${task_id}]: ${status}\n\nThe result is now available for gossip_collect and consensus cross-review.` }] };
+  let responseText = `Result relayed for ${agentId} [${task_id}]: ${status}\n\nThe result is now available for gossip_collect and consensus cross-review.`;
+
+  if (utilityBlocks.length > 0) {
+    responseText += `\n\n⚠️ EXECUTE NOW — ${utilityBlocks.length} utility task(s) queued:\n\n${utilityBlocks.join('\n\n')}`;
+  }
+
+  return { content: [{ type: 'text' as const, text: responseText }] };
 }
