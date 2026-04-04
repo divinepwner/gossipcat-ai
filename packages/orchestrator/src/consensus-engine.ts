@@ -110,19 +110,9 @@ export class ConsensusEngine {
     }));
     process.stderr.write(`[consensus] Synthesis: ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unverified.length} unverified, ${report.unique.length} unique, ${report.newFindings.length} new (${Math.round(synthesizeMs / 1000)}s)\n`);
 
-    // Phase 3: Orchestrator verification of UNVERIFIED findings
-    let verifyMs = 0;
-    if (report.unverified.length > 0) {
-      process.stderr.write(`[consensus] Phase 3: verifying ${report.unverified.length} unverified findings\n`);
-      const verifyStart = Date.now();
-      await this.verifyUnverified(report, successful);
-      verifyMs = Date.now() - verifyStart;
-      process.stderr.write(`[consensus] After verification: ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unverified.length} unverified (${Math.round(verifyMs / 1000)}s)\n`);
-    }
-
     const totalMs = Date.now() - consensusStart;
-    const timing = { totalMs, perAgent, crossReviewMs, synthesizeMs, verifyMs };
-    process.stderr.write(`[consensus] Total: ${Math.round(totalMs / 1000)}s (cross-review: ${Math.round(crossReviewMs / 1000)}s, synthesis: ${Math.round(synthesizeMs / 1000)}s, verify: ${Math.round(verifyMs / 1000)}s)\n`);
+    const timing = { totalMs, perAgent, crossReviewMs, synthesizeMs };
+    process.stderr.write(`[consensus] Total: ${Math.round(totalMs / 1000)}s (cross-review: ${Math.round(crossReviewMs / 1000)}s, synthesis: ${Math.round(synthesizeMs / 1000)}s)\n`);
     // Always regenerate report with timing data
     report.summary = this.formatReport(report.confirmed, report.disputed, report.unverified, report.unique, report.newFindings, successful.length, report.rounds, timing, report.insights);
 
@@ -732,188 +722,6 @@ Return only valid JSON.`;
   }
 
   /**
-   * Phase 3: Orchestrator verifies UNVERIFIED findings by reading actual code.
-   * Single batch LLM call with ±10 lines of context per finding.
-   * Promotes findings to CONFIRMED or DISPUTED; remaining stay UNVERIFIED.
-   * Mutates the report in place.
-   */
-  private async verifyUnverified(report: ConsensusReport, results: TaskEntry[]): Promise<void> {
-    if (!this.config.projectRoot || report.unverified.length === 0) return;
-
-    // Build agent → taskId map (same as synthesize)
-    const agentTaskIds = new Map<string, string>();
-    for (const r of results) agentTaskIds.set(r.agentId, r.id);
-    const getTaskId = (agentId: string): string => {
-      const id = agentTaskIds.get(agentId);
-      if (id && id.length > 0) return id;
-      return `phase3-${agentId}-${Date.now()}`;
-    };
-
-    const citationPattern = /((?:[\w./-]+\/)?([a-zA-Z][\w.-]+\.[a-z]{1,6})):(\d+)/;
-    const VERIFY_CONTEXT = 10; // ±10 lines for deeper context than cross-review anchors
-    const MAX_VERIFY = 20; // cap findings per batch to bound prompt size
-    const MAX_SNIPPET_CHARS = 3000; // per-finding snippet cap
-
-    // Build finding blocks with code context
-    const findingBlocks: Array<{ idx: number; finding: ConsensusFinding; block: string }> = [];
-
-    for (let i = 0; i < Math.min(report.unverified.length, MAX_VERIFY); i++) {
-      const f = report.unverified[i];
-      const match = citationPattern.exec(f.finding);
-
-      let codeBlock = '';
-      if (match) {
-        const fullRef = match[1];
-        const bareFile = match[2];
-        const lineNum = parseInt(match[3], 10);
-
-        try {
-          const filePath = await this.cachedResolve(fullRef) ?? await this.cachedResolve(bareFile);
-          if (filePath) {
-            const content = await this.cachedRead(filePath);
-            if (content) {
-              const fileLines = content.split('\n');
-              if (lineNum <= fileLines.length) {
-                const start = Math.max(0, lineNum - 1 - VERIFY_CONTEXT);
-                const end = Math.min(fileLines.length, lineNum + VERIFY_CONTEXT);
-                let snippet = fileLines.slice(start, end)
-                  .map((l, j) => `  ${start + j + 1}: ${l}`)
-                  .join('\n');
-                if (snippet.length > MAX_SNIPPET_CHARS) {
-                  snippet = snippet.slice(0, MAX_SNIPPET_CHARS) + '\n  [truncated]';
-                }
-                const safeSnippet = snippet.replace(/<\/?(data|anchor|code)\b[^>]*>/gi, '');
-                codeBlock = `\n<code src="${fullRef}:${lineNum}">\n${safeSnippet}\n</code>`;
-              }
-            }
-          }
-        } catch { /* skip code context on error */ }
-      } else {
-        // Fallback: try to find a bare filename in the finding text and load first 30 lines
-        const bareFilePattern = /(?:[\s`"'(]|^)(([\w./-]+\/)?([a-zA-Z][\w.-]+\.(jsonl?|md|ts|tsx|js|jsx|yaml|yml|toml)))(?:[\s`"',.):]|$)/;
-        const bareMatch = bareFilePattern.exec(f.finding);
-        if (bareMatch) {
-          try {
-            const fileRef = bareMatch[1];
-            const filePath = await this.cachedResolve(fileRef);
-            if (filePath) {
-              const content = await this.cachedRead(filePath);
-              if (content) {
-                const fileLines = content.split('\n');
-                const headEnd = Math.min(fileLines.length, 30);
-                let snippet = fileLines.slice(0, headEnd)
-                  .map((l, j) => `  ${j + 1}: ${l}`)
-                  .join('\n');
-                if (snippet.length > MAX_SNIPPET_CHARS) {
-                  snippet = snippet.slice(0, MAX_SNIPPET_CHARS) + '\n  [truncated]';
-                }
-                const safeSnippet = snippet.replace(/<\/?(data|anchor|code)\b[^>]*>/gi, '');
-                codeBlock = `\n<code type="file-head" src="${fileRef}" lines="${fileLines.length}">\n${safeSnippet}\n</code>`;
-              }
-            }
-          } catch { /* skip */ }
-        }
-      }
-
-      findingBlocks.push({
-        idx: i,
-        finding: f,
-        block: `Finding ${i + 1} (by ${f.originalAgentId}):\n"${f.finding}"${codeBlock}`,
-      });
-    }
-
-    if (findingBlocks.length === 0) return;
-
-    const messages: LLMMessage[] = [
-      {
-        role: 'system',
-        content: `You are a senior code verification agent. Your task is to verify findings that peer reviewers could not verify during cross-review.
-
-For each finding:
-- If the code is shown and the finding is FACTUALLY CORRECT based on the code, respond CONFIRMED
-- If the code is shown and the finding is FACTUALLY WRONG (the code contradicts the claim), respond DISPUTED with evidence
-- If you cannot determine correctness (no code shown, claim is subjective, or insufficient context), respond UNVERIFIED
-
-Be strict: only CONFIRMED if you can see the evidence in the code. Only DISPUTED if the code clearly contradicts the claim.
-
-Return ONLY a JSON array:
-[{ "index": 1, "verdict": "CONFIRMED"|"DISPUTED"|"UNVERIFIED", "evidence": "brief explanation" }]`,
-      },
-      {
-        role: 'user',
-        content: `Verify these ${findingBlocks.length} unverified findings:\n\n${findingBlocks.map(fb => fb.block).join('\n\n---\n\n')}`,
-      },
-    ];
-
-    try {
-      const response = await this.config.llm.generate(messages, { temperature: 0 });
-
-      // Parse response
-      const text = response.text.replace(/```json\s*\n?/g, '').replace(/```\s*$/g, '').trim();
-      const verdicts: Array<{ index: number; verdict: string; evidence: string }> = JSON.parse(text);
-      if (!Array.isArray(verdicts)) return;
-
-      const consensusId = report.signals[0]?.consensusId ?? shortConsensusId();
-      const now = new Date().toISOString();
-
-      // Process verdicts — deduplicate by index to prevent double-promotion
-      const toRemove: number[] = [];
-      const processed = new Set<number>();
-      for (const v of verdicts) {
-        const fbIdx = v.index - 1; // 1-indexed from LLM
-        if (processed.has(fbIdx)) continue;
-        const fb = findingBlocks[fbIdx];
-        if (!fb || !v.verdict) continue;
-        processed.add(fbIdx);
-
-        const verdict = v.verdict.toUpperCase();
-        if (verdict === 'CONFIRMED') {
-          fb.finding.tag = 'confirmed';
-          fb.finding.confirmedBy = [...fb.finding.confirmedBy, '_orchestrator'];
-          report.confirmed.push(fb.finding);
-          toRemove.push(fb.idx);
-          report.signals.push({
-            type: 'consensus', signal: 'unique_confirmed', consensusId,
-            agentId: fb.finding.originalAgentId,
-            evidence: `Phase 3 orchestrator verified: ${(v.evidence || '').slice(0, 200)}`,
-            timestamp: now, taskId: getTaskId(fb.finding.originalAgentId),
-            severity: fb.finding.severity,
-          });
-        } else if (verdict === 'DISPUTED') {
-          fb.finding.tag = 'disputed';
-          fb.finding.disputedBy = [...fb.finding.disputedBy, {
-            agentId: '_orchestrator',
-            reason: (v.evidence || 'Orchestrator verification found the claim incorrect').slice(0, 300),
-            evidence: (v.evidence || '').slice(0, 300),
-          }];
-          report.disputed.push(fb.finding);
-          toRemove.push(fb.idx);
-          report.signals.push({
-            type: 'consensus', signal: 'hallucination_caught', consensusId,
-            agentId: fb.finding.originalAgentId,
-            outcome: 'orchestrator_disputed',
-            evidence: `Phase 3 orchestrator disputed: ${(v.evidence || '').slice(0, 200)}`,
-            timestamp: now, taskId: getTaskId(fb.finding.originalAgentId),
-            severity: fb.finding.severity,
-          });
-        }
-        // UNVERIFIED stays in place
-      }
-
-      // Remove promoted findings from unverified (deduplicate + reverse order to preserve indices)
-      const uniqueToRemove = [...new Set(toRemove)].sort((a, b) => b - a);
-      for (const idx of uniqueToRemove) {
-        report.unverified.splice(idx, 1);
-      }
-
-      report.rounds = 3;
-    } catch {
-      // Phase 3 is best-effort — don't fail the entire consensus on verification error
-    }
-  }
-
-  /**
-   /**
    * Extract code snippets for a single finding's file:line citations.
    * Returns formatted anchor blocks as a string, or '' if no citations found.
    */
@@ -1568,16 +1376,6 @@ Return ONLY a JSON array:
         const suffix = f.id.split(':').pop() || f.id;
         f.id = `${consensusId}:${suffix}`;
       }
-    }
-
-    // Run UNVERIFIED verification (Phase 3)
-    const successful = results.filter(r => r.status === 'completed' && r.result);
-    if (report.unverified.length > 0) {
-      await this.verifyUnverified(report, successful);
-      report.summary = this.formatReport(
-        report.confirmed, report.disputed, report.unverified, report.unique,
-        report.newFindings, successful.length, report.rounds, undefined, report.insights,
-      );
     }
 
     return report;
