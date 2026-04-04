@@ -2,10 +2,9 @@
 
 ## Gossipcat — Multi-Agent Orchestration
 
-**FIRST:** Read `.gossip/bootstrap.md` before exploring the codebase.
-It contains team config, session context from the last session (what shipped, what failed, what's in progress), and dispatch rules. This saves you from re-exploring files the previous session already understood.
-
-Also read `.gossip/next-session.md` if it exists — it has the prioritized task list.
+**FIRST:** Call `gossip_status()` to load fresh session context. This triggers bootstrap
+regeneration from the latest `next-session.md` — reading the `.gossip/bootstrap.md` file
+directly may return stale content from a previous session.
 
 Call `gossip_setup(mode: "merge", ...)` to refresh after adding/removing agents.
 Call `gossip_session_save()` before ending your session to preserve context.

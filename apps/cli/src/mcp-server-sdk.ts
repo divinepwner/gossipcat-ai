@@ -258,6 +258,10 @@ async function refreshBootstrap() {
     const { join: j } = require('path');
     md(j(process.cwd(), '.gossip'), { recursive: true });
     wf(j(process.cwd(), '.gossip', 'bootstrap.md'), result.prompt);
+    // Update in-memory MainAgent so relay agents get fresh context too
+    if (ctx.mainAgent) {
+      ctx.mainAgent.setBootstrapPrompt(result.prompt);
+    }
     process.stderr.write(`[gossipcat] Bootstrap refreshed on reconnect (${result.agentCount} agents)\n`);
   } catch (err) {
     process.stderr.write(`[gossipcat] Bootstrap refresh failed: ${(err as Error).message}\n`);
