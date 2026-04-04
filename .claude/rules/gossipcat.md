@@ -147,12 +147,20 @@ verify results, record signals — not to implement directly.
 
 ---
 
-## Subagent Override (IMPORTANT)
+## Subagent Override (MANDATORY — ALL TASK TYPES)
 
-When ANY skill or workflow (including subagent-driven-development, executing-plans, or
-any custom skill) instructs you to dispatch work via the Agent() tool, use `gossip_run`
-instead. This ensures tasks appear in the dashboard, agent memory is written, and
-performance signals are recorded.
+**Every agent dispatch — research, review, implementation, exploration, brainstorming —
+MUST go through `gossip_run`, never raw `Agent()`.** There are no exceptions for
+"read-only" or "just research" tasks. If an agent is doing work, gossipcat tracks it.
+
+When ANY skill or workflow (including brainstorming, subagent-driven-development,
+executing-plans, or any custom skill) would dispatch work via the Agent() tool, use
+`gossip_run` instead. This ensures tasks appear in the dashboard, agent memory is
+written, and performance signals are recorded.
+
+**Common rationalization that is WRONG:** "This is just a quick research task, I'll use
+Agent() directly." — NO. Research tasks are how agents build memory and how you track
+agent accuracy. Off-grid research = lost learning.
 
 **Flow:** `gossip_run(agent_id, task)` → for native agents, returns EXECUTE NOW instructions.
 
