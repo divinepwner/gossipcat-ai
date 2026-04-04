@@ -298,6 +298,7 @@ export class DispatchPipeline {
       const stream = worker.executeTask(task, options?.lens, promptContent);
       entry.stream = stream;
       for await (const event of stream) {
+        entry.lastEventAt = Date.now();
         switch (event.type) {
           case TaskStreamEventType.PROGRESS:
             entry.toolCalls = event.payload.toolCalls;
@@ -321,6 +322,9 @@ export class DispatchPipeline {
               this.worktreeManager.cleanup(entry.id, entry.worktreeInfo.path).catch(() => {});
             }
             throw new Error(event.payload.error);
+          default:
+            // LOG, PARTIAL_RESULT, etc. — tracked via lastEventAt above
+            break;
         }
       }
       throw new Error('Task stream ended without a final result or error.');
@@ -356,8 +360,9 @@ export class DispatchPipeline {
         status: t.status,
         elapsedMs: now - t.startedAt,
         toolCalls: t.toolCalls ?? 0,
-        // Stuck = no progress in a long time. Slow but progressing = not stuck.
-        isLikelyStuck: (now - t.startedAt > 180_000) && (t.toolCalls ?? 0) === 0,
+        // Stuck = no events received in a long time. Uses lastEventAt (any event type)
+        // rather than toolCalls alone, so LLM-thinking tasks aren't falsely flagged.
+        isLikelyStuck: (now - (t.lastEventAt ?? t.startedAt) > 180_000),
       }));
   }
 

@@ -223,6 +223,7 @@ export interface TaskEntry {
   inputTokens?: number;
   outputTokens?: number;
   toolCalls?: number;
+  lastEventAt?: number;
 }
 
 // ── TaskGraph Event Types ────────────────────────────────────────────────

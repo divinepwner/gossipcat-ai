@@ -198,7 +198,7 @@ Rules:
 
   /**
    * Write a session summary to the _project virtual agent's memory.
-   * Dedicated method with higher output cap (3000 chars) and session-specific prompt.
+   * Dedicated method with higher output cap (4000 chars) and session-specific prompt.
    * Falls back to raw data save if LLM fails.
    */
   async writeSessionSummary(data: {
@@ -208,6 +208,7 @@ Rules:
     gitLog: string;
     notes?: string;
   }): Promise<string> {
+    const SESSION_SUMMARY_MAX_CHARS = 4000;
     const memDir = this.ensureDirs('_project');
     const knowledgeDir = join(memDir, 'knowledge');
     const now = new Date();
@@ -258,20 +259,23 @@ Rules:
 
 ${projectContext}
 
-Write as a briefing for a new team lead taking over. Focus on:
+Write as a briefing for a new team lead taking over. This output is split into two destinations:
+- The "## Open for next session" section goes into next-session.md (injected into EVERY agent dispatch — keep it tight)
+- Everything else goes into a knowledge file (retrievable on demand, not auto-injected)
 
-1. WHAT SHIPPED — concrete deliverables. Name features, cite file paths.
-2. WHAT FAILED AND WHY — approaches that didn't work. Format: "We tried X because Y. It failed because Z. The fix was W."
-3. AGENT OBSERVATIONS — which agents are reliable for what, who hallucinates, who finds things others miss.
-4. IN PROGRESS — specs in review, half-built features. Include file paths and what needs to happen next.
-5. USER PREFERENCES — how the user works (e.g., "always runs multi-agent review before merging").
+Sections:
+
+1. OPEN FOR NEXT SESSION — prioritized bullet list of what needs attention next. Bugs, investigations, half-built features, deferred work. Max 5-7 bullets, ~150 words. Each bullet: one line, actionable, with file path if relevant. This section is the MOST IMPORTANT and MUST be concise — it costs tokens on every agent dispatch.
+2. WHAT SHIPPED — concrete deliverables. Name features, cite file paths. Max ~150 words.
+3. WHAT FAILED AND WHY — approaches that didn't work. Format: "We tried X because Y. It failed because Z. The fix was W." Max ~100 words.
+4. AGENT OBSERVATIONS — which agents are reliable for what, who hallucinates, who finds things others miss. Max ~100 words.
 
 Rules:
 - Start with EXACTLY one line: SUMMARY: <one-line description of the entire session, max 80 chars, no colons>
   Example: SUMMARY: Shipped auth module, fixed 3 race conditions, added 40 tests
   Example: SUMMARY: Dashboard redesign phases 1-4, persistence fix, dispatch rules
-- Then a blank line, then start with "## What shipped"
-- Max 500 words after the SUMMARY line. No other preamble.
+- Then a blank line, then start with "## Open for next session"
+- Total max 500 words. No preamble. Every word counts — this is injected into LLM context.
 - Cite file paths when referencing code or specs
 - Include specific numbers (commit count, finding count, test count)
 - Warnings > accomplishments — what NOT to do is more useful
@@ -300,14 +304,14 @@ Only mark a file STALE if the git log clearly shows the described work has shipp
 
         if (!hasSummaryLine || !hasSectionHeader) {
           process.stderr.write('[gossipcat] Session summary missing required structure, using raw fallback\n');
-          summaryBody = `> ⚠️ LLM summary malformed — raw data below.\n\n${rawInput.slice(0, 3000)}`;
-        } else if (raw.length > 2900 && !/[.!)\n]$/.test(raw.trimEnd())) {
+          summaryBody = `> ⚠️ LLM summary malformed — raw data below.\n\n${rawInput.slice(0, SESSION_SUMMARY_MAX_CHARS)}`;
+        } else if (raw.length > SESSION_SUMMARY_MAX_CHARS - 100 && !/[.!)\n]$/.test(raw.trimEnd())) {
           // Likely truncated by model output limit — trim to last complete paragraph
           const lastPara = raw.lastIndexOf('\n\n');
-          summaryBody = (lastPara > 1000 ? raw.slice(0, lastPara) : raw).slice(0, 3000);
+          summaryBody = (lastPara > 1000 ? raw.slice(0, lastPara) : raw).slice(0, SESSION_SUMMARY_MAX_CHARS);
           process.stderr.write('[gossipcat] Session summary truncated — trimmed to last complete paragraph\n');
         } else {
-          summaryBody = raw.slice(0, 3000);
+          summaryBody = raw.slice(0, SESSION_SUMMARY_MAX_CHARS);
         }
 
         // Check if LLM flagged as pinned
@@ -335,15 +339,15 @@ Only mark a file STALE if the git log clearly shows the described work has shipp
       } catch (err) {
         // Fallback: save raw data with warning header
         process.stderr.write(`[gossipcat] Session summary LLM failed: ${(err as Error).message}\n`);
-        summaryBody = `> ⚠️ LLM summary failed — raw data below. Review and restructure manually.\n\n${rawInput.slice(0, 3000)}`;
+        summaryBody = `> ⚠️ LLM summary failed — raw data below. Review and restructure manually.\n\n${rawInput.slice(0, SESSION_SUMMARY_MAX_CHARS)}`;
       }
     } else {
       // No LLM available — save raw data with note
-      summaryBody = `> ⚠️ No summary LLM configured — raw data below.\n\n${rawInput.slice(0, 3000)}`;
+      summaryBody = `> ⚠️ No summary LLM configured — raw data below.\n\n${rawInput.slice(0, SESSION_SUMMARY_MAX_CHARS)}`;
     }
 
     // Parse STALE: lines from FULL LLM output (before truncation) to avoid losing
-    // stale annotations that fall beyond the 3000-char slice
+    // stale annotations that fall beyond the summary char slice
     const stalePattern = /^STALE:\s*(.+)$/gm;
     let staleMatch: RegExpExecArray | null;
     const staleFiles: string[] = [];
@@ -380,7 +384,7 @@ Only mark a file STALE if the git log clearly shows the described work has shipp
       '---',
       `name: Session ${today} — ${summaryOneLiner}`,
       `description: ${summaryOneLiner}`,
-      `importance: 0.7`,
+      `importance: 0.4`,
       pinned ? `pinned: true` : '',
       `lastAccessed: ${today}`,
       `accessCount: 0`,
@@ -391,11 +395,15 @@ Only mark a file STALE if the git log clearly shows the described work has shipp
 
     writeFileSync(join(knowledgeDir, filename), content);
 
-    // Write next-session.md so the next session gets prioritized action items
-    // This is the primary source of truth for session continuity — knowledge files
-    // are supplementary context, but next-session.md drives the opening briefing.
+    // Write next-session.md with ONLY the priorities section (≤1500 chars).
+    // Full session detail stays in the knowledge file for on-demand retrieval.
+    // This keeps bootstrap context lean — agents get priorities, not history.
     const nextSessionPath = join(this.projectRoot, '.gossip', 'next-session.md');
-    const nextSessionContent = `# Next Session Plan\n\n${summaryBody}\n`;
+    const openMatch = summaryBody.match(/##\s+Open[^\n]*\n([\s\S]*?)(?=\n##|\s*$)/i);
+    const NEXT_SESSION_MAX_CHARS = 1500;
+    const nextSessionContent = openMatch
+      ? `# Next Session\n\n${openMatch[0].trim()}\n`
+      : `# Next Session\n\n${truncateAtWord(summaryBody, NEXT_SESSION_MAX_CHARS)}\n`;
     writeFileSync(nextSessionPath, nextSessionContent);
 
     // One-time migration: normalize old importance=1.0 entries
@@ -473,12 +481,57 @@ Only mark a file STALE if the git log clearly shows the described work has shipp
         }
       }
 
-      // Cap session files separately — always runs regardless of main cap
+      // Session file management: TTL expiry + compaction
       const sessionFiles = readdirSync(knowledgeDir).filter(f => f.endsWith('-session.md')).sort();
       const MAX_SESSION_FILES = 5;
+      const SESSION_TTL_DAYS = 14;
+
+      // TTL: demote session files older than 14 days (still queryable, not auto-injected)
+      for (const sf of sessionFiles) {
+        try {
+          const ts = sf.slice(0, 19).replace(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/, '$1T$2:$3:$4');
+          const days = (Date.now() - new Date(ts).getTime()) / 86400000;
+          if (days > SESSION_TTL_DAYS) {
+            const sfPath = join(knowledgeDir, sf);
+            const sfContent = readFileSync(sfPath, 'utf-8');
+            if (!/importance:\s*0\.1/.test(sfContent)) {
+              writeFileSync(sfPath, sfContent.replace(/importance:\s*[\d.]+/, 'importance: 0.1'));
+            }
+          }
+        } catch { /* best-effort */ }
+      }
+
+      // Compaction: when >MAX_SESSION_FILES, compact oldest into a digest
       if (sessionFiles.length > MAX_SESSION_FILES) {
-        for (const sf of sessionFiles.slice(0, sessionFiles.length - MAX_SESSION_FILES)) {
-          try { unlinkSync(join(knowledgeDir, sf)); } catch { /* best-effort */ }
+        const toCompact = sessionFiles.slice(0, sessionFiles.length - MAX_SESSION_FILES);
+        const bodies: string[] = [];
+        for (const sf of toCompact) {
+          try {
+            const sfContent = readFileSync(join(knowledgeDir, sf), 'utf-8');
+            const body = sfContent.split('---').slice(2).join('---').trim();
+            if (body) bodies.push(body.slice(0, 800));
+          } catch { /* skip */ }
+        }
+        if (bodies.length > 0) {
+          // Write a compact digest from the old sessions
+          const digestName = `${toCompact[0].slice(0, 10)}-to-${toCompact[toCompact.length - 1].slice(0, 10)}-digest-session.md`;
+          const today = new Date().toISOString().split('T')[0];
+          const digestContent = [
+            '---',
+            `name: Session digest ${toCompact[0].slice(0, 10)} to ${toCompact[toCompact.length - 1].slice(0, 10)}`,
+            `description: Compacted summary of ${toCompact.length} older sessions`,
+            `importance: 0.2`,
+            `lastAccessed: ${today}`,
+            `accessCount: 0`,
+            '---',
+            '',
+            ...bodies,
+          ].join('\n').slice(0, 3000);
+          writeFileSync(join(knowledgeDir, digestName), digestContent);
+          // Remove compacted originals
+          for (const sf of toCompact) {
+            try { unlinkSync(join(knowledgeDir, sf)); } catch { /* best-effort */ }
+          }
         }
       }
     } catch { /* best-effort */ }

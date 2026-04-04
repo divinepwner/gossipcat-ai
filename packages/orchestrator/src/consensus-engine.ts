@@ -292,12 +292,19 @@ Return only valid JSON.`;
     try {
       const llm = this.config.agentLlm?.(agent.agentId) ?? this.config.llm;
       const response = await llm.generate(messages, { temperature: 0 });
+      if (!response.text?.trim()) {
+        process.stderr.write(`[consensus] ${agent.agentId} returned empty cross-review response\n`);
+        return [];
+      }
       const validPeerIds = new Set(summaries.keys());
       const entries = this.parseCrossReviewResponse(agent.agentId, response.text, MAX_CROSS_REVIEW_ENTRIES);
+      if (entries.length === 0) {
+        process.stderr.write(`[consensus] ${agent.agentId} cross-review parsed to 0 entries (response length: ${response.text.length})\n`);
+      }
       // Filter: no self-references, peerAgentId must be a real agent in this batch
       return entries.filter(e => e.peerAgentId !== agent.agentId && validPeerIds.has(e.peerAgentId));
-    } catch {
-      // Graceful degradation: skip agents whose LLM call fails
+    } catch (err) {
+      process.stderr.write(`[consensus] ${agent.agentId} cross-review LLM call failed: ${(err as Error).message}\n`);
       return [];
     }
   }
@@ -1491,10 +1498,16 @@ Return ONLY a JSON array:
     try {
       parsed = JSON.parse(cleaned);
     } catch {
+      if (cleaned.length > 0) {
+        process.stderr.write(`[consensus] ${reviewerAgentId} cross-review response is not valid JSON (${cleaned.length} chars)\n`);
+      }
       return [];
     }
 
-    if (!Array.isArray(parsed)) return [];
+    if (!Array.isArray(parsed)) {
+      process.stderr.write(`[consensus] ${reviewerAgentId} cross-review response is not an array\n`);
+      return [];
+    }
 
     // SECURITY: Limit the number of entries to prevent DoS attacks.
     const limited = parsed.slice(0, limit);

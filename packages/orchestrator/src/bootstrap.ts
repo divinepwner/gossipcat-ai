@@ -220,6 +220,8 @@ ${sessionSection}
 | \`gossip_plan(task, strategy?)\` | Plan task with write-mode suggestions. Returns dispatch-ready JSON. |
 | \`gossip_scores()\` | View agent performance scores and dispatch weights. |
 | \`gossip_skills(action, ...)\` | Manage skills. action: \`list\`, \`bind\`, \`unbind\`, \`build\`, \`develop\`. |
+| \`gossip_remember(agent_id, query)\` | Search an agent's archived knowledge by keyword. Use to recall past learnings. |
+| \`gossip_progress()\` | Show active task progress and consensus phase. |
 | \`gossip_tools()\` | List all available tools. |
 
 ## Dispatch Rules
@@ -299,6 +301,7 @@ Agent memory is auto-managed:
 - **MCP dispatch/collect**: Memory loaded at dispatch, written at collect. No manual action.
 - **CLI chat (handleMessage)**: Same pipeline — memory loaded and written automatically.
 - **Native Claude Agent tool**: Bypasses gossipcat pipeline. Manually read .gossip/agents/<id>/memory/MEMORY.md and include in prompt. Write task entry to tasks.jsonl after completion.
+- **On-demand retrieval**: Use \`gossip_remember(agent_id, query)\` to search an agent's archived knowledge files by keyword. Useful when you need context from a past task or want to check what an agent learned about a topic.
 
 Skills are auto-injected from agent config. Project-wide skills in .gossip/skills/.`;
   }
@@ -377,7 +380,9 @@ Skills are auto-injected from agent config. Project-wide skills in .gossip/skill
     try {
       const content = readFileSync(notesPath, 'utf-8').trim();
       if (content.length === 0) return null;
-      return this.verifyToolClaims(content.slice(0, 2000));
+      // Safety net only — write side already extracts just the priorities section.
+      // Generous limit so well-formed content is never cut mid-sentence.
+      return this.verifyToolClaims(content.slice(0, 3000));
     } catch { return null; }
   }
 }

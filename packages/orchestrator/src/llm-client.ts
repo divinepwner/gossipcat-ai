@@ -307,6 +307,9 @@ export class GeminiProvider implements ILLMProvider {
       if (finishReason !== 'SAFETY') {
         process.stderr.write(`[GeminiProvider] Empty response parts (finishReason: ${finishReason || 'unknown'}). Returning empty to trigger retry.\n`);
       }
+      if (finishReason === 'SAFETY') {
+        process.stderr.write(`[GeminiProvider] Response blocked by safety filter\n`);
+      }
       return { text: finishReason === 'SAFETY' ? '[Response blocked by Gemini safety filter]' : '' };
     }
 
