@@ -2032,10 +2032,43 @@ server.tool(
       { name: 'gossip_skills', desc: 'Manage skills. action: list, bind, unbind, build, develop.' },
       { name: 'gossip_remember', desc: 'Search an agent\'s archived knowledge files by keyword query.' },
       { name: 'gossip_tools', desc: 'List available tools (this command).' },
+      { name: 'gossip_progress', desc: 'Show active task progress and consensus phase. No params.' },
     ];
     const list = tools.map(t => `- ${t.name}: ${t.desc}`).join('\n');
     return { content: [{ type: 'text' as const, text: `Gossipcat Tools (${tools.length}):\n\n${list}` }] };
   }
+);
+
+server.tool(
+  'gossip_progress',
+  'Show progress of active tasks and consensus rounds. Call during long-running operations to see what agents are doing.',
+  {},
+  async () => {
+    await boot();
+    const health = ctx.mainAgent.getActiveTasksHealth();
+    const coordinator = ctx.mainAgent.getConsensusCoordinator();
+    const phase = coordinator?.getCurrentPhase() ?? 'idle';
+
+    const activeTasks = health.map(t => ({
+      taskId: t.id,
+      agentId: t.agentId,
+      elapsedMs: t.elapsedMs,
+      toolCalls: t.toolCalls,
+      status: t.isLikelyStuck ? 'likely_stuck' : 'running',
+    }));
+
+    const consensus = phase !== 'idle' ? {
+      phase,
+      tasksComplete: health.filter(t => !t.isLikelyStuck).length,
+      tasksTotal: health.length,
+      elapsedMs: health.length > 0 ? Math.max(...health.map(t => t.elapsedMs)) : 0,
+    } : null;
+
+    const result = { activeTasks, consensus };
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+    };
+  },
 );
 
 // ── Start ─────────────────────────────────────────────────────────────────

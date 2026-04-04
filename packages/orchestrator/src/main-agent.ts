@@ -238,6 +238,7 @@ export class MainAgent {
   /** Health check for active tasks — diagnostics for "is it working?" */
   getActiveTasksHealth() { return this.pipeline.getActiveTasksHealth(); }
   cancelRunningTasks() { return this.pipeline.cancelRunningTasks(); }
+  getConsensusCoordinator() { return this.pipeline.getConsensusCoordinator(); }
 
   /** Seed conversation history with project context from a prior session */
   seedContext(context: string): void {
