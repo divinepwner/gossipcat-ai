@@ -1167,8 +1167,9 @@ server.tool(
     task_id: z.string().describe('Task ID returned by gossip_dispatch or gossip_run'),
     result: z.string().describe('The agent output/result text'),
     error: z.string().optional().describe('Error message if the agent failed'),
+    agent_started_at: z.number().optional().describe('Timestamp (ms) when Agent() was launched. Used to measure actual agent execution time vs dispatch overhead.'),
   },
-  async ({ task_id, result, error }) => handleNativeRelay(task_id, result, error)
+  async ({ task_id, result, error, agent_started_at }) => handleNativeRelay(task_id, result, error, agent_started_at)
 );
 
 // ── gossip_run — single-call dispatch (reduces friction) ─────────────────

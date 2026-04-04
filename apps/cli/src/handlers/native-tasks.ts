@@ -159,7 +159,7 @@ export function restoreNativeTaskMap(projectRoot: string): void {
 }
 
 /** Handle native agent relay — feed Agent tool results back into pipeline */
-export async function handleNativeRelay(task_id: string, result: string, error?: string) {
+export async function handleNativeRelay(task_id: string, result: string, error?: string, agentStartedAt?: number) {
   await ctx.boot(); // [H3 fix] ensure mainAgent/pipeline are available
 
   // Cancel timeout watcher if still running
@@ -192,14 +192,16 @@ export async function handleNativeRelay(task_id: string, result: string, error?:
   }
 
   // Move to result map BEFORE running pipeline — prevents data loss if pipeline crashes
-  const elapsed = Date.now() - taskInfo.startedAt;
+  // Use agentStartedAt (actual Agent() launch time) if provided, otherwise fall back to dispatch time
+  const effectiveStart = agentStartedAt ?? taskInfo.startedAt;
+  const elapsed = Date.now() - effectiveStart;
   ctx.nativeTaskMap.delete(task_id);
   ctx.nativeResultMap.set(task_id, {
     id: task_id, agentId: taskInfo.agentId, task: taskInfo.task,
     status: error ? 'failed' : 'completed',
     result: error ? undefined : (result ? result.slice(0, 50000) : result), // intentional 50k cap — memory protection
     error: error || undefined,
-    startedAt: taskInfo.startedAt, completedAt: Date.now(),
+    startedAt: effectiveStart, completedAt: Date.now(),
   });
   persistNativeTaskMap();
   evictStaleNativeTasks();
