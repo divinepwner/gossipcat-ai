@@ -222,6 +222,13 @@ After `gossip_collect(consensus: true)`, if native cross-review is needed:
 4. Wait for consensus report synthesis to complete
 5. THEN verify UNVERIFIED findings and record signals
 
+**Utility Task Dispatch:**
+When a tool returns `⚠️ EXECUTE NOW` for a utility task (lens generation, summary, gossip),
+follow the same dispatch pattern as native agents: dispatch Agent(), relay result via
+gossip_relay. If the response includes a "re-call" instruction (step 3), call that tool
+with the specified arguments after relaying the result. Fire-and-forget utility tasks
+have no re-call — just dispatch and relay.
+
 ---
 
 ## UNVERIFIED Findings — Mandatory Verification
