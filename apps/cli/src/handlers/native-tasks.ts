@@ -271,7 +271,8 @@ export async function handleNativeRelay(task_id: string, result: string, error?:
   }
 
   // 4. Publish gossip so other running agents can see this result
-  if (!error && !taskInfo.utilityType) {
+  // Skip when native utility is configured — fire-and-forget gossip block below replaces this
+  if (!error && !taskInfo.utilityType && !ctx.nativeUtilityConfig) {
     await ctx.mainAgent.publishNativeGossip(agentId, result.slice(0, 50000)).catch(() => {}); // intentional 50k cap — memory protection
   }
 
