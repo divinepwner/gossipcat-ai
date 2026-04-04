@@ -1,7 +1,24 @@
 #!/usr/bin/env node
 /**
  * Gossipcat MCP Server — thin adapter over MainAgent/DispatchPipeline
+ *
+ * IMPORTANT: stderr is redirected to a log file. Claude Code interprets MCP
+ * stderr output as server errors, causing "N MCP servers failed" warnings.
+ * All process.stderr.write calls throughout the codebase go to .gossip/mcp.log.
  */
+import { createWriteStream, mkdirSync } from 'fs';
+import { join } from 'path';
+
+// Redirect stderr to log file BEFORE any other imports
+const gossipDir = join(process.cwd(), '.gossip');
+try { mkdirSync(gossipDir, { recursive: true }); } catch {}
+const logStream = createWriteStream(join(gossipDir, 'mcp.log'), { flags: 'a' });
+const origStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = ((chunk: any, ...args: any[]) => {
+  // Route ALL stderr to log file — Claude Code interprets any MCP stderr as server errors
+  return logStream.write(chunk, ...args as any);
+}) as any;
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -13,6 +30,7 @@ import { evictStaleNativeTasks, persistNativeTaskMap, restoreNativeTaskMap, hand
 import { handleDispatchSingle, handleDispatchParallel, handleDispatchConsensus } from './handlers/dispatch';
 import { handleCollect } from './handlers/collect';
 import { restorePendingConsensus } from './handlers/relay-cross-review';
+import { restoreRelayTasksAsFailed } from './handlers/relay-tasks';
 
 // ── Environment detection ────────────────────────────────────────────────
 
@@ -428,6 +446,7 @@ async function doBoot() {
 
   // Restore native task tracking from disk (survives /mcp reconnects)
   restoreNativeTaskMap(process.cwd());
+  restoreRelayTasksAsFailed(process.cwd());
   restorePendingConsensus(process.cwd());
 
   // Wire adaptive team intelligence (overlap detection + lens generation)
@@ -458,13 +477,25 @@ async function doBoot() {
     process.stderr.write(`[gossipcat] Adaptive team intelligence failed: ${(err as Error).message}\n`);
   }
 
-  // Wire Consensus Judge (uses dedicated LLM call, not a worker)
+  // Wire Consensus Judge (uses dedicated LLM, optionally from consensus_judge config)
   try {
     const { ConsensusJudge } = await import('@gossip/orchestrator');
-    const judgeLlm = m.createProvider(mainProvider as any, mainModel, mainKey ?? undefined);
+    let judgeProvider = mainProvider;
+    let judgeModel = mainModel;
+    let judgeKey = mainKey;
+    if (config.consensus_judge) {
+      const cj = config.consensus_judge;
+      const cjKey = await ctx.keychain.getKey(cj.provider);
+      if (cjKey) {
+        judgeProvider = cj.provider;
+        judgeModel = cj.model;
+        judgeKey = cjKey;
+      }
+    }
+    const judgeLlm = m.createProvider(judgeProvider as any, judgeModel, judgeKey ?? undefined);
     const judge = new ConsensusJudge(judgeLlm, process.cwd());
     ctx.mainAgent.setConsensusJudge(judge);
-    process.stderr.write(`[gossipcat] Consensus Judge ready (${mainProvider}/${mainModel})\n`);
+    process.stderr.write(`[gossipcat] Consensus Judge ready (${judgeProvider}/${judgeModel})\n`);
   } catch (err) {
     process.stderr.write(`[gossipcat] Consensus Judge failed to initialize: ${(err as Error).message}\n`);
   }
@@ -851,8 +882,18 @@ server.tool(
 
     // System status
     const claudeSubagentsList = loadClaudeSubagents(process.cwd());
+    const banner = [
+      '',
+      '   /\\_/\\   gossipcat v0.1.0',
+      '  ( o.o )  multi-agent mesh',
+      '   > ^ <',
+      '  /|   |\\',
+      ' (_|   |_)',
+    ];
     const lines = [
-      'Gossip Mesh Status:',
+      ...banner,
+      '',
+      'Status:',
       `  Host: ${env.host}${env.supportsNativeAgents ? ' (native agents supported)' : ''}`,
       `  Native agent dir: ${env.nativeAgentDir || 'n/a'}`,
       `  Relay: ${ctx.relay ? `running :${ctx.relay.port}` : 'not started'}`,

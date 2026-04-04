@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto';
 import { CONSENSUS_OUTPUT_FORMAT } from '@gossip/orchestrator';
 import { ctx, NATIVE_TASK_TTL_MS } from '../mcp-context';
 import { evictStaleNativeTasks, persistNativeTaskMap, spawnTimeoutWatcher } from './native-tasks';
+import { persistRelayTasks } from './relay-tasks';
 
 export async function handleDispatchSingle(
   agent_id: string, task: string,
@@ -102,6 +103,7 @@ export async function handleDispatchSingle(
 
   try {
     const { taskId } = ctx.mainAgent.dispatch(agent_id, task, dispatchOptions as any);
+    persistRelayTasks(); // Survive MCP reconnects
     const modeLabel = write_mode ? ` [${write_mode}${scope ? `:${scope}` : ''}]` : '';
     return { content: [{ type: 'text' as const, text: `Dispatched to ${agent_id}${modeLabel}. Task ID: ${taskId}` }] };
   } catch (err: any) {
@@ -147,6 +149,7 @@ export async function handleDispatchParallel(
       })),
       consensus ? { consensus: true } : undefined,
     );
+    persistRelayTasks(); // Survive MCP reconnects
     for (const tid of taskIds) {
       const t = ctx.mainAgent.getTask(tid);
       lines.push(`  ${tid} → ${t?.agentId || 'unknown'} (relay)`);
@@ -157,21 +160,23 @@ export async function handleDispatchParallel(
   // Validate scoped native tasks against active scopes (relay tasks already checked via dispatchParallel)
   // and against each other — uses ScopeTracker for proper path normalization.
   const scopedNative = nativeTasks.filter(d => d.write_mode === 'scoped' && d.scope);
-  for (const def of scopedNative) {
-    if (!def.scope) {
-      return { content: [{ type: 'text' as const, text: `Error: scoped write mode requires a scope path for agent ${def.agent_id}` }] };
-    }
-    const overlap = ctx.mainAgent.scopeTracker.hasOverlap(def.scope);
+  for (let i = 0; i < scopedNative.length; i++) {
+    const def = scopedNative[i];
+    const overlap = ctx.mainAgent.scopeTracker.hasOverlap(def.scope!);
     if (overlap.overlaps) {
+      // Release any temporary registrations from earlier iterations before returning
+      for (let k = 0; k < i; k++) {
+        ctx.mainAgent.scopeTracker.release(`pending-${scopedNative[k].agent_id}-${k}`);
+      }
       return { content: [{ type: 'text' as const, text: `Error: Scope "${def.scope}" for native agent ${def.agent_id} conflicts with running task ${overlap.conflictTaskId} at "${overlap.conflictScope}"` }] };
     }
     // Register temporarily so the next iteration in this loop catches intra-batch overlaps.
-    // Uses a synthetic task ID — will be replaced by the real one when the native task is created below.
-    ctx.mainAgent.scopeTracker.register(def.scope, `pending-${def.agent_id}`);
+    // Uses index-qualified synthetic ID to prevent collision when same agent appears twice.
+    ctx.mainAgent.scopeTracker.register(def.scope!, `pending-${def.agent_id}-${i}`);
   }
   // Release the temporary registrations — they'll be re-registered with real task IDs below
-  for (const def of scopedNative) {
-    ctx.mainAgent.scopeTracker.release(`pending-${def.agent_id}`);
+  for (let j = 0; j < scopedNative.length; j++) {
+    ctx.mainAgent.scopeTracker.release(`pending-${scopedNative[j].agent_id}-${j}`);
   }
 
   // Create native dispatch instructions for Claude Code Agent tool
@@ -241,6 +246,7 @@ export async function handleDispatchConsensus(
       relayTasks.map((d: any) => ({ agentId: d.agent_id, task: d.task })),
       { consensus: true },
     );
+    persistRelayTasks(); // Survive MCP reconnects
     for (const tid of taskIds) {
       const t = ctx.mainAgent.getTask(tid);
       lines.push(`  ${tid} → ${t?.agentId || 'unknown'} (relay)`);

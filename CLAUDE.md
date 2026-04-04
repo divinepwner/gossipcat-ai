@@ -4,10 +4,24 @@
 
 **FIRST:** Call `gossip_status()` to load fresh session context. This triggers bootstrap
 regeneration from the latest `next-session.md` — reading the `.gossip/bootstrap.md` file
-directly may return stale content from a previous session.
+directly may return stale content from a previous session. **Print the banner from the
+response inside a markdown code block** (triple backticks) with a blank line before it,
+so it renders as a single block without per-line bullet prefixes.
 
 Call `gossip_setup(mode: "merge", ...)` to refresh after adding/removing agents.
 Call `gossip_session_save()` before ending your session to preserve context.
+
+**After dispatching agents:** Always print a visible dispatch summary so the user can see
+what's running. Use a code block with this format:
+```
+┌─ gossipcat dispatch ────────────────────────┐
+│  task-id  → agent-name (relay|native)       │
+│  task-id  → agent-name (relay|native)       │
+│  task-id  → agent-name (relay|native)       │
+└─────────────────────────────────────────────┘
+```
+This is important — relay agents run invisibly without terminal indicators. The user needs
+to see what was dispatched and track task IDs for progress checks.
 
 **After consensus:** Verify ALL UNVERIFIED findings against the code before presenting
 results. UNVERIFIED means the cross-reviewer couldn't check — you can and must. Do not

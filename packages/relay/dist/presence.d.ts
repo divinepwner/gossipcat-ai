@@ -5,14 +5,14 @@
  * Agents must send PRESENCE or PING to extend their TTL.
  */
 import { MessageEnvelope } from '@gossip/types';
-export type PresenceStatus = 'online' | 'offline' | 'away' | 'busy' | string;
-export interface PresenceEntry {
+type PresenceStatus = 'online' | 'offline' | 'away' | 'busy' | string;
+interface PresenceEntry {
     agentId: string;
     status: PresenceStatus;
     lastSeen: number;
     metadata?: Record<string, any>;
 }
-export interface PresenceConfig {
+interface PresenceConfig {
     ttlMs?: number;
     cleanupIntervalMs?: number;
 }
@@ -36,3 +36,4 @@ export declare class PresenceTracker {
     clear(): void;
     private startCleanupTimer;
 }
+export {};

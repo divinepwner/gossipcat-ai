@@ -497,4 +497,28 @@ describe('DispatchPipeline', () => {
       expect(() => (p as any).rotateJsonlFile('/nonexistent/path.jsonl', 200, 100)).not.toThrow();
     });
   });
+
+  describe('getRunningTaskRecords()', () => {
+    it('returns only running tasks in the correct format', async () => {
+      const p1 = pipeline.dispatch('test-agent', 'task 1');
+      await p1.finalResultPromise; // this one will complete
+
+      pipeline.dispatch('test-agent', 'task 2'); // this one is running
+
+      const records = pipeline.getRunningTaskRecords();
+      expect(records).toHaveLength(1);
+      expect(records[0].id).toMatch(/^[a-f0-9]{8}$/);
+      expect(records[0].agentId).toBe('test-agent');
+      expect(records[0].task).toBe('task 2');
+      expect(typeof records[0].startedAt).toBe('number');
+      expect(typeof records[0].timeoutMs).toBe('number');
+
+      const task = pipeline.getTask(p1.taskId);
+      expect(task?.status).toBe('completed');
+    });
+
+    it('returns an empty array when no tasks are running', () => {
+      expect(pipeline.getRunningTaskRecords()).toEqual([]);
+    });
+  });
 });

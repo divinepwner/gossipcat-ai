@@ -45,7 +45,7 @@ class RelayServer {
         return new Promise((resolve) => {
             this.httpServer = (0, http_1.createServer)(this.handleHttp.bind(this));
             if (this.config.dashboard) {
-                this.dashboardAuth = new auth_1.DashboardAuth(this.config.dashboard.projectRoot);
+                this.dashboardAuth = new auth_1.DashboardAuth();
                 this.dashboardAuth.init();
                 this.dashboardWs = new ws_2.DashboardWs();
                 this.dashboardUpgrader = new ws_1.WebSocketServer({ noServer: true });
@@ -240,6 +240,9 @@ class RelayServer {
         }
         res.writeHead(404);
         res.end();
+    }
+    get dashboardKey() {
+        return this.dashboardAuth?.getKey() ?? '';
     }
     get dashboardKeyPrefix() {
         return this.dashboardAuth?.getKeyPrefix() ?? '';

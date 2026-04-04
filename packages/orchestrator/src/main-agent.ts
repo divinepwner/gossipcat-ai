@@ -213,6 +213,8 @@ export class MainAgent {
   }
 
   get scopeTracker() { return this.pipeline.scopeTracker; }
+  /** Get running relay task records for persistence */
+  getRelayTaskRecords() { return this.pipeline.getRunningTaskRecords(); }
   /** Update bootstrap prompt after MCP reconnect so agents see fresh session context. */
   setBootstrapPrompt(prompt: string) { this.bootstrapPrompt = prompt; }
   dispatch(agentId: string, task: string, options?: DispatchOptions) { return this.pipeline.dispatch(agentId, task, options); }

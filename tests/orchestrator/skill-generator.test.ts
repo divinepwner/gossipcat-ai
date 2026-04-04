@@ -182,8 +182,11 @@ Rule.
     const gen = new SkillGenerator(llm, new PerformanceReader(testDir), testDir);
     await gen.generate('agent-a', 'injection_vectors');
 
-    const call = (llm.generate as jest.Mock).mock.calls[0];
-    const systemPrompt = call[0][0].content;
+    // First call is detectTechStack, second is skill generation
+    const calls = (llm.generate as jest.Mock).mock.calls;
+    const skillCall = calls.find((c: any) => c[0][0]?.content?.includes('<reference_skill>'));
+    expect(skillCall).toBeDefined();
+    const systemPrompt = skillCall![0][0].content;
     expect(systemPrompt).toContain('<reference_skill>');
     expect(systemPrompt).toContain('systematic-debugging');
   });
@@ -193,8 +196,11 @@ Rule.
     const gen = new SkillGenerator(llm, new PerformanceReader(testDir), testDir);
     await gen.generate('agent-a', 'injection_vectors');
 
-    const call = (llm.generate as jest.Mock).mock.calls[0];
-    const userPrompt = call[0][1].content;
+    // Find the skill generation call (not the detectTechStack call)
+    const calls = (llm.generate as jest.Mock).mock.calls;
+    const skillCall = calls.find((c: any) => c[0].some((m: any) => m.content?.includes('Agent: agent-a')));
+    expect(skillCall).toBeDefined();
+    const userPrompt = skillCall![0][1].content;
 
     // Project context from bootstrap.md
     expect(userPrompt).toContain('Test Project');
@@ -206,6 +212,21 @@ Rule.
     // Peer scores (peer-b has 5 category_confirmed so score > 0.5)
     expect(userPrompt).toContain('peer-b');
     // Temperature option
-    expect(call[1]).toEqual({ temperature: 0.3 });
+    expect(skillCall![1]).toEqual({ temperature: 0.3 });
+  });
+
+  test('memoizes detectTechStack across multiple generate calls', async () => {
+    const llm = mockLLM(VALID_SKILL);
+    const gen = new SkillGenerator(llm, new PerformanceReader(testDir), testDir);
+
+    await gen.generate('agent-a', 'injection_vectors');
+    await gen.generate('agent-a', 'concurrency');
+
+    const calls = (llm.generate as jest.Mock).mock.calls;
+    const techStackCalls = calls.filter((c: any) =>
+      c[0][0]?.content?.includes("Analyze this project's tech stack")
+    );
+    // detectTechStack should only be called once despite two generate() calls
+    expect(techStackCalls).toHaveLength(1);
   });
 });

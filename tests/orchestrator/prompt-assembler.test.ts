@@ -57,4 +57,20 @@ describe('assemblePrompt', () => {
     const result = assemblePrompt({});
     expect(result).not.toContain('## Consensus Summary');
   });
+
+  it('specReviewContext precedes memory (survives truncation)', () => {
+    const result = assemblePrompt({
+      memory: 'mem content',
+      specReviewContext: 'spec review content',
+      lens: 'focus lens',
+    });
+    const specIdx = result.indexOf('--- SPEC REVIEW ---');
+    const memIdx = result.indexOf('--- MEMORY ---');
+    const lensIdx = result.indexOf('--- LENS ---');
+    expect(specIdx).toBeGreaterThan(-1);
+    expect(memIdx).toBeGreaterThan(-1);
+    expect(lensIdx).toBeGreaterThan(-1);
+    expect(lensIdx).toBeLessThan(specIdx);
+    expect(specIdx).toBeLessThan(memIdx);
+  });
 });

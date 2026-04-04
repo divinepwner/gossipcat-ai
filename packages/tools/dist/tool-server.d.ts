@@ -34,4 +34,6 @@ export declare class ToolServer {
     executeTool(name: string, args: Record<string, unknown>, callerId?: string): Promise<string>;
     private handleVerifyWrite;
     private requestPeerReview;
+    private handleRunTests;
+    private handleRunTypecheck;
 }

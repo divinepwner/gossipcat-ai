@@ -32,7 +32,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   severity_calibration: ['severity', 'critical', 'high', 'medium', 'low', 'impact', 'risk', 'priority', 'triage', 'cvss'],
 };
 
-const REQUIRED_SECTIONS = ['## Iron Law', '## When This Skill Activates', '## Methodology', '## Anti-Patterns', '## Quality Gate'];
+const REQUIRED_SECTIONS = ['## Iron Law', '## When This Skill Activates', '## Methodology', '## Key Patterns', '## Anti-Patterns', '## Quality Gate'];
 
 const BUNDLED_TEMPLATE = `---
 name: systematic-debugging
@@ -57,6 +57,12 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST.
 4. Form hypothesis and verify with evidence
 5. Fix the root cause, not the symptom
 
+## Key Patterns
+
+- Stack traces — read bottom-up, find the first project file
+- Error messages — search codebase for the exact string
+- State mutations — trace where the value changed unexpectedly
+
 ## Anti-Patterns
 
 - **"Just one quick fix"** — Quick fixes mask root causes. Investigate before patching.
@@ -70,6 +76,8 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST.
 `;
 
 export class SkillGenerator {
+  private techStackCache: string | null | undefined = undefined; // undefined = not yet computed
+
   constructor(
     private llm: ILLMProvider,
     private perfReader: PerformanceReader,
@@ -104,8 +112,11 @@ export class SkillGenerator {
       projectContext = readFileSync(bootstrapPath, 'utf-8').slice(0, 1500);
     }
 
-    // Analyze project tech stack so skills are tailored, not generic
-    const techStack = await this.detectTechStack();
+    // Analyze project tech stack so skills are tailored, not generic (memoized)
+    if (this.techStackCache === undefined) {
+      this.techStackCache = await this.detectTechStack();
+    }
+    const techStack = this.techStackCache;
     if (techStack) {
       projectContext += `\n\n<tech_stack>\n${techStack}\n</tech_stack>`;
     }

@@ -147,9 +147,17 @@ class ToolServer {
             }
         }
         if (toolName === 'shell_exec') {
-            // Block shell entirely for scoped agents (can't constrain arbitrary commands)
+            // Allow ONLY read-only git commands for scoped agents
             if (scope) {
-                throw new Error('shell_exec is permanently unavailable in scoped write mode. Use file_read to verify your work instead. Do not retry.');
+                const cmd = (args.command || '').trim();
+                const isReadOnlyGit = /^git\s+(status|diff|log|show)\b/.test(cmd);
+                if (!isReadOnlyGit) {
+                    throw new Error('shell_exec is restricted in scoped write mode. Only git status/diff/log/show are allowed. Use run_tests and run_typecheck for verification.');
+                }
+                // Block git flags that can write files or redirect exec
+                if (/--(?:output|exec-path)[=\s]/i.test(cmd)) {
+                    throw new Error('shell_exec: --output and --exec-path flags are not permitted in scoped mode');
+                }
             }
             // Worktree agents: block dangerous patterns
             if (root) {
@@ -164,6 +172,26 @@ class ToolServer {
                     if (pattern.test(fullCmd)) {
                         throw new Error(`Shell command blocked for write-mode agent: matches ${pattern}`);
                     }
+                }
+            }
+        }
+        if (toolName === 'file_delete') {
+            const filePath = args.path;
+            if (scope) {
+                const resolved = (0, path_1.resolve)(this.sandbox.projectRoot, filePath);
+                const rel = (0, path_1.relative)(this.sandbox.projectRoot, resolved);
+                if (rel.startsWith('..')) {
+                    throw new Error(`Delete blocked: "${filePath}" resolves outside project root`);
+                }
+                const normalizedRel = rel.endsWith('/') ? rel : rel + '/';
+                if (!normalizedRel.startsWith(scope)) {
+                    throw new Error(`Delete blocked: "${filePath}" is outside scope "${scope}"`);
+                }
+            }
+            if (root) {
+                const resolved = (0, path_1.resolve)(root, filePath);
+                if (!resolved.startsWith(root)) {
+                    throw new Error(`Delete blocked: "${filePath}" is outside worktree root "${root}"`);
                 }
             }
         }
@@ -239,6 +267,10 @@ class ToolServer {
                 return this.skillTools.suggestSkill(args, callerId);
             case 'verify_write':
                 return this.handleVerifyWrite(callerId || 'unknown', args.test_file);
+            case 'run_tests':
+                return this.handleRunTests(args, callerId);
+            case 'run_typecheck':
+                return this.handleRunTypecheck(callerId);
             default:
                 throw new Error(`Unknown tool: ${name}`);
         }
@@ -349,6 +381,63 @@ class ToolServer {
             }
         }
         return reviewPromise;
+    }
+    async handleRunTests(args, callerId) {
+        const { fileGlob } = args;
+        // Validate: no path traversal
+        if (fileGlob.includes('../')) {
+            throw new Error('run_tests: fileGlob must not contain path traversal (../)');
+        }
+        // Validate: block ALL flags — whitespace splitting could turn embedded flags into real jest args
+        if (/\s-/.test(fileGlob) || fileGlob.startsWith('-')) {
+            throw new Error('run_tests: fileGlob must not contain flags. Pass only file paths/globs.');
+        }
+        const scope = callerId ? this.agentScopes.get(callerId) : undefined;
+        const cwd = scope
+            ? this.sandbox.validatePath((0, path_1.resolve)(this.sandbox.projectRoot, scope))
+            : this.sandbox.projectRoot;
+        let output;
+        let success;
+        try {
+            // Pass fileGlob as args[] element — prevents whitespace splitting into separate jest flags
+            output = await this.shellTools.shellExec({
+                command: 'npx',
+                args: ['jest', fileGlob, '--no-coverage', '--passWithNoTests', '--no-cache'],
+                cwd,
+                timeout: 60000,
+            });
+            success = true;
+        }
+        catch (err) {
+            output = err.message;
+            success = false;
+        }
+        const truncated = output.length > 4000 ? output.slice(output.length - 4000) : output;
+        return JSON.stringify({ success, output: truncated });
+    }
+    async handleRunTypecheck(callerId) {
+        const scope = callerId ? this.agentScopes.get(callerId) : undefined;
+        const cwd = scope
+            ? this.sandbox.validatePath((0, path_1.resolve)(this.sandbox.projectRoot, scope))
+            : this.sandbox.projectRoot;
+        let output;
+        let success;
+        try {
+            // Pin --project to root tsconfig — prevents agent-written tsconfig.json with malicious plugins
+            const tsconfigPath = (0, path_1.resolve)(this.sandbox.projectRoot, 'tsconfig.json');
+            output = await this.shellTools.shellExec({
+                command: 'npx',
+                args: ['tsc', '--noEmit', '--project', tsconfigPath],
+                cwd,
+                timeout: 120000,
+            });
+            success = true;
+        }
+        catch (err) {
+            output = err.message;
+            success = false;
+        }
+        return JSON.stringify({ success, output });
     }
 }
 exports.ToolServer = ToolServer;

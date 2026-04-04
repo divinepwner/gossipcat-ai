@@ -4,6 +4,7 @@
  */
 import { ctx } from '../mcp-context';
 import { startConsensusTimeout, persistPendingConsensus } from './relay-cross-review';
+import { persistRelayTasks } from './relay-tasks';
 
 export async function handleCollect(
   task_ids: string[],
@@ -29,6 +30,7 @@ export async function handleCollect(
     if (!idsForRelay || idsForRelay.length > 0) {
       const collected = await ctx.mainAgent.collect(idsForRelay, timeout_ms);
       relayResults = collected.results || [];
+      persistRelayTasks(); // Prune completed tasks from disk
     }
   } catch (err) {
     const message = (err as Error).message;

@@ -345,6 +345,15 @@ export class DispatchPipeline {
     return this.tasks.get(taskId);
   }
 
+  /** Get metadata for all running tasks — used by relay task persistence */
+  getRunningTaskRecords(): Array<{ id: string; agentId: string; task: string; startedAt: number; timeoutMs: number }> {
+    return Array.from(this.tasks.entries())
+      .filter(([, t]) => t.status === 'running')
+      .map(([id, t]) => ({
+        id, agentId: t.agentId, task: t.task, startedAt: t.startedAt, timeoutMs: 300_000,
+      }));
+  }
+
   /** Get a health summary of all active tasks — for diagnostics when user asks "is it working?" */
   getActiveTasksHealth(): Array<{
     id: string; agentId: string; task: string; status: string;

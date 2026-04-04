@@ -45,6 +45,7 @@ export declare class RelayServer {
     stop(): Promise<void>;
     private handleConnection;
     private handleHttp;
+    get dashboardKey(): string;
     get dashboardKeyPrefix(): string;
     get dashboardUrl(): string;
     /** Call from handleConnection cleanup to keep relay count current */

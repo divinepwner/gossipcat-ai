@@ -5,7 +5,7 @@
  */
 import { MessageEnvelope } from '@gossip/types';
 import { AgentConnection } from './agent-connection';
-export interface SubscribeResult {
+interface SubscribeResult {
     success: boolean;
     channelName: string;
     subscriberCount: number;
@@ -13,7 +13,7 @@ export interface SubscribeResult {
     error?: string;
     errorCode?: string;
 }
-export interface UnsubscribeResult {
+interface UnsubscribeResult {
     success: boolean;
     channelName: string;
     subscriberCount: number;
@@ -21,7 +21,7 @@ export interface UnsubscribeResult {
     error?: string;
     errorCode?: string;
 }
-export interface BroadcastResult {
+interface BroadcastResult {
     success: boolean;
     channelName: string;
     subscriberCount: number;
@@ -44,3 +44,4 @@ export declare class ChannelManager {
     getChannelNames(): string[];
     clear(): void;
 }
+export {};

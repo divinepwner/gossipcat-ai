@@ -104,7 +104,8 @@ ${fileList}`;
 /**
  * Assemble memory, lens, skills, context, and gossip into a single prompt string.
  * Priority order (highest first — survives truncation):
- *   PROJECT → CHAIN CONTEXT → SKILLS → CONSENSUS FORMAT → LENS → MEMORY → SESSION → context
+ *   PROJECT → CHAIN CONTEXT → SKILLS → [CONSENSUS FORMAT] → [LENS] → [SPEC REVIEW] → MEMORY → SESSION → context
+ * Bracketed items are optional — only present when relevant to the task.
  * Skills are behavioral methodology (iron laws, methodology, quality gates) — they define
  * HOW the agent thinks. They must survive truncation over supplementary context like memory/session.
  */
@@ -144,6 +145,11 @@ export function assemblePrompt(parts: {
     blocks.push(`\n\n--- LENS ---\n${parts.lens}\n--- END LENS ---`);
   }
 
+  // SPEC REVIEW — cross-reference material, must survive truncation over memory/session
+  if (parts.specReviewContext) {
+    blocks.push(`\n\n--- SPEC REVIEW ---\n${parts.specReviewContext}\n--- END SPEC REVIEW ---`);
+  }
+
   // SUPPLEMENTARY — memory and session context are useful but expendable under truncation
   if (parts.memory) {
     blocks.push(`\n\n--- MEMORY ---\n${parts.memory}\n--- END MEMORY ---`);
@@ -165,10 +171,6 @@ Keep entries concise (5-10 lines each). Update existing files rather than creati
 
   if (parts.context) {
     blocks.push(`\n\nContext:\n${parts.context}`);
-  }
-
-  if (parts.specReviewContext) {
-    blocks.push(`\n\n--- SPEC REVIEW ---\n${parts.specReviewContext}\n--- END SPEC REVIEW ---`);
   }
 
   let assembled = blocks.join('');

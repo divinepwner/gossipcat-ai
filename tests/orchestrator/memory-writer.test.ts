@@ -377,7 +377,7 @@ describe('MemoryWriter', () => {
     expect(remaining).toHaveLength(3);
   });
 
-  it('caps -session.md files at 5, evicting oldest', async () => {
+  it('caps -session.md files at 5, compacting oldest into digest', async () => {
     const writer = new MemoryWriter(testDir);
     const knowledgeDir = join(memDir, 'knowledge');
     const { mkdirSync: md, writeFileSync: wf } = require('fs');
@@ -385,17 +385,25 @@ describe('MemoryWriter', () => {
 
     for (let i = 0; i < 8; i++) {
       wf(join(knowledgeDir, `2026-01-0${i + 1}T00-00-00-session.md`),
-        `---\nname: Session ${i}\ndescription: test\nimportance: 0.7\nlastAccessed: 2026-01-0${i + 1}\naccessCount: 0\n---\nSession`);
+        `---\nname: Session ${i}\ndescription: test\nimportance: 0.7\nlastAccessed: 2026-01-0${i + 1}\naccessCount: 0\n---\nSession ${i} body`);
     }
 
     (writer as any).pruneKnowledgeDir(knowledgeDir, 25);
 
-    const sessionFiles = readdirSync(knowledgeDir).filter(f => f.endsWith('-session.md'));
-    expect(sessionFiles).toHaveLength(5);
-    // Oldest 3 should be gone (files sort lexicographically, oldest = smallest date prefix)
+    const sessionFiles = readdirSync(knowledgeDir).filter(f => f.endsWith('-session.md')).sort();
+    // 5 remaining + 1 digest = 6 total session files
+    expect(sessionFiles).toHaveLength(6);
+    // Oldest 3 originals should be gone
     expect(sessionFiles).not.toContain('2026-01-01T00-00-00-session.md');
     expect(sessionFiles).not.toContain('2026-01-02T00-00-00-session.md');
     expect(sessionFiles).not.toContain('2026-01-03T00-00-00-session.md');
+    // A digest file should exist with compacted content
+    const digestFile = sessionFiles.find(f => f.includes('-digest-'));
+    expect(digestFile).toBeDefined();
+    const digestContent = readFileSync(join(knowledgeDir, digestFile!), 'utf-8');
+    expect(digestContent).toContain('Compacted summary of 3 older sessions');
+    expect(digestContent).toContain('Session 0 body');
+    expect(digestContent).toMatch(/importance:\s*0\.2/);
   });
 
   it('migrates old high-importance _project entries on session save', async () => {
