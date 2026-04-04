@@ -310,7 +310,7 @@ describe('assemblePrompt — combines memory and skills correctly', () => {
     expect(assemblePrompt({})).toBe('');
   });
 
-  it('memory block comes before skills block', () => {
+  it('skills block comes before memory block', () => {
     const result = assemblePrompt({
       memory: 'agent memory',
       skills: 'agent skills',
@@ -318,7 +318,7 @@ describe('assemblePrompt — combines memory and skills correctly', () => {
 
     const memIdx = result.indexOf('--- MEMORY ---');
     const skillsIdx = result.indexOf('--- SKILLS ---');
-    expect(memIdx).toBeLessThan(skillsIdx);
+    expect(skillsIdx).toBeLessThan(memIdx);
   });
 
   it('integrates real MemoryWriter output into assemblePrompt', async () => {

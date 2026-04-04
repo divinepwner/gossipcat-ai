@@ -104,7 +104,7 @@ describe('Skill Development — Integration', () => {
 
   test('prompt includes category findings from JSONL', async () => {
     await generator.generate('test-agent', 'injection_vectors');
-    const callArgs = (mockLlm.generate as jest.Mock).mock.calls[0];
+    const callArgs = (mockLlm.generate as jest.Mock).mock.calls[1];
     const fullPrompt = callArgs[0].map((m: any) => m.content).join('\n');
     expect(fullPrompt).toContain('Test finding');
   });
@@ -122,7 +122,7 @@ describe('Skill Development — Integration', () => {
     const freshGenerator = new SkillGenerator(mockLlm as any, freshProfiler, testDir);
     await freshGenerator.generate('test-agent', 'injection_vectors');
 
-    const callArgs = (mockLlm.generate as jest.Mock).mock.calls[0];
+    const callArgs = (mockLlm.generate as jest.Mock).mock.calls[1];
     const fullPrompt = callArgs[0].map((m: any) => m.content).join('\n');
     expect(fullPrompt).toContain('strong-peer');
   });

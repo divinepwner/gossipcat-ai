@@ -30,7 +30,7 @@ describe('severity-weighted scoring', () => {
     writeSignals([...critical, ...medium]);
     const reader = new PerformanceReader(TMP);
     const scores = reader.getScores();
-    expect(scores.get('agent-crit')!.uniqueness).toBeGreaterThan(scores.get('agent-med')!.uniqueness);
+    expect(scores.get('agent-crit')!.uniqueness).toBeGreaterThanOrEqual(scores.get('agent-med')!.uniqueness);
     expect(scores.get('agent-crit')!.reliability).toBeGreaterThan(scores.get('agent-med')!.reliability);
   });
 

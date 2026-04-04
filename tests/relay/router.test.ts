@@ -1,3 +1,4 @@
+import { MessageRateLimiter } from '@gossip/relay/message-rate-limiter';
 import { ConnectionManager, MessageRouter } from '@gossip/relay';
 import { Message, MessageType } from '@gossip/types';
 
@@ -19,6 +20,8 @@ describe('MessageRouter', () => {
 
   beforeEach(() => {
     cm = new ConnectionManager();
+    // Note: Rate limiter is not passed here, so it's disabled by default in tests
+    // a specific test will instantiate it.
     router = new MessageRouter(cm);
   });
 
@@ -128,5 +131,31 @@ describe('MessageRouter', () => {
     const metrics = router.getMetrics();
     expect(metrics.messagesRouted).toBe(1);
     expect(metrics.messagesByType[MessageType.DIRECT]).toBe(1);
+  });
+
+  it('drops messages and sends error when rate limit is exceeded', () => {
+    const rateLimiter = new MessageRateLimiter({ maxMessages: 2, windowMs: 1000 });
+    const routerWithLimit = new MessageRouter(cm, rateLimiter);
+    const connA = makeMockConn('agent-a', 'sess-a');
+    const connB = makeMockConn('agent-b', 'sess-b');
+    cm.register('sess-a', connA);
+    cm.register('sess-b', connB);
+
+    const msg = Message.createDirect('agent-a', 'agent-b', new Uint8Array(0));
+
+    // First two should be fine
+    routerWithLimit.route(msg.envelope, connA);
+    routerWithLimit.route(msg.envelope, connA);
+
+    // Third one should be dropped
+    routerWithLimit.route(msg.envelope, connA);
+
+    // Check that B only got 2 messages
+    expect(connB._sent).toHaveLength(2);
+
+    // Check that A got a rate limit error
+    const errors = connA._sent.filter((e: any) => e.t === MessageType.ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].meta.error_code).toBe('RATE_LIMIT_EXCEEDED');
   });
 });

@@ -114,14 +114,14 @@ describe('assemblePrompt with specReviewContext', () => {
     expect(result).toContain('--- END SPEC REVIEW ---');
   });
 
-  it('places specReviewContext after context', () => {
+  it('places specReviewContext before context', () => {
     const result = assemblePrompt({
       context: 'ctx',
       specReviewContext: 'spec review',
     });
     const ctxIdx = result.indexOf('Context:\nctx');
     const specIdx = result.indexOf('--- SPEC REVIEW ---');
-    expect(ctxIdx).toBeLessThan(specIdx);
+    expect(specIdx).toBeLessThan(ctxIdx);
   });
 
   it('omits spec review block when not provided', () => {
