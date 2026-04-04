@@ -2078,7 +2078,22 @@ server.tool(
       elapsedMs: activeTasks.length > 0 ? Math.max(...activeTasks.map(t => t.elapsedMs)) : 0,
     } : null;
 
-    const result = { activeTasks, consensus };
+    // Recently completed native tasks (last 10 minutes)
+    const recentCutoff = now - 600_000;
+    const recentlyCompleted: Array<{ taskId: string; agentId: string; durationMs: number; status: string; completedAgoMs: number }> = [];
+    for (const [taskId, info] of [...ctx.nativeResultMap]) {
+      if (!info.completedAt || info.completedAt < recentCutoff) continue;
+      recentlyCompleted.push({
+        taskId,
+        agentId: info.agentId,
+        durationMs: info.completedAt - (info.startedAt || info.completedAt),
+        status: info.status,
+        completedAgoMs: now - info.completedAt,
+      });
+    }
+    recentlyCompleted.sort((a, b) => a.completedAgoMs - b.completedAgoMs);
+
+    const result = { activeTasks, recentlyCompleted, consensus };
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
     };
