@@ -38,12 +38,28 @@ export async function handleDispatchSingle(
   // Native agent bridge: return Agent tool instructions instead of relay dispatch
   const nativeConfig = ctx.nativeAgentConfigs.get(agent_id);
   if (nativeConfig) {
+    // Scope validation for native single dispatch (same as relay path in dispatch-pipeline.ts)
+    if (write_mode === 'scoped') {
+      if (!scope) {
+        return { content: [{ type: 'text' as const, text: 'Error: scoped write mode requires a scope path' }] };
+      }
+      const overlap = ctx.mainAgent.scopeTracker.hasOverlap(scope);
+      if (overlap.overlaps) {
+        return { content: [{ type: 'text' as const, text: `Error: Scope "${scope}" conflicts with running task ${overlap.conflictTaskId} at "${overlap.conflictScope}"` }] };
+      }
+    }
+
     evictStaleNativeTasks();
     const taskId = randomUUID().slice(0, 8);
     const timeoutMs = timeout_ms ?? NATIVE_TASK_TTL_MS;
     ctx.nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), timeoutMs, planId: plan_id, step });
     spawnTimeoutWatcher(taskId, ctx.nativeTaskMap.get(taskId)!);
     persistNativeTaskMap();
+
+    // Register scope so subsequent dispatches see it
+    if (write_mode === 'scoped' && scope) {
+      ctx.mainAgent.scopeTracker.register(scope, taskId);
+    }
 
     // Fix: register in TaskGraph so native tasks are visible to CLI/sync
     try { ctx.mainAgent.recordNativeTask(taskId, agent_id, task); } catch { /* best-effort */ }
@@ -139,22 +155,23 @@ export async function handleDispatchParallel(
   }
 
   // Validate scoped native tasks against active scopes (relay tasks already checked via dispatchParallel)
-  // and against each other in this batch — prevents native tasks from bypassing ScopeTracker.
+  // and against each other — uses ScopeTracker for proper path normalization.
   const scopedNative = nativeTasks.filter(d => d.write_mode === 'scoped' && d.scope);
   for (const def of scopedNative) {
-    const overlap = ctx.mainAgent.scopeTracker.hasOverlap(def.scope!);
+    if (!def.scope) {
+      return { content: [{ type: 'text' as const, text: `Error: scoped write mode requires a scope path for agent ${def.agent_id}` }] };
+    }
+    const overlap = ctx.mainAgent.scopeTracker.hasOverlap(def.scope);
     if (overlap.overlaps) {
       return { content: [{ type: 'text' as const, text: `Error: Scope "${def.scope}" for native agent ${def.agent_id} conflicts with running task ${overlap.conflictTaskId} at "${overlap.conflictScope}"` }] };
     }
+    // Register temporarily so the next iteration in this loop catches intra-batch overlaps.
+    // Uses a synthetic task ID — will be replaced by the real one when the native task is created below.
+    ctx.mainAgent.scopeTracker.register(def.scope, `pending-${def.agent_id}`);
   }
-  for (let i = 0; i < scopedNative.length; i++) {
-    for (let j = i + 1; j < scopedNative.length; j++) {
-      const a = scopedNative[i].scope!.endsWith('/') ? scopedNative[i].scope! : scopedNative[i].scope + '/';
-      const b = scopedNative[j].scope!.endsWith('/') ? scopedNative[j].scope! : scopedNative[j].scope + '/';
-      if (a.startsWith(b) || b.startsWith(a)) {
-        return { content: [{ type: 'text' as const, text: `Error: Native scoped tasks have overlapping paths: "${scopedNative[i].scope}" (${scopedNative[i].agent_id}) and "${scopedNative[j].scope}" (${scopedNative[j].agent_id})` }] };
-      }
-    }
+  // Release the temporary registrations — they'll be re-registered with real task IDs below
+  for (const def of scopedNative) {
+    ctx.mainAgent.scopeTracker.release(`pending-${def.agent_id}`);
   }
 
   // Create native dispatch instructions for Claude Code Agent tool
@@ -166,6 +183,11 @@ export async function handleDispatchParallel(
     spawnTimeoutWatcher(taskId, ctx.nativeTaskMap.get(taskId)!);
     try { ctx.mainAgent.recordNativeTask(taskId, def.agent_id, def.task); } catch { /* best-effort */ }
     persistNativeTaskMap();
+
+    // Register scope with real task ID so subsequent dispatches see it
+    if (def.write_mode === 'scoped' && def.scope) {
+      ctx.mainAgent.scopeTracker.register(def.scope, taskId);
+    }
 
     const agentPrompt = nativeConfig.instructions
       ? `${nativeConfig.instructions}\n\n---\n\nTask: ${def.task}`

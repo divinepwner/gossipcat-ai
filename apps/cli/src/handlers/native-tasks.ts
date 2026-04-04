@@ -47,6 +47,8 @@ function markTimedOut(taskId: string, info: { agentId: string; task: string; sta
     completedAt: Date.now(),
   });
   persistNativeTaskMap();
+  // Release scope on timeout so it doesn't block future dispatches
+  try { ctx.mainAgent?.scopeTracker.release(taskId); } catch { /* best-effort */ }
   recordTimeoutSignal(taskId, info.agentId);
 }
 
@@ -205,6 +207,9 @@ export async function handleNativeRelay(task_id: string, result: string, error?:
   });
   persistNativeTaskMap();
   evictStaleNativeTasks();
+
+  // Release scope if this native task held one
+  try { ctx.mainAgent.scopeTracker.release(task_id); } catch { /* best-effort — no scope registered is fine */ }
 
   // Run the same post-collect pipeline as custom agents:
   // 1. Memory write  2. Knowledge extraction  3. Gossip  4. Compaction
