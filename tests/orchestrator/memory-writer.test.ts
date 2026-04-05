@@ -430,4 +430,124 @@ describe('MemoryWriter', () => {
       expect(entry.importance).toBeLessThanOrEqual(0.5);
     }
   });
+
+  describe('getSessionSummaryPrompt()', () => {
+    it('returns system and user prompt strings with session context', () => {
+      const writer = new MemoryWriter(testDir);
+      const result = writer.getSessionSummaryPrompt({
+        gossip: 'Agent A found a race condition in server.ts',
+        consensus: 'All agents agreed on the finding',
+        performance: 'Agent A: 95% accuracy',
+        gitLog: 'abc1234 fix: race condition in server.ts',
+      });
+
+      expect(result).toHaveProperty('system');
+      expect(result).toHaveProperty('user');
+      expect(typeof result.system).toBe('string');
+      expect(typeof result.user).toBe('string');
+
+      // System prompt should contain structural instructions
+      expect(result.system).toContain('session');
+      expect(result.system).toContain('SUMMARY:');
+      expect(result.system).toContain('Open for next session');
+
+      // User prompt should contain the session data
+      expect(result.user).toContain('race condition');
+      expect(result.user).toContain('Git Log');
+    });
+
+    it('includes notes in user prompt when provided', () => {
+      const writer = new MemoryWriter(testDir);
+      const result = writer.getSessionSummaryPrompt({
+        gossip: 'test gossip',
+        consensus: '',
+        performance: '',
+        gitLog: '',
+        notes: 'Remember to check the auth module',
+      });
+
+      expect(result.user).toContain('Remember to check the auth module');
+      expect(result.user).toContain('User Notes');
+    });
+  });
+
+  describe('writeSessionSummaryFromRaw()', () => {
+    it('writes session file to _project knowledge directory', async () => {
+      const writer = new MemoryWriter(testDir);
+      const projectKnowledgeDir = join(testDir, '.gossip', 'agents', '_project', 'memory', 'knowledge');
+
+      await writer.writeSessionSummaryFromRaw({
+        gossip: 'test gossip',
+        consensus: 'test consensus',
+        performance: 'test performance',
+        gitLog: 'test git log',
+        raw: 'SUMMARY: Shipped auth fix and added tests\n\n## Open for next session\n- Review server.ts for edge cases\n\n## What shipped\n- Auth module fix',
+      });
+
+      expect(existsSync(projectKnowledgeDir)).toBe(true);
+      const files = readdirSync(projectKnowledgeDir).filter(f => f.endsWith('-session.md'));
+      expect(files.length).toBeGreaterThanOrEqual(1);
+
+      const content = readFileSync(join(projectKnowledgeDir, files[0]), 'utf-8');
+      expect(content).toContain('Shipped auth fix');
+      expect(content).toContain('importance: 0.4');
+    });
+
+    it('handles empty raw input gracefully with fallback', async () => {
+      const writer = new MemoryWriter(testDir);
+      const projectKnowledgeDir = join(testDir, '.gossip', 'agents', '_project', 'memory', 'knowledge');
+
+      await writer.writeSessionSummaryFromRaw({
+        gossip: '',
+        consensus: '',
+        performance: '',
+        gitLog: '',
+        raw: '',
+      });
+
+      // Should still write a file — processSessionResponse handles empty/malformed as fallback
+      expect(existsSync(projectKnowledgeDir)).toBe(true);
+      const files = readdirSync(projectKnowledgeDir).filter(f => f.endsWith('-session.md'));
+      expect(files.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('handles malformed raw input without SUMMARY line', async () => {
+      const writer = new MemoryWriter(testDir);
+      const projectKnowledgeDir = join(testDir, '.gossip', 'agents', '_project', 'memory', 'knowledge');
+
+      await writer.writeSessionSummaryFromRaw({
+        gossip: 'some gossip',
+        consensus: '',
+        performance: '',
+        gitLog: 'abc123 fix things',
+        raw: 'Just some text without proper formatting',
+      });
+
+      expect(existsSync(projectKnowledgeDir)).toBe(true);
+      const files = readdirSync(projectKnowledgeDir).filter(f => f.endsWith('-session.md'));
+      expect(files.length).toBeGreaterThanOrEqual(1);
+
+      // Should contain fallback content since raw is malformed (no SUMMARY: or ## headers)
+      const content = readFileSync(join(projectKnowledgeDir, files[0]), 'utf-8');
+      expect(content).toContain('raw data below');
+    });
+
+    it('writes next-session.md with priorities', async () => {
+      const writer = new MemoryWriter(testDir);
+      const nextSessionPath = join(testDir, '.gossip', 'next-session.md');
+
+      await writer.writeSessionSummaryFromRaw({
+        gossip: 'test',
+        consensus: 'test',
+        performance: 'test',
+        gitLog: 'test',
+        raw: 'SUMMARY: Test session\n\n## Open for next session\n- Fix the auth bug in server.ts\n- Add tests for memory writer\n\n## What shipped\n- Initial implementation',
+      });
+
+      expect(existsSync(nextSessionPath)).toBe(true);
+      const content = readFileSync(nextSessionPath, 'utf-8');
+      expect(content).toContain('Next Session');
+      expect(content).toContain('Fix the auth bug');
+    });
+  });
 });

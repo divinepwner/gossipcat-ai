@@ -48,6 +48,7 @@ export interface McpContext {
   nativeAgentConfigs: Map<string, { model: string; instructions: string; description: string }>;
   pendingConsensusRounds: Map<string, PendingConsensusRound>;
   nativeUtilityConfig: { model: string } | null;
+  mainProvider: string;
   booted: boolean;
   boot: () => Promise<void>;
   syncWorkersViaKeychain: () => Promise<void>;
@@ -66,6 +67,7 @@ export const ctx: McpContext = {
   nativeAgentConfigs: new Map(),
   pendingConsensusRounds: new Map(),
   nativeUtilityConfig: null,
+  mainProvider: 'google',
   booted: false,
   boot: async () => { throw new Error('boot not initialized'); },
   syncWorkersViaKeychain: async () => {},

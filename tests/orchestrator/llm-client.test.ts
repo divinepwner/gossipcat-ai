@@ -25,6 +25,43 @@ describe('LLM Client', () => {
     it('throws for unknown provider', () => {
       expect(() => createProvider('unknown', 'model')).toThrow('Unknown provider: unknown');
     });
+
+    it('createProvider("none", ...) returns a NullProvider that resolves with { text: "" }', async () => {
+      const provider = createProvider('none', 'any-model');
+      const result = await provider.generate([{ role: 'user', content: 'hello' }]);
+      expect(result.text).toBe('');
+    });
+  });
+
+  describe('NullProvider (via createProvider("none", ...))', () => {
+    it('generate() resolves without throwing', async () => {
+      const provider = createProvider('none', 'any');
+      await expect(provider.generate([{ role: 'user', content: 'test' }])).resolves.not.toThrow();
+    });
+
+    it('generate() resolves to { text: "" } with no toolCalls', async () => {
+      const provider = createProvider('none', 'any');
+      const result = await provider.generate([{ role: 'user', content: 'hello' }]);
+      expect(result).toEqual({ text: '' });
+      expect(result.toolCalls).toBeUndefined();
+    });
+
+    it('generate() ignores all options without throwing', async () => {
+      const provider = createProvider('none', 'any');
+      const result = await provider.generate(
+        [{ role: 'system', content: 'system' }, { role: 'user', content: 'hello' }],
+        { tools: [{ name: 'read_file', description: 'Read a file', parameters: { type: 'object', properties: {} } }], temperature: 0.5, maxTokens: 1000 },
+      );
+      expect(result.text).toBe('');
+    });
+
+    it('generate() never makes network calls (no fetch required)', async () => {
+      const provider = createProvider('none', 'any');
+      const fetchSpy = jest.spyOn(global, 'fetch');
+      await provider.generate([{ role: 'user', content: 'should not fetch' }]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      fetchSpy.mockRestore();
+    });
   });
 
   describe('AnthropicProvider', () => {

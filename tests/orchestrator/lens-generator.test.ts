@@ -1,4 +1,5 @@
 import { LensGenerator } from '../../packages/orchestrator/src/lens-generator';
+import { createProvider } from '@gossip/orchestrator';
 import type { ILLMProvider } from '../../packages/orchestrator/src/llm-client';
 import type { LLMResponse } from '../../packages/orchestrator/src/types';
 
@@ -129,5 +130,28 @@ describe('LensGenerator', () => {
     const gen = new LensGenerator(llm);
     const lenses = await gen.generateLenses(mixedAgents, task, sharedSkills);
     expect(lenses).toHaveLength(2);
+  });
+});
+
+describe('LensGenerator with NullProvider', () => {
+  const agents = [
+    { id: 'a1', preset: 'reviewer', skills: ['code_review'] },
+    { id: 'a2', preset: 'tester', skills: ['code_review'] },
+  ];
+  const task = 'Review the auth module';
+  const sharedSkills = ['code_review'];
+
+  it('returns empty array without crashing when LLM is NullProvider', async () => {
+    // NullProvider returns { text: '' } — the JSON match fails, so generateLenses returns []
+    const nullLlm = createProvider('none', 'any');
+    const gen = new LensGenerator(nullLlm);
+    const lenses = await gen.generateLenses(agents, task, sharedSkills);
+    expect(lenses).toEqual([]);
+  });
+
+  it('NullProvider.generate() does not throw when called by LensGenerator', async () => {
+    const nullLlm = createProvider('none', 'any');
+    const gen = new LensGenerator(nullLlm);
+    await expect(gen.generateLenses(agents, task, sharedSkills)).resolves.not.toThrow();
   });
 });

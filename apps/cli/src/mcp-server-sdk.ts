@@ -400,6 +400,7 @@ async function doBoot() {
       process.stderr.write(`[gossipcat] No API keys available — orchestrator LLM disabled, features degrade to profile-based\n`);
     }
   }
+  ctx.mainProvider = mainProvider;
   const supaKey = await ctx.keychain.getKey('supabase');
   const supaTeamSalt = await ctx.keychain.getKey('supabase-team-salt');
   ctx.mainAgent = new m.MainAgent({
@@ -1230,7 +1231,7 @@ server.tool(
 
         // When orchestrator LLM is disabled (provider: "none") and host is Claude Code,
         // delegate classification to the main orchestrator (Claude Code itself)
-        const isNullLlm = config?.main_agent?.provider === 'none';
+        const isNullLlm = ctx.mainProvider === 'none';
 
         if (isNullLlm && env.host === 'claude-code') {
           const agents = ctx.mainAgent.getAgentList?.() ?? [];
