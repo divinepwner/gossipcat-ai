@@ -31,9 +31,12 @@ Gossipcat is an MCP server that orchestrates multiple AI agents to review your c
 
 ## Why multi-agent?
 
-A single reviewer — human or AI — has optimistic bias. A 40-line change once passed linting, type-checking, all tests, and author review. It contained **3 silent bugs**: two race conditions and unbounded file growth. None crashed. None failed tests. They were found only when multiple agents independently reviewed it.
-
-**Author == sole reviewer is always a bug.**
+| Without gossipcat | With gossipcat |
+|---|---|
+| One AI reviews your code — and hallucinates a finding you waste 20 minutes on | Multiple agents cross-check each other — hallucinations get caught before you see them |
+| Every agent gets the same tasks regardless of track record | Dispatch weights route tasks to the agent with the best accuracy in that category |
+| An agent keeps making the same class of mistake | Skill files are auto-generated from failure data and injected into future prompts |
+| You don't know which agent to trust | Accuracy, uniqueness, and reliability scores are tracked per agent, per category |
 
 <br/>
 
