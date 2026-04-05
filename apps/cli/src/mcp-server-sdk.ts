@@ -215,6 +215,8 @@ let bootPromise: Promise<void> | null = null;
 
 // Re-entrant guard: prevents gossip_plan from being called inside a plan step
 let planExecutionDepth = 0;
+// Stash gathered session data between utility dispatch and re-entry (keyed by task ID)
+const _pendingSessionData = new Map<string, { gossip: string; consensus: string; performance: string; gitLog: string; notes?: string }>();
 
 // Cache modules after first import
 let _modules: any = null;
@@ -1891,6 +1893,96 @@ server.tool(
   async ({ notes, _utility_task_id }) => {
     await boot();
 
+    // Re-entry fast path: retrieve stashed data, skip re-gathering
+    if (_utility_task_id) {
+      const stashed = _pendingSessionData.get(_utility_task_id);
+      _pendingSessionData.delete(_utility_task_id);
+      const summaryData = stashed ?? { gossip: '', consensus: '', performance: '', gitLog: '', notes };
+
+      const utilityResult = ctx.nativeResultMap.get(_utility_task_id);
+      const { MemoryWriter } = await import('@gossip/orchestrator');
+      const writer = new MemoryWriter(process.cwd());
+      try { if (ctx.mainAgent.getLLM()) writer.setSummaryLlm(ctx.mainAgent.getLLM()); } catch {}
+
+      let summary: string;
+      if (utilityResult?.status === 'completed' && utilityResult.result) {
+        try {
+          summary = await writer.writeSessionSummaryFromRaw({ ...summaryData, raw: utilityResult.result });
+        } catch (err) {
+          process.stderr.write(`[gossipcat] Native session summary post-processing failed: ${(err as Error).message}\n`);
+          summary = await writer.writeSessionSummary(summaryData);
+        }
+      } else {
+        process.stderr.write(`[gossipcat] Native session summary utility ${_utility_task_id} failed/timed out, falling back to LLM\n`);
+        summary = await writer.writeSessionSummary(summaryData);
+      }
+      ctx.nativeResultMap.delete(_utility_task_id);
+      ctx.nativeTaskMap.delete(_utility_task_id);
+
+      // Auto-resolve findings that appear in recent commits (same as normal path)
+      if (summaryData.gitLog) {
+        try {
+          const { readFileSync: rf, writeFileSync: wf } = require('fs');
+          const { join: j } = require('path');
+          const findingsPath = j(process.cwd(), '.gossip', 'implementation-findings.jsonl');
+          const lines = rf(findingsPath, 'utf-8').trim().split('\n').filter(Boolean);
+          let changed = false;
+          const updated = lines.map((line: string) => {
+            try {
+              const f = JSON.parse(line);
+              const fileBase = f.file?.split('/').pop() || '';
+              const findingWords = (f.finding || '').toLowerCase().split(/\s+/).filter((w: string) => w.length > 5).slice(0, 3);
+              const gitLogLower = summaryData.gitLog.toLowerCase();
+              if (f.status === 'open' && fileBase && fileBase.length > 2 && summaryData.gitLog.includes(fileBase) && findingWords.some((w: string) => gitLogLower.includes(w))) {
+                f.status = 'resolved'; f.resolvedAt = new Date().toISOString(); changed = true;
+              }
+              return JSON.stringify(f);
+            } catch { return line; }
+          });
+          if (changed) wf(findingsPath, updated.join('\n') + '\n');
+        } catch { /* best-effort */ }
+      }
+
+      // Append open findings to next-session.md
+      try {
+        const { existsSync: ex, readFileSync: rf, appendFileSync: af } = require('fs');
+        const { join: j } = require('path');
+        const findingsPath = j(process.cwd(), '.gossip', 'implementation-findings.jsonl');
+        if (ex(findingsPath)) {
+          const lines = rf(findingsPath, 'utf-8').trim().split('\n').filter(Boolean);
+          const findings = lines.map((l: string) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+          const open = findings.filter((f: any) => f.status === 'open');
+          if (open.length > 0) {
+            let findingsTable = '\n\n## Open Findings\n\n| Finding | Agent | Confidence | Status |\n|---------|-------|------------|--------|\n';
+            for (const f of open.slice(0, 20)) {
+              findingsTable += `| ${(f.finding || '').slice(0, 120)} | ${f.originalAgentId || f.reviewerId || 'unknown'} | ${f.confidence ?? '?'} | open |\n`;
+            }
+            af(j(process.cwd(), '.gossip', 'next-session.md'), findingsTable);
+          }
+        }
+      } catch { /* best-effort */ }
+
+      // Regenerate bootstrap so next gossip_status gets fresh context
+      try {
+        const { BootstrapGenerator } = await import('@gossip/orchestrator');
+        const gen = new BootstrapGenerator(process.cwd());
+        const result = gen.generate();
+        const { writeFileSync: wf2, mkdirSync: md2 } = require('fs');
+        const { join: j2 } = require('path');
+        md2(j2(process.cwd(), '.gossip'), { recursive: true });
+        wf2(j2(process.cwd(), '.gossip', 'bootstrap.md'), result.content);
+      } catch { /* best-effort */ }
+
+      // Clear consumed gossip
+      try {
+        const { writeFileSync: wf } = require('fs');
+        const { join: j } = require('path');
+        wf(j(process.cwd(), '.gossip', 'agents', '_project', 'memory', 'session-gossip.jsonl'), '');
+      } catch { /* best-effort */ }
+
+      return { content: [{ type: 'text' as const, text: `Session saved.\n\n${summary}` }] };
+    }
+
     // 1. Gather session gossip from disk (crash-safe)
     let gossipText = '';
     try {
@@ -2024,6 +2116,8 @@ server.tool(
     if (ctx.nativeUtilityConfig && !_utility_task_id) {
       const { system, user } = writer.getSessionSummaryPrompt(summaryData);
       const taskId = randomUUID().slice(0, 8);
+      // Stash gathered data so re-entry doesn't need to re-gather
+      _pendingSessionData.set(taskId, summaryData);
       const UTILITY_TTL_MS = 120_000;
       ctx.nativeTaskMap.set(taskId, {
         agentId: '_utility',
@@ -2048,28 +2142,8 @@ server.tool(
       };
     }
 
-    // Re-entry path: native utility completed, process its result
-    if (_utility_task_id) {
-      const utilityResult = ctx.nativeResultMap.get(_utility_task_id);
-      if (utilityResult?.status === 'completed' && utilityResult.result) {
-        try {
-          summary = await writer.writeSessionSummaryFromRaw({ ...summaryData, raw: utilityResult.result });
-        } catch (err) {
-          process.stderr.write(`[gossipcat] Native session summary post-processing failed: ${(err as Error).message}\n`);
-          summary = await writer.writeSessionSummary(summaryData);
-        }
-      } else {
-        // Failed or timed out — fall through to normal LLM path
-        process.stderr.write(`[gossipcat] Native session summary utility ${_utility_task_id} failed/timed out, falling back to LLM\n`);
-        summary = await writer.writeSessionSummary(summaryData);
-      }
-      // Clean up utility task from maps
-      ctx.nativeResultMap.delete(_utility_task_id);
-      ctx.nativeTaskMap.delete(_utility_task_id);
-    } else {
-      // Normal path: call LLM directly
-      summary = await writer.writeSessionSummary(summaryData);
-    }
+    // Normal path (no re-entry): call LLM directly
+    summary = await writer.writeSessionSummary(summaryData);
 
     // 5d. Append open findings to next-session.md as structured data (outside LLM prose)
     if (findingsTable) {
