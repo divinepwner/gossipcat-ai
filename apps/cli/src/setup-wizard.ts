@@ -39,21 +39,31 @@ const PROVIDERS = {
 type ProviderKey = keyof typeof PROVIDERS | 'local';
 
 const PRESETS = [
-  { value: 'architect',   label: 'Architect',   hint: 'Design, decompose, review trade-offs' },
-  { value: 'implementer', label: 'Implementer', hint: 'Write code, build features, tests alongside' },
-  { value: 'reviewer',    label: 'Reviewer',    hint: 'Find bugs, security holes, quality issues' },
-  { value: 'tester',      label: 'Tester',      hint: 'Write tests, verify, coverage analysis' },
+  { value: 'architect',   label: 'Architect',   hint: 'System design, decomposition, trade-offs' },
+  { value: 'implementer', label: 'Implementer', hint: 'Write code, build features, TDD' },
+  { value: 'reviewer',    label: 'Reviewer',    hint: 'Find bugs, logic errors, quality issues' },
+  { value: 'tester',      label: 'Tester',      hint: 'Write tests, verify coverage, edge cases' },
   { value: 'researcher',  label: 'Researcher',  hint: 'Read docs, gather context, summarize' },
   { value: 'debugger',    label: 'Debugger',    hint: 'Investigate errors, trace root causes' },
+  { value: 'security',    label: 'Security',    hint: 'OWASP, auth, injection, secrets, threat modeling' },
+  { value: 'designer',    label: 'Designer',    hint: 'UI/UX, component structure, frontend patterns' },
+  { value: 'planner',     label: 'Planner',     hint: 'Task decomposition, dependencies, sprint planning' },
+  { value: 'devops',      label: 'DevOps',      hint: 'CI/CD, deployment, Docker, infrastructure' },
+  { value: 'documenter',  label: 'Documenter',  hint: 'README, API docs, changelogs, ADRs' },
 ] as const;
 
 const PRESET_SKILLS: Record<string, string[]> = {
   architect:   ['typescript', 'system_design', 'code_review', 'api_design'],
-  implementer: ['typescript', 'implementation', 'testing', 'react'],
-  reviewer:    ['code_review', 'security_audit', 'debugging'],
+  implementer: ['typescript', 'implementation', 'testing'],
+  reviewer:    ['code_review', 'debugging', 'verification'],
   tester:      ['testing', 'debugging', 'e2e', 'integration'],
   researcher:  ['documentation', 'api_design', 'research'],
   debugger:    ['debugging', 'testing', 'code_review'],
+  security:    ['security_audit', 'dos_resilience', 'verification'],
+  designer:    ['implementation', 'typescript', 'code_review'],
+  planner:     ['system_design', 'research', 'documentation'],
+  devops:      ['implementation', 'testing', 'debugging'],
+  documenter:  ['documentation', 'research', 'api_design'],
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

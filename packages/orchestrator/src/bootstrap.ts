@@ -170,7 +170,7 @@ gossip_setup({
 })
 \`\`\`
 
-Available presets: reviewer, researcher, implementer, tester
+Available presets: reviewer, researcher, implementer, tester, architect, debugger, security, designer, planner, devops, documenter
 Available native models: opus, sonnet, haiku
 
 ## Permissions for Native Agents

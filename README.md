@@ -190,7 +190,7 @@ Start a Claude Code session in any project and ask Claude to set up your team:
 
 Claude Code calls `gossip_setup()` to create your `.gossip/config.json` and agent definitions. You choose the providers, models, and roles — gossipcat adapts to your setup.
 
-Available presets: `reviewer`, `implementer`, `tester`, `researcher`, `debugger`, `architect`
+Available presets: `reviewer`, `implementer`, `tester`, `researcher`, `debugger`, `architect`, `security`, `designer`, `planner`, `devops`, `documenter`
 
 <br/>
 
@@ -343,7 +343,7 @@ Config is searched in order: `.gossip/config.json` > `gossip.agents.json` > `gos
 | `consensus_judge` | Model for cross-review synthesis |
 | `agents.<id>.provider` | `anthropic`, `google`, `openai` |
 | `agents.<id>.native` | `true` = runs via Claude Code Agent(), no API key |
-| `agents.<id>.preset` | `reviewer`, `implementer`, `tester`, `researcher`, `debugger`, `architect` |
+| `agents.<id>.preset` | `reviewer`, `implementer`, `tester`, `researcher`, `debugger`, `architect`, `security`, `designer`, `planner`, `devops`, `documenter` |
 | `agents.<id>.skills` | Skill labels for dispatch matching |
 
 <br/>
