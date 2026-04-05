@@ -216,6 +216,15 @@ That covers all the findings I was asked to review.`;
       expect(result[0].finding).toBe('Race condition confirmed');
     });
 
+    it('should handle prose with brackets before the actual JSON array', () => {
+      const tricky = `Analysis: [some notes] about the code. Here's the data:
+[{"action": "agree", "findingId": "p1:f1", "finding": "Bug confirmed", "evidence": "Checked code", "confidence": 4}]
+End of review.`;
+      const result = parse(tricky);
+      expect(result.length).toBe(1);
+      expect(result[0].action).toBe('agree');
+    });
+
     it('should handle JSON array with surrounding prose and multiple entries', () => {
       const proseWrapped = `## Cross-Review
 

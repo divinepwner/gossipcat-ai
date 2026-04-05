@@ -1307,13 +1307,18 @@ Return only valid JSON.`;
       parsed = JSON.parse(cleaned);
     } catch {
       // Fallback: try to extract a JSON array from within the text (native agents often wrap JSON in prose)
-      const jsonArrayMatch = cleaned.match(/\[[\s\S]*\]/);
-      if (jsonArrayMatch) {
-        try {
-          parsed = JSON.parse(jsonArrayMatch[0]);
-        } catch {
-          // Still not valid JSON
+      // Try each '[' position — greedy match from that point to last ']'
+      let startIdx = 0;
+      while (!parsed && (startIdx = cleaned.indexOf('[', startIdx)) !== -1) {
+        const lastBracket = cleaned.lastIndexOf(']');
+        if (lastBracket > startIdx) {
+          try {
+            parsed = JSON.parse(cleaned.slice(startIdx, lastBracket + 1));
+          } catch {
+            // Not valid JSON from this position, try next '['
+          }
         }
+        startIdx++;
       }
       if (!parsed) {
         if (cleaned.length > 0) {
