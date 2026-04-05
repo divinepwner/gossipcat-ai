@@ -392,11 +392,11 @@ Gossipcat auto-detects the host environment:
 
 ## Star History
 
-<a href="https://star-history.com/#ataberk-xyz/gossipcat-ai&Date">
+<a href="https://www.star-history.com/?repos=ataberk-xyz%2Fgossipcat-ai&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ataberk-xyz/gossipcat-ai&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ataberk-xyz/gossipcat-ai&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=ataberk-xyz/gossipcat-ai&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ataberk-xyz/gossipcat-ai&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ataberk-xyz/gossipcat-ai&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ataberk-xyz/gossipcat-ai&type=date&legend=top-left" />
  </picture>
 </a>
 
