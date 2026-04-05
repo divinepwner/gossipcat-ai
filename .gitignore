@@ -6,6 +6,7 @@ bin/
 *.js.map
 .env
 .env.local
+.mcp.json
 gossip.agents.yaml
 gossip.agents.json
 coverage/

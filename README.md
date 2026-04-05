@@ -160,6 +160,8 @@ claude mcp add gossipcat -s user -- node /absolute/path/to/gossipcat/dist-mcp/mc
 
 Use `-s project` instead of `-s user` to scope it to a single project. Claude Code will prompt you to allow each tool on first use.
 
+Or copy `.mcp.json.example` to `.mcp.json` and edit the paths manually.
+
 ### 3. API keys
 
 Add env vars for the providers you want to use. Pass them with `-e` when registering, or set them in your shell environment.
