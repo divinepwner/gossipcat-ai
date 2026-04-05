@@ -1,12 +1,10 @@
-<p align="center">
-  <pre align="center">
+```
    /\_/\   
   ( o.o )  gossipcat
    > ^ <   multi-agent code review mesh
   /|   |\
  (_|   |_)
-  </pre>
-</p>
+```
 
 <p align="center">
   <strong>Agents review your code. Then review each other. The best ones get picked next time.</strong>
