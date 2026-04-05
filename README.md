@@ -219,7 +219,7 @@ Claude Code reads the dispatch rules from `.claude/rules/gossipcat.md` and autom
 ### Example session
 
 ```
-You:    "Review the changes I made to the relay server"
+You:    "Review the changes I made to the relay server with the gossipcat team"
 
 Claude: Dispatches 3 agents via gossip_dispatch(mode: "consensus")
         → sonnet-reviewer checks for security issues
