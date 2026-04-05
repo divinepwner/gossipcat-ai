@@ -231,6 +231,7 @@ export class MainAgent {
   setOverlapDetector(detector: any): void { this.pipeline.setOverlapDetector(detector); }
   async runConsensus(results: any[]): Promise<any> { return this.pipeline.runConsensus(results); }
   setLensGenerator(generator: any): void { this.pipeline.setLensGenerator(generator); }
+  setDispatchDifferentiator(differ: any): void { this.pipeline.setDispatchDifferentiator(differ); }
   getSkillGapSuggestions() { return this.pipeline.getSkillGapSuggestions(); }
   setSkillIndex(index: any): void { this.pipeline.setSkillIndex(index); }
   setSummaryLlm(llm: any): void { this.pipeline.setSummaryLlm(llm); }
