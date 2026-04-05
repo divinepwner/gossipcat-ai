@@ -1654,18 +1654,50 @@ server.tool(
         return { content: [{ type: 'text' as const, text: 'No performance data yet. Run gossip_dispatch(mode:"consensus") + gossip_signals to generate signals.' }] };
       }
 
+      // Load skill gap data for per-agent suggestions
+      let gapTracker: any = null;
+      try {
+        const { SkillGapTracker } = await import('@gossip/orchestrator');
+        gapTracker = new SkillGapTracker(process.cwd());
+      } catch { /* no gap tracker */ }
+
       const lines = Array.from(scores.values())
         .sort((a, b) => b.reliability - a.reliability)
         .map(s => {
           const w = reader.getDispatchWeight(s.agentId);
           const nativeTag = ctx.nativeAgentConfigs.has(s.agentId) ? ' (native)' : '';
-          return `  ${s.agentId}${nativeTag}:\n` +
+          let line = `  ${s.agentId}${nativeTag}:\n` +
             `    accuracy=${s.accuracy.toFixed(2)} uniqueness=${s.uniqueness.toFixed(2)} reliability=${s.reliability.toFixed(2)}\n` +
             `    signals=${s.totalSignals} agree=${s.agreements} disagree=${s.disagreements} unique=${s.uniqueFindings} hallucinate=${s.hallucinations}\n` +
             `    dispatch weight=${w.toFixed(2)}${s.totalSignals < 3 ? ' (neutral — <3 signals)' : ''}`;
+
+          // Append skill gap suggestions for this agent
+          if (gapTracker && s.accuracy < 0.7) {
+            try {
+              const recentGaps = gapTracker.getSuggestionsSince(s.agentId, Date.now() - 30 * 24 * 60 * 60 * 1000);
+              if (recentGaps.length > 0) {
+                const categories = [...new Set(recentGaps.map((g: any) => g.skill))].slice(0, 3);
+                line += `\n    ⚠ skill gaps: ${categories.join(', ')}`;
+                line += `\n    → gossip_skills(action: "develop", agent_id: "${s.agentId}", category: "<category>")`;
+              }
+            } catch { /* best-effort */ }
+          }
+          return line;
         });
 
-      return { content: [{ type: 'text' as const, text: `Agent Performance Scores (${scores.size} agents):\n\n${lines.join('\n\n')}` }] };
+      // Append pending skill thresholds
+      let pendingLine = '';
+      if (gapTracker) {
+        try {
+          const { pending } = gapTracker.checkThresholds();
+          if (pending.length > 0) {
+            pendingLine = `\n\nPending skill builds (≥3 suggestions, ≥2 agents): ${pending.join(', ')}`;
+            pendingLine += `\n→ gossip_skills(action: "build") to generate`;
+          }
+        } catch { /* best-effort */ }
+      }
+
+      return { content: [{ type: 'text' as const, text: `Agent Performance Scores (${scores.size} agents):\n\n${lines.join('\n\n')}${pendingLine}` }] };
     } catch (err) {
       return { content: [{ type: 'text' as const, text: `Error reading scores: ${(err as Error).message}` }] };
     }
