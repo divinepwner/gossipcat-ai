@@ -10,8 +10,8 @@
         │                                              │
         ╰──────────────────────────────────────────────╯
 
-   agents review your code. then review each other.
-   the best ones get picked next time.
+   one satisfying review has never been enough.
+   your code deserves a second opinion. and a third.
 
 ```
 
