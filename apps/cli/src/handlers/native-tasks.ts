@@ -291,10 +291,14 @@ export async function handleNativeRelay(task_id: string, result: string, error?:
   const utilityBlocks: string[] = [];
 
   // Cap utility tasks to prevent unbounded growth in large consensus rounds
+  // Exclude timed-out entries (still in nativeTaskMap but already have results) to avoid false inflation
   const MAX_PENDING_UTILITY_TASKS = 10;
-  const pendingUtilityCount = [...ctx.nativeTaskMap.values()].filter(t => !!t.utilityType).length;
+  const pendingUtilityCount = [...ctx.nativeTaskMap.entries()]
+    .filter(([id, t]) => !!t.utilityType && !ctx.nativeResultMap.has(id))
+    .length;
 
-  if (!error && !taskInfo.utilityType && ctx.nativeUtilityConfig && pendingUtilityCount < MAX_PENDING_UTILITY_TASKS) {
+  // Reserve 2 slots (summary + gossip) to avoid off-by-one when both spawn
+  if (!error && !taskInfo.utilityType && ctx.nativeUtilityConfig && pendingUtilityCount + 2 <= MAX_PENDING_UTILITY_TASKS) {
     const UTILITY_TTL_MS = 120_000;
     const model = ctx.nativeUtilityConfig.model;
 
