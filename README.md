@@ -1,14 +1,19 @@
 ```
-   /\_/\   
-  ( o.o )  gossipcat
-   > ^ <   multi-agent code review mesh
-  /|   |\
- (_|   |_)
-```
 
-<p align="center">
-  <strong>Agents review your code. Then review each other. The best ones get picked next time.</strong>
-</p>
+        ╭──────────────────────────────────────────────╮
+        │                                              │
+        │           /\_/\                              │
+        │          ( o.o )    g o s s i p c a t        │
+        │           > ^ <                              │
+        │          /|   |\    multi-agent               │
+        │         (_|   |_)   code review mesh          │
+        │                                              │
+        ╰──────────────────────────────────────────────╯
+
+   agents review your code. then review each other.
+   the best ones get picked next time.
+
+```
 
 <p align="center">
   <a href="https://github.com/ataberk-xyz/gossipcat-ai"><img src="https://img.shields.io/github/stars/ataberk-xyz/gossipcat-ai?style=flat" alt="Stars" /></a>
