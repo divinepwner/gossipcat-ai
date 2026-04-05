@@ -373,20 +373,31 @@ async function doBoot() {
     }
   }
 
-  // Try main agent key first, fall back to any available provider key
+  // Try main agent key first, fall back to any available provider key, then "none"
   let mainProvider = config.main_agent.provider;
   let mainModel = config.main_agent.model;
-  let mainKey = await ctx.keychain.getKey(config.main_agent.provider);
-  if (!mainKey) {
-    for (const ac of agentConfigs) {
-      const key = await ctx.keychain.getKey(ac.provider);
-      if (key) {
-        mainProvider = ac.provider;
-        mainModel = ac.model;
-        mainKey = key;
-        process.stderr.write(`[gossipcat] Main agent key unavailable, using ${ac.provider}/${ac.model} for orchestration\n`);
-        break;
+  let mainKey: string | null = null;
+  if (mainProvider === 'none') {
+    // Explicit "none" — skip key lookup, use NullProvider
+    process.stderr.write(`[gossipcat] Orchestrator LLM disabled (provider: none) — features degrade to profile-based\n`);
+  } else {
+    mainKey = await ctx.keychain.getKey(config.main_agent.provider);
+    if (!mainKey) {
+      for (const ac of agentConfigs) {
+        const key = await ctx.keychain.getKey(ac.provider);
+        if (key) {
+          mainProvider = ac.provider;
+          mainModel = ac.model;
+          mainKey = key;
+          process.stderr.write(`[gossipcat] Main agent key unavailable, using ${ac.provider}/${ac.model} for orchestration\n`);
+          break;
+        }
       }
+    }
+    if (!mainKey) {
+      mainProvider = 'none';
+      config.main_agent.provider = 'none';
+      process.stderr.write(`[gossipcat] No API keys available — orchestrator LLM disabled, features degrade to profile-based\n`);
     }
   }
   const supaKey = await ctx.keychain.getKey('supabase');
@@ -928,8 +939,8 @@ server.tool(
   'gossip_setup',
   `Create or update gossipcat team. Default mode is "merge" — adds/updates specified agents while keeping existing ones. Use "replace" to overwrite entire config. Detects host environment (${env.host}) and supports both native Claude Code subagents (.claude/agents/*.md) and custom provider agents (Anthropic, OpenAI, Google Gemini).`,
   {
-    main_provider: z.enum(['anthropic', 'openai', 'google']).default('google')
-      .describe('Provider for the orchestrator LLM'),
+    main_provider: z.enum(['anthropic', 'openai', 'google', 'none']).default('google')
+      .describe('Provider for the orchestrator LLM. Use "none" when no API key is available — features degrade gracefully to profile-based.'),
     main_model: z.string().default('gemini-2.5-pro')
       .describe('Model ID for orchestrator (e.g. gemini-2.5-pro, claude-sonnet-4-6, gpt-4o)'),
     mode: z.enum(['merge', 'replace', 'update_instructions']).default('merge')
@@ -1216,6 +1227,26 @@ server.tool(
     if (agent_id === 'auto') {
       try {
         await syncWorkersViaKeychain();
+
+        // When orchestrator LLM is disabled (provider: "none") and host is Claude Code,
+        // delegate classification to the main orchestrator (Claude Code itself)
+        const isNullLlm = config?.main_agent?.provider === 'none';
+
+        if (isNullLlm && env.host === 'claude-code') {
+          const agents = ctx.mainAgent.getAgentList?.() ?? [];
+          const agentSummary = agents.map((a: any) =>
+            `- ${a.id} (${a.provider}/${a.model}) [${a.skills?.join(', ') || 'no skills'}]`
+          ).join('\n');
+          return { content: [{ type: 'text' as const, text:
+            `Auto-dispatch: no orchestrator LLM — you classify.\n\n` +
+            `**Task:** ${task}\n\n` +
+            `**Available agents:**\n${agentSummary}\n\n` +
+            `Pick the best agent and call:\n` +
+            `  gossip_run(agent_id: "<chosen-agent>", task: "<task>")\n\n` +
+            `For multi-agent tasks, call gossip_plan(task: "<task>") instead.`
+          }] };
+        }
+
         const classification = await ctx.mainAgent.classifyTaskComplexity(task);
 
         if (classification.complexity === 'multi') {

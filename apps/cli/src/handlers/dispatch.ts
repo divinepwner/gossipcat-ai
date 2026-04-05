@@ -245,6 +245,32 @@ export async function handleDispatchConsensus(
     ctx.nativeTaskMap.delete(_utility_task_id);
   }
 
+  // Generate differentiation lenses if not already provided via re-entry
+  if (!precomputedLenses) {
+    try {
+      const LENS_TIMEOUT_MS = 5000;
+      let timerId: ReturnType<typeof setTimeout> | null = null;
+      const lensPromise = ctx.mainAgent.generateLensesForAgents(
+        taskDefs.map((d: { agent_id: string; task: string }) => ({ agentId: d.agent_id, task: d.task })),
+      );
+      // Prevent unhandled rejection if timeout wins and lens generation later rejects
+      lensPromise.catch(() => {});
+      const lenses = await Promise.race([
+        lensPromise,
+        new Promise<null>((resolve) => {
+          timerId = setTimeout(() => resolve(null), LENS_TIMEOUT_MS);
+        }),
+      ]);
+      if (timerId) clearTimeout(timerId);
+      if (lenses && lenses.size > 0) {
+        precomputedLenses = lenses;
+        process.stderr.write(`[gossipcat] Generated ${lenses.size} differentiation lenses for consensus\n`);
+      }
+    } catch (err: any) {
+      process.stderr.write(`[gossipcat] lens generation failed: ${err.message}\n`);
+    }
+  }
+
   // Split native vs custom tasks (same pattern as parallel)
   const nativeTasks: Array<{ agent_id: string; task: string }> = [];
   const relayTasks: Array<{ agent_id: string; task: string }> = [];
@@ -293,7 +319,11 @@ export async function handleDispatchConsensus(
     persistNativeTaskMap();
     process.stderr.write(`[gossipcat] dispatch → ${def.agent_id}: "${def.task.slice(0, 80)}..." (native, ${nativeConfig.model})\n`);
 
-    const agentPrompt = (nativeConfig.instructions || '') + consensusInstruction + `\n\n---\n\nTask: ${def.task}`;
+    const rawLens = precomputedLenses?.get(def.agent_id);
+    const lensSection = rawLens
+      ? `\n\n--- LENS ---\n${rawLens.replace(/---\s*(END )?LENS\s*---/gi, '')}\n--- END LENS ---`
+      : '';
+    const agentPrompt = (nativeConfig.instructions || '') + consensusInstruction + lensSection + `\n\n---\n\nTask: ${def.task}`;
     lines.push(`  ${taskId} → ${def.agent_id} (native — dispatch via Agent tool)`);
     nativeInstructions.push(
       `Agent(model: "${nativeConfig.model}", prompt: ${JSON.stringify(agentPrompt)}, run_in_background: true)` +

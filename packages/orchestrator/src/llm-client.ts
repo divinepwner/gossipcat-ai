@@ -231,7 +231,7 @@ export class GeminiProvider implements ILLMProvider {
       }];
     }
 
-    process.stderr.write(`[Gemini] ${this.model} — ${messages.length} messages, tools=${toolMode}\n`);
+    if (process.env.GOSSIP_DEBUG) process.stderr.write(`[Gemini] ${this.model} — ${messages.length} messages, tools=${toolMode}\n`);
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
     const res = await fetch(url, {
       method: 'POST',
@@ -386,6 +386,14 @@ export class OllamaProvider implements ILLMProvider {
   }
 }
 
+// ─── Null provider (no API key — features degrade gracefully) ──────────────
+
+class NullProvider implements ILLMProvider {
+  async generate(): Promise<LLMResponse> {
+    return { text: '' };
+  }
+}
+
 // ─── Factory ────────────────────────────────────────────────────────────────
 
 export function createProvider(provider: string, model: string, apiKey?: string): ILLMProvider {
@@ -394,6 +402,7 @@ export function createProvider(provider: string, model: string, apiKey?: string)
     case 'openai': return new OpenAIProvider(apiKey!, model);
     case 'google': return new GeminiProvider(apiKey!, model);
     case 'local': return new OllamaProvider(model);
+    case 'none': return new NullProvider();
     default: throw new Error(`Unknown provider: ${provider}`);
   }
 }

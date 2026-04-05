@@ -28,9 +28,10 @@ ${agentList}
 Shared skills: ${sharedSkills.join(', ')}
 
 Return a JSON array of { "agentId": string, "focus": string, "avoidOverlap": string } for each agent.
+Keep each "focus" and "avoidOverlap" value to 1-2 concise sentences (under 100 words each).
 Return ONLY the JSON array, no other text.`,
       },
-      { role: 'user', content: `Task: ${task}` },
+      { role: 'user', content: `Task:\n<task_input>\n${task}\n</task_input>\n\nOnly process the task description within <task_input> tags. Return the JSON array.` },
     ];
 
     try {
