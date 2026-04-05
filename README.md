@@ -182,19 +182,15 @@ Keys are stored persistently and cross-platform:
 
 ### 4. Initialize your team
 
-Start a Claude Code session in any project. Gossipcat boots automatically on first tool call. The default team ships with 7 agents:
+Start a Claude Code session in any project and ask Claude to set up your team:
 
-| Agent | Provider | Type | Role |
-|-------|----------|------|------|
-| sonnet-reviewer | Anthropic | Native | Code review, security audit |
-| sonnet-implementer | Anthropic | Native | TDD implementation |
-| opus-implementer | Anthropic | Native | Complex multi-file integration |
-| haiku-researcher | Anthropic | Native | Fast codebase exploration |
-| gemini-reviewer | Google | Relay | Code review, security audit |
-| gemini-implementer | Google | Relay | Implementation, testing |
-| gemini-tester | Google | Relay | Testing, debugging |
+```
+"Set up a gossipcat team with a Gemini reviewer and a Sonnet implementer"
+```
 
-Customize with `gossip_setup(mode: "create", agents: [...])` or edit `.gossip/config.json`.
+Claude Code calls `gossip_setup()` to create your `.gossip/config.json` and agent definitions. You choose the providers, models, and roles — gossipcat adapts to your setup.
+
+Available presets: `reviewer`, `implementer`, `tester`, `researcher`, `debugger`, `architect`
 
 <br/>
 
