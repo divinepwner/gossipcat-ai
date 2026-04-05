@@ -90,9 +90,9 @@ Per-agent cognitive memory persists across sessions. Agents remember past findin
   <tr>
     <td align="center"><strong>Works<br/>with</strong></td>
     <td align="center"><strong>Claude Code</strong><br/><sub>Full support</sub></td>
-    <td align="center"><strong>Cursor</strong><br/><sub>Experimental</sub></td>
-    <td align="center"><strong>Windsurf</strong><br/><sub>Experimental</sub></td>
-    <td align="center"><strong>VS Code</strong><br/><sub>Experimental</sub></td>
+    <td align="center"><strong>Cursor</strong><br/><sub>Not yet</sub></td>
+    <td align="center"><strong>Windsurf</strong><br/><sub>Not yet</sub></td>
+    <td align="center"><strong>VS Code</strong><br/><sub>Not yet</sub></td>
   </tr>
 </table>
 </div>
