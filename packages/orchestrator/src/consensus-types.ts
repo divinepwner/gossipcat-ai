@@ -104,6 +104,7 @@ export interface ImplSignal {
   signal: 'impl_test_pass' | 'impl_test_fail' | 'impl_peer_approved' | 'impl_peer_rejected';
   agentId: string;
   taskId: string;
+  source?: 'auto' | 'manual';
   evidence?: string;
   timestamp: string;
 }

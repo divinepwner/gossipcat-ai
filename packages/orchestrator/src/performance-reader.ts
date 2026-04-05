@@ -99,8 +99,6 @@ export class PerformanceReader {
   getImplDispatchWeight(agentId: string): number {
     const impl = this.getImplScore(agentId);
     if (!impl) return 1.0; // no impl data, neutral
-    const total = impl.passRate !== 0.5 || impl.peerApproval !== 0.5 ? 1 : 0;
-    if (total === 0) return 1.0;
     return clamp(0.3 + impl.reliability * 1.7, 0.3, 2.0);
   }
 
