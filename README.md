@@ -404,4 +404,4 @@ Gossipcat auto-detects the host environment:
 
 ## License
 
-MIT
+[MIT](LICENSE)
