@@ -102,12 +102,13 @@ export function persistNativeTaskMap(): void {
     const { join: j } = require('path');
     const dir = j(projectRoot, '.gossip');
     md(dir, { recursive: true });
-    // Strip full result/error text from results to keep file small — only persist metadata
+    // Persist results with capped text — full result stays in memory, disk gets truncated copy
     const slimResults: Record<string, any> = {};
     for (const [id, info] of ctx.nativeResultMap) {
       slimResults[id] = {
-        id: info.id, agentId: info.agentId, task: info.task.slice(0, 5000), // cap on-disk only — full task stays in memory
-        status: info.status, startedAt: info.startedAt, completedAt: info.completedAt, error: info.error,
+        id: info.id, agentId: info.agentId, task: info.task?.slice(0, 5000),
+        status: info.status, startedAt: info.startedAt, completedAt: info.completedAt,
+        error: info.error, result: info.result?.slice(0, 50000),
       };
     }
     // Filter utility tasks — they're ephemeral, don't persist
