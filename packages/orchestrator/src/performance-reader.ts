@@ -91,8 +91,17 @@ export class PerformanceReader {
     // Confidence increases with signal volume: 3 → ~0.26, 10 → ~0.63, 30 → ~0.95
     const confidence = 1 - Math.exp(-score.totalSignals / 10);
     // Blend reliability toward neutral (0.5) based on confidence
-    const adjusted = 0.5 + (score.reliability - 0.5) * confidence;
-    return clamp(0.3 + adjusted * 1.7, 0.3, 2.0);
+    const consensusAdjusted = 0.5 + (score.reliability - 0.5) * confidence;
+    return clamp(0.3 + consensusAdjusted * 1.7, 0.3, 2.0);
+  }
+
+  /** Separate dispatch weight for implementation tasks (0.3 to 2.0). Uses impl signals only. */
+  getImplDispatchWeight(agentId: string): number {
+    const impl = this.getImplScore(agentId);
+    if (!impl) return 1.0; // no impl data, neutral
+    const total = impl.passRate !== 0.5 || impl.peerApproval !== 0.5 ? 1 : 0;
+    if (total === 0) return 1.0;
+    return clamp(0.3 + impl.reliability * 1.7, 0.3, 2.0);
   }
 
   /** Check if an agent's circuit breaker is open (3+ consecutive failures) */

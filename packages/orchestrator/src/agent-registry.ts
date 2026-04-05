@@ -107,12 +107,14 @@ export class AgentRegistry {
         }
       }
 
-      // 5. Performance weight (circuit breaker → reader → neutral)
+      // 5. Performance weight — branch on task type (impl vs review)
       let perfWeight = 1.0;
       if (this.perfReader?.isCircuitOpen(agent.id)) {
         perfWeight = 0.3; // circuit breaker overrides all scoring
       } else if (this.perfReader) {
-        perfWeight = this.perfReader.getDispatchWeight(agent.id);
+        perfWeight = options?.taskType === 'impl'
+          ? this.perfReader.getImplDispatchWeight(agent.id)
+          : this.perfReader.getDispatchWeight(agent.id);
       }
 
       const score = (staticOverlap + projectMatchBoost + suggesterBoost + categoryBoost) * perfWeight;

@@ -23,6 +23,7 @@ export interface NativeTaskInfo {
   planId?: string;
   step?: number;
   utilityType?: 'lens' | 'gossip' | 'summary' | 'session_summary';
+  writeMode?: 'sequential' | 'scoped' | 'worktree';
 }
 
 export interface NativeResultInfo {

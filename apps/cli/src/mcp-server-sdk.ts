@@ -1379,8 +1379,8 @@ server.tool(
     // record params
     task_id: z.string().optional().describe('Task ID to link signals to. For record: optional (synthetic ID if omitted). For retract: required.'),
     signals: z.array(z.object({
-      signal: z.enum(['agreement', 'disagreement', 'unique_confirmed', 'unique_unconfirmed', 'new_finding', 'hallucination_caught'])
-        .describe('Signal type: agreement (both agree), disagreement (one wrong), unique_confirmed (only one found it + verified), unique_unconfirmed (only one found it, unverified), new_finding (discovered during cross-review), hallucination_caught (fabricated finding)'),
+      signal: z.enum(['agreement', 'disagreement', 'unique_confirmed', 'unique_unconfirmed', 'new_finding', 'hallucination_caught', 'impl_test_pass', 'impl_test_fail', 'impl_peer_approved', 'impl_peer_rejected'])
+        .describe('Signal type: agreement (both agree), disagreement (one wrong), unique_confirmed (only one found it + verified), unique_unconfirmed (only one found it, unverified), new_finding (discovered during cross-review), hallucination_caught (fabricated finding), impl_test_pass/fail (write-mode task outcome), impl_peer_approved/rejected (peer code review verdict)'),
       agent_id: z.string().describe('Agent being evaluated'),
       counterpart_id: z.string().optional().describe('The other agent involved (e.g., who won the disagreement)'),
       finding: z.string().describe('Brief description of the finding'),
@@ -1435,7 +1435,7 @@ server.tool(
       const timestamp = new Date().toISOString();
       const MAX_EVIDENCE_LENGTH = 2000;
       const PUNITIVE_SIGNALS = new Set(['hallucination_caught', 'disagreement']);
-      const COUNTERPART_REQUIRED = new Set(['agreement', 'disagreement']);
+      const COUNTERPART_REQUIRED = new Set(['agreement', 'disagreement', 'impl_peer_approved', 'impl_peer_rejected']);
 
       // Validate: punitive signals require evidence
       for (const s of signals) {
@@ -1447,8 +1447,9 @@ server.tool(
         }
       }
 
+      const IMPL_SIGNALS = new Set(['impl_test_pass', 'impl_test_fail', 'impl_peer_approved', 'impl_peer_rejected']);
       const formatted = signals.map((s, i) => ({
-        type: 'consensus' as const,
+        type: (IMPL_SIGNALS.has(s.signal) ? 'impl' : 'consensus') as 'impl' | 'consensus',
         taskId: task_id || `manual-${timestamp.replace(/[:.]/g, '')}-${i}`,
         signal: s.signal,
         agentId: s.agent_id,
@@ -1456,6 +1457,7 @@ server.tool(
         findingId: s.finding_id,
         severity: s.severity,
         category: s.category,
+        source: 'manual' as const,
         evidence: ((s.evidence || s.finding) ?? '').slice(0, MAX_EVIDENCE_LENGTH),
         timestamp,
       }));
@@ -1673,6 +1675,12 @@ server.tool(
             `    accuracy=${s.accuracy.toFixed(2)} uniqueness=${s.uniqueness.toFixed(2)} reliability=${s.reliability.toFixed(2)}\n` +
             `    signals=${s.totalSignals} agree=${s.agreements} disagree=${s.disagreements} unique=${s.uniqueFindings} hallucinate=${s.hallucinations}\n` +
             `    dispatch weight=${w.toFixed(2)}${s.totalSignals < 3 ? ' (neutral — <3 signals)' : ''}`;
+
+          const impl = reader.getImplScore(s.agentId);
+          if (impl) {
+            const iw = reader.getImplDispatchWeight(s.agentId);
+            line += `\n    impl: passRate=${impl.passRate.toFixed(2)} peerApproval=${impl.peerApproval.toFixed(2)} reliability=${impl.reliability.toFixed(2)} implWeight=${iw.toFixed(2)}`;
+          }
 
           // Show category strengths/weaknesses from ATI competency profiles
           const cats = (s as any).categoryStrengths;

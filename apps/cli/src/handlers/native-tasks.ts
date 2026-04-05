@@ -239,6 +239,23 @@ export async function handleNativeRelay(task_id: string, result: string, error?:
   // 0. Record in TaskGraph (makes native tasks visible to CLI + Supabase sync)
   try { ctx.mainAgent.recordNativeTaskCompleted(task_id, result, error || undefined, elapsed); } catch { /* best-effort */ }
 
+  // 0a. Auto-record impl signal for write-mode tasks (gate on error param only — string heuristics are unreliable)
+  if (taskInfo.writeMode && !taskInfo.utilityType && agentId !== '_utility') {
+    try {
+      const { PerformanceWriter } = await import('@gossip/orchestrator');
+      const implWriter = new PerformanceWriter(process.cwd());
+      implWriter.appendSignals([{
+        type: 'impl' as const,
+        taskId: task_id,
+        signal: error ? 'impl_test_fail' : 'impl_test_pass',
+        agentId,
+        source: 'auto',
+        evidence: error || undefined,
+        timestamp: new Date().toISOString(),
+      }]);
+    } catch { /* best-effort */ }
+  }
+
   // 0b. Record plan step result so subsequent steps get chain context
   if (taskInfo.planId && taskInfo.step && !error) {
     try { ctx.mainAgent.recordPlanStepResult(taskInfo.planId, taskInfo.step, result); } catch { /* best-effort */ }

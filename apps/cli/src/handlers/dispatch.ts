@@ -72,7 +72,7 @@ export async function handleDispatchSingle(
     evictStaleNativeTasks();
     const taskId = randomUUID().slice(0, 8);
     const timeoutMs = timeout_ms ?? NATIVE_TASK_TTL_MS;
-    ctx.nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), timeoutMs, planId: plan_id, step });
+    ctx.nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), timeoutMs, planId: plan_id, step, writeMode: write_mode });
     spawnTimeoutWatcher(taskId, ctx.nativeTaskMap.get(taskId)!);
     persistNativeTaskMap();
     process.stderr.write(`[gossipcat] dispatch → ${agent_id} (${nativeConfig.model}) [${taskId}]\n`);
