@@ -9,8 +9,33 @@
  */
 
 import { randomUUID } from 'crypto';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { join } from 'path';
 import { ToolDefinition, LLMMessage } from '@gossip/types';
 import { LLMResponse } from './types';
+
+// ─── Quota Exception ────────────────────────────────────────────────────────
+
+export class QuotaExhaustedException extends Error {
+  public readonly provider: string;
+  public readonly retryAfterMs: number;
+
+  constructor(opts: { message: string; provider: string; retryAfterMs: number }) {
+    super(opts.message);
+    this.name = 'QuotaExhaustedException';
+    this.provider = opts.provider;
+    this.retryAfterMs = opts.retryAfterMs;
+  }
+}
+
+interface QuotaProviderState {
+  exhaustedUntil: number;
+  consecutive429s: number;
+}
+
+interface QuotaStateFile {
+  google?: QuotaProviderState;
+}
 
 export interface LLMGenerateOptions {
   tools?: ToolDefinition[];
@@ -205,8 +230,67 @@ export class OpenAIProvider implements ILLMProvider {
 export class GeminiProvider implements ILLMProvider {
   private consecutive429s = 0;
   private quotaExhaustedUntil = 0;
+  private quotaStatePath: string | null;
 
-  constructor(private apiKey: string, private model: string) {}
+  constructor(private apiKey: string, private model: string, projectRoot?: string) {
+    this.quotaStatePath = projectRoot ? join(projectRoot, '.gossip', 'quota-state.json') : null;
+    this.loadQuotaState();
+  }
+
+  private loadQuotaState(): void {
+    if (!this.quotaStatePath || !existsSync(this.quotaStatePath)) return;
+    try {
+      const raw = readFileSync(this.quotaStatePath, 'utf-8');
+      const state: QuotaStateFile = JSON.parse(raw);
+      if (state.google) {
+        this.quotaExhaustedUntil = state.google.exhaustedUntil;
+        this.consecutive429s = state.google.consecutive429s;
+      }
+    } catch {
+      // Corrupt or unreadable — start fresh
+    }
+  }
+
+  private persistQuotaState(): void {
+    if (!this.quotaStatePath) return;
+    try {
+      const dir = join(this.quotaStatePath, '..');
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      const state: QuotaStateFile = {
+        google: {
+          exhaustedUntil: this.quotaExhaustedUntil,
+          consecutive429s: this.consecutive429s,
+        },
+      };
+      writeFileSync(this.quotaStatePath, JSON.stringify(state, null, 2));
+    } catch {
+      // Non-fatal — persistence is best-effort
+    }
+  }
+
+  /**
+   * Parse Retry-After header: supports integer seconds or HTTP-date format.
+   * Returns milliseconds or null if header is missing/unparseable.
+   */
+  private parseRetryAfter(res: Response): number | null {
+    const header = res.headers.get('Retry-After') ?? res.headers.get('retry-after');
+    if (!header) return null;
+
+    // Integer seconds (e.g. "60")
+    const seconds = Number(header);
+    if (!isNaN(seconds) && seconds > 0) {
+      return seconds * 1000;
+    }
+
+    // HTTP-date (e.g. "Fri, 31 Dec 2027 23:59:59 GMT")
+    const dateMs = Date.parse(header);
+    if (!isNaN(dateMs)) {
+      const delta = dateMs - Date.now();
+      return delta > 0 ? delta : null;
+    }
+
+    return null;
+  }
 
   async generate(messages: LLMMessage[], options?: LLMGenerateOptions): Promise<LLMResponse> {
     const contents = messages.filter(m => m.role !== 'system').map(m => this.toGeminiMessage(m));
@@ -234,11 +318,16 @@ export class GeminiProvider implements ILLMProvider {
       }];
     }
 
-    // Quota circuit breaker: skip API calls during cooldown
+    // Quota circuit breaker: reject immediately during cooldown
     if (this.quotaExhaustedUntil > Date.now()) {
-      const remaining = Math.round((this.quotaExhaustedUntil - Date.now()) / 1000);
-      process.stderr.write(`[Gemini] quota exhausted, ${remaining}s cooldown remaining — returning empty\n`);
-      return { text: '' };
+      const remainingMs = this.quotaExhaustedUntil - Date.now();
+      const remainingSec = Math.round(remainingMs / 1000);
+      process.stderr.write(`[Gemini] quota exhausted, ${remainingSec}s cooldown remaining\n`);
+      throw new QuotaExhaustedException({
+        message: `Gemini quota exhausted — ${remainingSec}s cooldown remaining`,
+        provider: 'google',
+        retryAfterMs: remainingMs,
+      });
     }
 
     if (process.env.GOSSIP_DEBUG) process.stderr.write(`[Gemini] ${this.model} — ${messages.length} messages, tools=${toolMode}\n`);
@@ -253,15 +342,24 @@ export class GeminiProvider implements ILLMProvider {
       const errBody = (await res.text()).slice(0, 200);
       if (res.status === 429) {
         this.consecutive429s++;
-        const cooldownMs = Math.min(60_000 * Math.pow(2, this.consecutive429s - 1), 300_000); // 1min, 2min, 4min, max 5min
+        const cooldownMs = this.parseRetryAfter(res) ?? Math.min(60_000 * Math.pow(2, this.consecutive429s - 1), 300_000);
         this.quotaExhaustedUntil = Date.now() + cooldownMs;
+        this.persistQuotaState();
         process.stderr.write(`[Gemini] 429 rate limited (${this.consecutive429s}x) — cooling down ${cooldownMs / 1000}s\n`);
+        throw new QuotaExhaustedException({
+          message: `Gemini quota exhausted (429 #${this.consecutive429s}): ${errBody}`,
+          provider: 'google',
+          retryAfterMs: cooldownMs,
+        });
       }
       throw new Error(`Gemini API error (${res.status}): ${errBody}`);
     }
     // Reset on success
-    this.consecutive429s = 0;
-    this.quotaExhaustedUntil = 0;
+    if (this.consecutive429s > 0 || this.quotaExhaustedUntil > 0) {
+      this.consecutive429s = 0;
+      this.quotaExhaustedUntil = 0;
+      this.persistQuotaState();
+    }
     const data = await res.json() as Record<string, unknown>;
     const result = this.parseGeminiResponse(data);
     if (process.env.GOSSIP_DEBUG) process.stderr.write(`[Gemini] → text=${result.text?.length ?? 0}chars, toolCalls=${result.toolCalls?.length ?? 0}${result.toolCalls?.length ? ` [${result.toolCalls.map(tc => tc.name).join(', ')}]` : ''}, tokens=${result.usage?.inputTokens ?? '?'}/${result.usage?.outputTokens ?? '?'}\n`);
@@ -415,11 +513,11 @@ class NullProvider implements ILLMProvider {
 
 // ─── Factory ────────────────────────────────────────────────────────────────
 
-export function createProvider(provider: string, model: string, apiKey?: string): ILLMProvider {
+export function createProvider(provider: string, model: string, apiKey?: string, projectRoot?: string): ILLMProvider {
   switch (provider) {
     case 'anthropic': return new AnthropicProvider(apiKey!, model);
     case 'openai': return new OpenAIProvider(apiKey!, model);
-    case 'google': return new GeminiProvider(apiKey!, model);
+    case 'google': return new GeminiProvider(apiKey!, model, projectRoot);
     case 'local': return new OllamaProvider(model);
     case 'none': return new NullProvider();
     default: throw new Error(`Unknown provider: ${provider}`);

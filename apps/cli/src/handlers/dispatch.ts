@@ -3,10 +3,55 @@
  * All state accessed via the shared context object.
  */
 import { randomUUID } from 'crypto';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { CONSENSUS_OUTPUT_FORMAT } from '@gossip/orchestrator';
 import { ctx, NATIVE_TASK_TTL_MS } from '../mcp-context';
 import { evictStaleNativeTasks, persistNativeTaskMap, spawnTimeoutWatcher } from './native-tasks';
 import { persistRelayTasks } from './relay-tasks';
+
+// Quota-based fallback routing for relay agents
+const QUOTA_FALLBACK_MAP: Record<string, string> = {
+  'gemini-reviewer':    'sonnet-reviewer',
+  'gemini-tester':      'haiku-researcher',
+  'gemini-implementer': 'sonnet-implementer',
+};
+
+// Provider lookup: derives provider name from agent ID prefix (e.g. "gemini-*" → "google")
+const AGENT_PROVIDER_MAP: Record<string, string> = {
+  gemini: 'google',
+};
+
+function readQuotaState(): Record<string, { exhaustedUntil?: number }> {
+  try {
+    const raw = readFileSync(join(process.cwd(), '.gossip', 'quota-state.json'), 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function isProviderExhausted(provider: string, quotaState: Record<string, { exhaustedUntil?: number }>): boolean {
+  const entry = quotaState[provider];
+  return !!(entry?.exhaustedUntil && entry.exhaustedUntil > Date.now());
+}
+
+function reroutableAgent(agentId: string): string {
+  const fallback = QUOTA_FALLBACK_MAP[agentId];
+  if (!fallback) return agentId;
+
+  // Determine provider from agent ID prefix
+  const prefix = agentId.split('-')[0];
+  const provider = AGENT_PROVIDER_MAP[prefix];
+  if (!provider) return agentId;
+
+  const quotaState = readQuotaState();
+  if (isProviderExhausted(provider, quotaState)) {
+    process.stderr.write(`[gossipcat] quota fallback: ${agentId} → ${fallback}\n`);
+    return fallback;
+  }
+  return agentId;
+}
 
 const CATEGORY_KEYWORDS: Array<{ keywords: string[]; category: string }> = [
   { keywords: ['race condition', 'concurrent', 'async'],                    category: 'concurrency' },
@@ -39,6 +84,9 @@ export async function handleDispatchSingle(
   if (!/^[a-zA-Z0-9_-]+$/.test(agent_id)) {
     return { content: [{ type: 'text' as const, text: `Invalid agent ID format: "${agent_id}"` }] };
   }
+
+  // Quota fallback: reroute exhausted relay agents to native equivalents
+  agent_id = reroutableAgent(agent_id);
 
   const options: Record<string, unknown> = {};
   if (write_mode) {
@@ -146,6 +194,9 @@ export async function handleDispatchParallel(
     }
   }
 
+  // Quota fallback: reroute exhausted relay agents to native equivalents
+  taskDefs = taskDefs.map(def => ({ ...def, agent_id: reroutableAgent(def.agent_id) }));
+
   // [C2 fix] Split native vs custom tasks — native agents have no relay worker
   const nativeTasks: Array<{ agent_id: string; task: string; write_mode?: string; scope?: string }> = [];
   const relayTasks: Array<{ agent_id: string; task: string; write_mode?: string; scope?: string }> = [];
@@ -247,6 +298,9 @@ export async function handleDispatchConsensus(
       return { content: [{ type: 'text' as const, text: `Invalid agent ID format: "${def.agent_id}"` }] };
     }
   }
+
+  // Quota fallback: reroute exhausted relay agents to native equivalents
+  taskDefs = taskDefs.map(def => ({ ...def, agent_id: reroutableAgent(def.agent_id) }));
 
   // Re-entry: recover pre-computed lenses from a completed native utility task
   let precomputedLenses: Map<string, string> | null = null;

@@ -109,7 +109,7 @@ export class MainAgent {
   private readonly MAX_HISTORY = 20; // 10 pairs of user+assistant
 
   constructor(config: MainAgentConfig) {
-    this.llm = config.llm ?? createProvider(config.provider, config.model, config.apiKey);
+    this.llm = config.llm ?? createProvider(config.provider, config.model, config.apiKey, config.projectRoot);
     this.currentProvider = config.provider;
     this.currentModel = config.model;
     this.registry = new AgentRegistry();
@@ -387,10 +387,10 @@ export class MainAgent {
         const score = perfScores?.get(a.id);
         if (score?.categoryStrengths) {
           const top = Object.entries(score.categoryStrengths)
-            .filter(([, v]) => v >= 0.3)
-            .sort(([, a], [, b]) => b - a)
+            .filter(([, v]) => (v as number) >= 0.3)
+            .sort(([, a], [, b]) => (b as number) - (a as number))
             .slice(0, 3)
-            .map(([k, v]) => `${k}(${v.toFixed(1)})`);
+            .map(([k, v]) => `${k}(${(v as number).toFixed(1)})`);
           if (top.length > 0) strengthsTag = ` strengths=[${top.join(', ')}]`;
         }
       } catch { /* best-effort */ }

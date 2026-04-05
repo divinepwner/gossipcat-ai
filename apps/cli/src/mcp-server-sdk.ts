@@ -902,6 +902,23 @@ server.tool(
       lines.push(`  Dashboard: ${ctx.relay.dashboardUrl} (key: ${ctx.relay.dashboardKey})`);
     }
 
+    // Quota health
+    try {
+      const { readFileSync } = await import('fs');
+      const quotaPath = join(process.cwd(), '.gossip', 'quota-state.json');
+      const quotaRaw = readFileSync(quotaPath, 'utf8');
+      const quotaState: Record<string, { exhaustedUntil?: number }> = JSON.parse(quotaRaw);
+      for (const [provider, state] of Object.entries(quotaState)) {
+        const now = Date.now();
+        if (state.exhaustedUntil && state.exhaustedUntil > now) {
+          const cooldownSec = Math.ceil((state.exhaustedUntil - now) / 1000);
+          lines.push(`  Quota: ${provider} — EXHAUSTED (${cooldownSec}s cooldown)`);
+        } else {
+          lines.push(`  Quota: ${provider} — OK`);
+        }
+      }
+    } catch { /* quota-state.json not present — skip */ }
+
     // Agent list (formerly gossip_agents)
     const agentSections: string[] = [];
     const configPath = findConfigPath();

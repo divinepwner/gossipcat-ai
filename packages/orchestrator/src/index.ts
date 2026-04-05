@@ -14,6 +14,7 @@ export {
   OpenAIProvider,
   GeminiProvider,
   OllamaProvider,
+  QuotaExhaustedException,
 } from './llm-client';
 export type { ILLMProvider, LLMGenerateOptions } from './llm-client';
 export * from './types';
