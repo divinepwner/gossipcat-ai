@@ -44,23 +44,13 @@ This bundles the MCP server into `dist-mcp/mcp-server.js` — the only artifact 
 
 ### 2. Add to Claude Code
 
-Register gossipcat as an MCP server. You can add it per-project (`.claude/settings.json`) or globally (`~/.claude/settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "gossipcat": {
-      "command": "node",
-      "args": ["/absolute/path/to/gossipcat/dist-mcp/mcp-server.js"],
-      "env": {
-        "GOOGLE_API_KEY": "your-gemini-key"
-      }
-    }
-  }
-}
+```bash
+claude mcp add gossipcat -s user -- node /absolute/path/to/gossipcat/dist-mcp/mcp-server.js -e GOOGLE_API_KEY=your-gemini-key
 ```
 
-Replace `/absolute/path/to/gossipcat` with the actual clone path. The working directory becomes the project root — all `.gossip/` state is written there.
+Replace `/absolute/path/to/gossipcat` with the actual clone path. Use `-s project` instead of `-s user` to scope it to a single project.
+
+Claude Code will prompt you to allow each gossipcat tool on first use — accept them to enable the full workflow.
 
 ### 3. API keys
 
