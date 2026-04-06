@@ -471,6 +471,7 @@ Gossipcat auto-detects the host environment:
 | Full Cursor support | Planned |
 | Windsurf / VS Code parity | Planned |
 | Standalone CLI (no IDE required) | Planned |
+| CLI parity with MCP pipeline (gossip, task graph, agent memory in chat mode) | Planned |
 
 <br/>
 
