@@ -27,6 +27,7 @@ export interface AgentScore {
 
 const CIRCUIT_BREAKER_THRESHOLD = 3; // consecutive failures → open circuit
 const NEGATIVE_SIGNALS = new Set(['hallucination_caught', 'disagreement', 'unique_unconfirmed']);
+const SIGNAL_EXPIRY_DAYS = 30;
 
 /** Known consensus signal types — used to filter valid signals in computeScores */
 const KNOWN_SIGNALS: Record<ConsensusSignal['signal'], true> = {
@@ -111,7 +112,6 @@ export class PerformanceReader {
   private readSignals(): ConsensusSignal[] {
     if (!existsSync(this.filePath)) return [];
     try {
-      const SIGNAL_EXPIRY_DAYS = 30;
       const expiryMs = Date.now() - SIGNAL_EXPIRY_DAYS * 86400000;
 
       const lines = readFileSync(this.filePath, 'utf-8').trim().split('\n').filter(Boolean);
@@ -378,7 +378,6 @@ export class PerformanceReader {
   }
 
   private computePeerDiversity(signals: ConsensusSignal[]): Map<string, number> {
-    const SIGNAL_EXPIRY_DAYS = 30;
     const expiryMs = Date.now() - SIGNAL_EXPIRY_DAYS * 86400000;
     const peerSets = new Map<string, Set<string>>();
     const recentAgents = new Set<string>();
@@ -402,12 +401,14 @@ export class PerformanceReader {
   getImplScore(agentId: string): { passRate: number; peerApproval: number; reliability: number } | null {
     if (!existsSync(this.filePath)) return null;
     try {
+      const expiryMs = Date.now() - SIGNAL_EXPIRY_DAYS * 86400000;
       const lines = readFileSync(this.filePath, 'utf-8').trim().split('\n').filter(Boolean);
       let pass = 0, fail = 0, approved = 0, rejected = 0;
       for (const line of lines) {
         try {
           const s = JSON.parse(line);
           if (s.type !== 'impl' || s.agentId !== agentId) continue;
+          if (s.timestamp && new Date(s.timestamp).getTime() < expiryMs) continue;
           if (s.signal === 'impl_test_pass') pass++;
           if (s.signal === 'impl_test_fail') fail++;
           if (s.signal === 'impl_peer_approved') approved++;

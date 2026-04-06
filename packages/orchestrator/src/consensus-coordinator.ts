@@ -1,6 +1,4 @@
 import { randomUUID } from 'crypto';
-import { readFileSync, appendFileSync, mkdirSync, writeFileSync } from 'fs';
-import { join } from 'path';
 import { ILLMProvider, createProvider } from './llm-client';
 import { ConsensusEngine } from './consensus-engine';
 import { ConsensusReport } from './consensus-types';
@@ -160,14 +158,6 @@ export class ConsensusCoordinator {
       };
       this.sessionConsensusHistory.push(historyEntry);
 
-      // Persist to consensus-history.jsonl for dashboard
-      try {
-        const historyPath = join(this.projectRoot, '.gossip', 'consensus-history.jsonl');
-        mkdirSync(join(this.projectRoot, '.gossip'), { recursive: true });
-        appendFileSync(historyPath, JSON.stringify(historyEntry) + '\n');
-        this.rotateJsonlFile(historyPath, 200, 100);
-      } catch { /* best-effort */ }
-
       // Auto-write consensus knowledge to _project (fire-and-forget)
       if (this.memWriter && consensusReport.confirmed.length + consensusReport.disputed.length > 0) {
         const agentList = results.filter(r => r.status === 'completed').map(r => r.agentId).join(', ');
@@ -189,14 +179,4 @@ export class ConsensusCoordinator {
     }
   }
 
-  /** Rotate a JSONL file: if over maxEntries lines, keep only the last keepEntries. */
-  private rotateJsonlFile(filePath: string, maxEntries: number, keepEntries: number): void {
-    try {
-      const content = readFileSync(filePath, 'utf-8');
-      const lines = content.trim().split('\n').filter(l => l.length > 0);
-      if (lines.length > maxEntries) {
-        writeFileSync(filePath, lines.slice(-keepEntries).join('\n') + '\n');
-      }
-    } catch { /* file may not exist yet */ }
-  }
 }

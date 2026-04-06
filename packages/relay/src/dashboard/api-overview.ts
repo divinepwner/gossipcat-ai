@@ -26,13 +26,79 @@ export interface OverviewResponse {
   avgDurationMs: number;
   lastConsensusTimestamp: string;
   actionableFindings: number;
+  /** Task counts for each of the last 12 hours (index 0 = 12h ago, index 11 = current hour). */
+  hourlyActivity: number[];
 }
 
 export async function overviewHandler(projectRoot: string, ctx: OverviewContext): Promise<OverviewResponse> {
   const nativeCount = ctx.agentConfigs.filter(a => a.native).length;
   const relayConnected = ctx.connectedAgentIds.length;
   const relayCount = ctx.agentConfigs.filter(a => !a.native).length;
-  const agentsOnline = relayConnected + nativeCount;
+
+  // "Online" = agents currently executing tasks.
+  // Relay agents: counted only if they have an in-flight task (connected + idle is not "online" for monitoring purposes).
+  // Native agents: counted if they have an active dispatch in task-graph.jsonl without a completion event.
+  // Cutoff: tasks older than 30 minutes are stale and ignored.
+  const activeAgentIds = new Set<string>();
+  const STALE_MS = 30 * 60 * 1000;
+  let tasksCompleted = 0;
+  let tasksFailed = 0;
+  let totalDuration = 0;
+  let durationCount = 0;
+  const hourlyActivity = new Array(12).fill(0);
+  const now = Date.now();
+  const hourMs = 60 * 60 * 1000;
+
+  // Single pass over task-graph.jsonl for active agents, task stats, and hourly buckets.
+  const graphPath = join(projectRoot, '.gossip', 'task-graph.jsonl');
+  if (existsSync(graphPath)) {
+    try {
+      const created = new Map<string, { agentId: string; timestamp: string }>();
+      const finished = new Set<string>();
+      const lines = readFileSync(graphPath, 'utf-8').trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const ev = JSON.parse(line);
+          if (ev.type === 'task.created') {
+            if (ev.taskId && ev.agentId) {
+              created.set(ev.taskId, { agentId: ev.agentId, timestamp: ev.timestamp || '' });
+            }
+            // Hourly activity buckets (index 0 = 12h ago, index 11 = current hour)
+            if (ev.timestamp) {
+              const ts = new Date(ev.timestamp).getTime();
+              if (Number.isFinite(ts)) {
+                const ageMs = now - ts;
+                if (ageMs >= 0 && ageMs < 12 * hourMs) {
+                  const idx = 11 - Math.floor(ageMs / hourMs);
+                  if (idx >= 0 && idx < 12) hourlyActivity[idx]++;
+                }
+              }
+            }
+          } else if (ev.type === 'task.completed') {
+            if (ev.taskId) finished.add(ev.taskId);
+            tasksCompleted++;
+            if (typeof ev.duration === 'number' && ev.duration > 0) {
+              totalDuration += ev.duration;
+              durationCount++;
+            }
+          } else if (ev.type === 'task.failed') {
+            if (ev.taskId) finished.add(ev.taskId);
+            tasksFailed++;
+          } else if (ev.type === 'task.cancelled') {
+            if (ev.taskId) finished.add(ev.taskId);
+          }
+        } catch { /* skip */ }
+      }
+      for (const [taskId, info] of created) {
+        if (finished.has(taskId)) continue;
+        const ts = info.timestamp ? new Date(info.timestamp).getTime() : NaN;
+        if (isNaN(ts) || now - ts > STALE_MS) continue;
+        activeAgentIds.add(info.agentId);
+      }
+    } catch { /* empty */ }
+  }
+
+  const agentsOnline = activeAgentIds.size;
 
   let totalSignals = 0;
   let consensusRuns = 0;
@@ -50,15 +116,12 @@ export async function overviewHandler(projectRoot: string, ctx: OverviewContext)
         try {
           const entry = JSON.parse(line);
           totalSignals++;
-          // Count consensus runs (group by consensusId, fall back to taskId)
           if (entry.type === 'consensus' && (entry.consensusId || entry.taskId)) {
             consensusTaskIds.add(entry.consensusId ?? entry.taskId);
           }
-          // Track last consensus timestamp
           if (entry.consensusId && entry.timestamp > lastConsensusTimestamp) {
             lastConsensusTimestamp = entry.timestamp;
           }
-          // Count findings by signal type
           if (entry.signal === 'agreement' || entry.signal === 'unique_confirmed' || entry.signal === 'consensus_verified') {
             totalFindings++;
             confirmedFindings++;
@@ -77,33 +140,7 @@ export async function overviewHandler(projectRoot: string, ctx: OverviewContext)
   }
   consensusRuns = consensusTaskIds.size;
 
-  // Task metrics from task-graph.jsonl
-  let tasksCompleted = 0;
-  let tasksFailed = 0;
-  let totalDuration = 0;
-  let durationCount = 0;
-
-  const graphPath = join(projectRoot, '.gossip', 'task-graph.jsonl');
-  if (existsSync(graphPath)) {
-    try {
-      const lines = readFileSync(graphPath, 'utf-8').trim().split('\n').filter(Boolean);
-      for (const line of lines) {
-        try {
-          const entry = JSON.parse(line);
-          if (entry.type === 'task.completed') {
-            tasksCompleted++;
-            if (typeof entry.duration === 'number' && entry.duration > 0) {
-              totalDuration += entry.duration;
-              durationCount++;
-            }
-          } else if (entry.type === 'task.failed') {
-            tasksFailed++;
-          }
-        } catch { /* skip */ }
-      }
-    } catch { /* empty */ }
-  }
   const avgDurationMs = durationCount > 0 ? Math.round(totalDuration / durationCount) : 0;
 
-  return { agentsOnline, relayCount, relayConnected, nativeCount, consensusRuns, totalFindings, confirmedFindings, totalSignals, tasksCompleted, tasksFailed, avgDurationMs, lastConsensusTimestamp, actionableFindings };
+  return { agentsOnline, relayCount, relayConnected, nativeCount, consensusRuns, totalFindings, confirmedFindings, totalSignals, tasksCompleted, tasksFailed, avgDurationMs, lastConsensusTimestamp, actionableFindings, hourlyActivity };
 }

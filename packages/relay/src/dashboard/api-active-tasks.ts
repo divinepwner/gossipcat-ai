@@ -33,9 +33,15 @@ export async function activeTasksHandler(projectRoot: string): Promise<ActiveTas
     }
   } catch { return { tasks: [] }; }
 
+  // Tasks older than 30 minutes are assumed dead (no completion event received)
+  const STALE_MS = 30 * 60 * 1000;
+  const now = Date.now();
+
   const active: ActiveTask[] = [];
   for (const [taskId, info] of created) {
     if (finished.has(taskId)) continue;
+    const ts = info.timestamp ? new Date(info.timestamp).getTime() : NaN;
+    if (isNaN(ts) || now - ts > STALE_MS) continue;
     active.push({ taskId, agentId: info.agentId, task: info.task, startedAt: info.timestamp });
   }
 
