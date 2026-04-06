@@ -401,14 +401,17 @@ export class PerformanceReader {
   getImplScore(agentId: string): { passRate: number; peerApproval: number; reliability: number } | null {
     if (!existsSync(this.filePath)) return null;
     try {
-      const expiryMs = Date.now() - SIGNAL_EXPIRY_DAYS * 86400000;
+      const now = Date.now();
+      const expiryMs = now - SIGNAL_EXPIRY_DAYS * 86400000;
       const lines = readFileSync(this.filePath, 'utf-8').trim().split('\n').filter(Boolean);
-      let pass = 0, fail = 0, approved = 0, rejected = 0;
+      let pass = 0, fail = 0, approved = 0, rejected = 0, lastImplSignalMs = 0;
       for (const line of lines) {
         try {
           const s = JSON.parse(line);
           if (s.type !== 'impl' || s.agentId !== agentId) continue;
-          if (s.timestamp && new Date(s.timestamp).getTime() < expiryMs) continue;
+          const ts = s.timestamp ? new Date(s.timestamp).getTime() : 0;
+          if (ts < expiryMs) continue;
+          if (ts > lastImplSignalMs) lastImplSignalMs = ts;
           if (s.signal === 'impl_test_pass') pass++;
           if (s.signal === 'impl_test_fail') fail++;
           if (s.signal === 'impl_peer_approved') approved++;
@@ -420,7 +423,19 @@ export class PerformanceReader {
       if (total === 0 && peerTotal === 0) return null;
       const passRate = total > 0 ? pass / total : 0.5;
       const peerApproval = peerTotal > 0 ? approved / peerTotal : 0.5;
-      return { passRate, peerApproval, reliability: clamp(passRate * 0.6 + peerApproval * 0.4, 0, 1) };
+      let reliability = clamp(passRate * 0.6 + peerApproval * 0.4, 0, 1);
+
+      // Time-based decay: mirror the same pattern used in computeScores() (line 356–361).
+      // Good agents (reliability >= 0.5) decay with 7-day half-life toward neutral.
+      // Poor agents (reliability < 0.5) recover more slowly (21-day half-life).
+      if (lastImplSignalMs > 0) {
+        const daysSince = (now - lastImplSignalMs) / 86400000;
+        const halfLife = reliability >= 0.5 ? 7 : 21;
+        const freshness = Math.pow(0.5, daysSince / halfLife);
+        reliability = 0.5 + (reliability - 0.5) * freshness;
+      }
+
+      return { passRate, peerApproval, reliability: clamp(reliability, 0, 1) };
     } catch { return null; }
   }
 }
