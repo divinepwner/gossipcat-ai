@@ -19,6 +19,7 @@ export class DashboardWs {
   private logPath = '';
   private logReading = false;
   private logCarry = '';
+  private logCapped = false; // true when last read started mid-file (64KB cap)
 
   addClient(ws: WebSocket): void {
     this.clients.add(ws);
@@ -82,10 +83,12 @@ export class DashboardWs {
       }
 
       // Cap read to 64KB per poll to avoid flooding clients.
-      // When capping, also discard logCarry — the skipped bytes break line continuity.
-      const readFrom = currentSize - this.logOffset > 65536
-        ? (this.logCarry = '', currentSize - 65536)
-        : this.logOffset;
+      // When capping, discard logCarry (skipped bytes break continuity) and set logCapped
+      // so the end callback knows to drop the first partial line.
+      const capped = currentSize - this.logOffset > 65536;
+      const readFrom = capped
+        ? (this.logCarry = '', this.logCapped = true, currentSize - 65536)
+        : (this.logCapped = false, this.logOffset);
 
       let stream;
       try {
@@ -102,8 +105,18 @@ export class DashboardWs {
         this.logOffset = currentSize;
         this.logReading = false;
 
+        let raw = Buffer.concat(chunks).toString('utf-8');
+
+        // If the cap kicked in, readFrom was an arbitrary mid-file position.
+        // The first bytes may be mid-line — drop up to the first newline.
+        if (this.logCapped) {
+          const nl = raw.indexOf('\n');
+          raw = nl >= 0 ? raw.slice(nl + 1) : '';
+          this.logCapped = false;
+        }
+
         // Prepend any partial line carried over from the previous read.
-        const text = this.logCarry + Buffer.concat(chunks).toString('utf-8');
+        const text = this.logCarry + raw;
 
         const endsWithNewline = text.endsWith('\n');
         const parts = text.split('\n');

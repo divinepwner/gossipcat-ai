@@ -73,7 +73,9 @@ export function logsHandler(
   let buf: Buffer = Buffer.alloc(0);
   try {
     buf = Buffer.allocUnsafe(readLen);
-    readSync(fd, buf, 0, readLen, readFrom);
+    // Use the actual bytes-read count so we never expose uninitialized allocUnsafe bytes.
+    const bytesRead = readSync(fd, buf, 0, readLen, readFrom);
+    buf = buf.subarray(0, bytesRead);
   } finally {
     closeSync(fd);
   }
@@ -84,7 +86,6 @@ export function logsHandler(
     raw = nl >= 0 ? raw.slice(nl + 1) : raw;
   }
   const allLines = raw.split('\n').filter(Boolean);
-  const totalLines = allLines.length;
 
   // Build entries from the tail
   let entries: LogEntry[] = [];
@@ -98,6 +99,9 @@ export function logsHandler(
 
     entries.push({ line: i + 1, text, category });
   }
+
+  // totalLines reflects the matched set so clients can show "X of Y" correctly.
+  const totalLines = entries.length;
 
   // Return only the last N matching entries
   entries = entries.slice(-clampedTail);
