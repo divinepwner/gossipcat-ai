@@ -301,6 +301,21 @@ async function doBoot() {
   const agentConfigs = m.configToAgentConfigs(config);
   ctx.keychain = new m.Keychain();
 
+  // Kill any orphaned relay process from a previous crash before binding the port.
+  // We write our own PID after binding, so the file always points to the gossipcat process.
+  const { existsSync: pidExists, readFileSync: readPid, writeFileSync: writePid, unlinkSync: delPid } = require('fs');
+  const pidFile = join(process.cwd(), '.gossip', 'relay.pid');
+  if (pidExists(pidFile)) {
+    const oldPid = parseInt(readPid(pidFile, 'utf-8').trim(), 10);
+    if (!isNaN(oldPid) && oldPid !== process.pid) {
+      try {
+        process.kill(oldPid, 0); // throws ESRCH if not running
+        process.kill(oldPid);    // SIGTERM
+        await new Promise(r => setTimeout(r, 250)); // wait for port release
+      } catch { /* already dead — proceed */ }
+    }
+  }
+
   ctx.relay = new m.RelayServer({
     port: 24420,
     dashboard: {
@@ -309,6 +324,15 @@ async function doBoot() {
     },
   });
   await ctx.relay.start();
+
+  // Write PID so the next boot can clean up if we crash without releasing the port.
+  try { writePid(pidFile, String(process.pid)); } catch { /* best-effort */ }
+
+  // Clean up PID file on graceful exit so the next boot doesn't try to kill a dead process.
+  const cleanupPid = () => { try { delPid(pidFile); } catch { /* ignore */ } };
+  process.once('exit', cleanupPid);
+  process.once('SIGTERM', () => { cleanupPid(); process.exit(0); });
+  process.once('SIGINT',  () => { cleanupPid(); process.exit(0); });
 
   if (ctx.relay.dashboardUrl) {
     process.stderr.write(`[gossipcat] Dashboard: ${ctx.relay.dashboardUrl} (key: ${ctx.relay.dashboardKey})\n`);

@@ -103,7 +103,7 @@ export class RelayServer {
         }
       });
 
-      this.httpServer.listen(this.config.port, this.config.host || '0.0.0.0', () => {
+      this.httpServer.listen(this.config.port, this.config.host ?? '127.0.0.1', () => {
         const addr = this.httpServer.address() as { port: number };
         this._port = addr.port;
         resolve();
