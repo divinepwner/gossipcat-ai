@@ -245,7 +245,8 @@ export async function handleCollect(
           consensusId,
         );
       } else {
-        // Store pending round for native agents to complete
+        // Store pending round for native agents to complete.
+        // nativePrompts is persisted so /mcp reconnect can re-issue the EXECUTE NOW block.
         ctx.pendingConsensusRounds.set(consensusId, {
           consensusId,
           allResults: allResults.filter((r: any) => r.status === 'completed'),
@@ -254,6 +255,7 @@ export async function handleCollect(
           nativeCrossReviewEntries: [],
           deadline: Date.now() + CONSENSUS_TIMEOUT_MS,
           createdAt: Date.now(),
+          nativePrompts: nativePrompts.map(p => ({ agentId: p.agentId, system: p.system, user: p.user })),
         });
 
         // Start timeout watcher — auto-synthesizes if native agents don't respond

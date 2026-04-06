@@ -5,6 +5,12 @@
 import { randomUUID } from 'crypto';
 import type { CrossReviewEntry } from '@gossip/orchestrator';
 
+export interface NativeCrossReviewPrompt {
+  agentId: string;
+  system: string;
+  user: string;
+}
+
 export interface PendingConsensusRound {
   consensusId: string;
   allResults: any[];  // TaskEntry[]
@@ -13,6 +19,8 @@ export interface PendingConsensusRound {
   nativeCrossReviewEntries: CrossReviewEntry[];
   deadline: number;
   createdAt: number;
+  /** Cross-review prompts for still-pending native agents. Persisted so /mcp reconnect can re-issue EXECUTE NOW. */
+  nativePrompts?: NativeCrossReviewPrompt[];
 }
 
 export interface NativeTaskInfo {

@@ -2437,6 +2437,39 @@ server.tool(
     }
     recentlyCompleted.sort((a, b) => a.completedAgoMs - b.completedAgoMs);
 
+    // Reconnect recovery: if a consensus round was restored with pending native agents,
+    // re-surface the EXECUTE NOW block so the orchestrator can dispatch the remaining agents.
+    const recoveryBlocks: string[] = [];
+    for (const [cid, round] of ctx.pendingConsensusRounds) {
+      if (round.pendingNativeAgents.size === 0 || !round.nativePrompts?.length) continue;
+      const pendingPrompts = round.nativePrompts.filter(p => round.pendingNativeAgents.has(p.agentId));
+      if (pendingPrompts.length === 0) continue;
+
+      const lines: string[] = [];
+      lines.push(`⚠️ EXECUTE NOW — consensus round ${cid} is waiting for cross-review from ${pendingPrompts.length} agent(s).`);
+      lines.push(`consensus_id: ${cid}\n`);
+      lines.push(`For each agent below, dispatch Agent() then call gossip_relay_cross_review:\n`);
+      for (const p of pendingPrompts) {
+        const nativeConfig = ctx.nativeAgentConfigs.get(p.agentId);
+        const model = nativeConfig?.model || 'sonnet';
+        lines.push(`--- AGENT: ${p.agentId} (model: ${model}) ---`);
+        lines.push(`Step 1: Agent(model: "${model}", prompt: <see PROMPTS section below>, run_in_background: true)`);
+        lines.push(`Step 2: gossip_relay_cross_review(consensus_id: "${cid}", agent_id: "${p.agentId}", result: "<output>")\n`);
+      }
+      lines.push(`⚠️ You MUST execute ALL cross-review Agent() calls and relay results BEFORE continuing.\n`);
+      for (const p of pendingPrompts) {
+        const nativeConfig = ctx.nativeAgentConfigs.get(p.agentId);
+        const model = nativeConfig?.model || 'sonnet';
+        lines.push(`\n--- PROMPT FOR ${p.agentId} (model: ${model}) ---`);
+        lines.push(`---SYSTEM---\n${p.system}\n---USER---\n${p.user}\n---END---`);
+      }
+      recoveryBlocks.push(lines.join('\n'));
+    }
+
+    if (recoveryBlocks.length > 0) {
+      return { content: [{ type: 'text' as const, text: recoveryBlocks.join('\n\n===\n\n') }] };
+    }
+
     const result = { activeTasks, recentlyCompleted, consensus };
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],

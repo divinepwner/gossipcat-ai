@@ -269,6 +269,8 @@ export function persistPendingConsensus(): void {
         nativeCrossReviewEntries: round.nativeCrossReviewEntries,
         deadline: round.deadline,
         createdAt: round.createdAt,
+        // Only persist prompts for agents that are still pending — completed ones are done
+        nativePrompts: (round.nativePrompts || []).filter(p => round.pendingNativeAgents.has(p.agentId)),
       };
     }
     writeFileSync(join(dir, CONSENSUS_FILE), JSON.stringify(rounds));
@@ -304,6 +306,7 @@ export function restorePendingConsensus(projectRoot: string): void {
         nativeCrossReviewEntries: data.nativeCrossReviewEntries || [],
         deadline: data.deadline,
         createdAt: data.createdAt,
+        nativePrompts: data.nativePrompts || [],
       });
 
       // Re-arm timeout watcher
