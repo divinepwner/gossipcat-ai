@@ -955,6 +955,33 @@ server.tool(
       agentSections.push(`\nRelay workers online: ${ctx.workers.size} — [${Array.from(ctx.workers.keys()).join(', ')}]`);
     }
 
+    // Onboarding hint — shown when agents are configured so new users know what to say
+    const hasAgents = gossipAgents.length > 0;
+    if (hasAgents) {
+      agentSections.push([
+        '',
+        '─────────────────────────────────',
+        'Try saying:',
+        '  "Review my recent changes"',
+        '  "Do a consensus review on the auth module"',
+        '  "Security audit the payment handler"',
+        '  "Research how X works before I touch it"',
+        '  "Show me agent scores"',
+        '─────────────────────────────────',
+      ].join('\n'));
+    } else {
+      agentSections.push([
+        '',
+        '─────────────────────────────────',
+        'No agents yet. Get started:',
+        '  "Set up a gossipcat team with a Gemini reviewer and a Sonnet implementer"',
+        '  "Add a security auditor to my team"',
+        '',
+        'Or manually: gossip_setup({ agents: [...] })',
+        '─────────────────────────────────',
+      ].join('\n'));
+    }
+
     return { content: [{ type: 'text' as const, text: lines.join('\n') + '\n\n' + agentSections.join('\n') }] };
   }
 );

@@ -193,6 +193,76 @@ Available presets: `reviewer`, `implementer`, `tester`, `researcher`, `debugger`
 
 <br/>
 
+## Use Cases
+
+### Review code before committing
+
+```
+"Review the changes I just made"
+"Do a consensus review on the auth module"
+"Check my last 3 commits for bugs"
+```
+
+Three agents review your diff independently, then cross-check each other's findings. You get a report with CONFIRMED bugs (multiple agents agree), DISPUTED findings (agents disagree), and UNIQUE findings (only one agent found it). You only act on what's verified.
+
+---
+
+### Catch security issues
+
+```
+"Security audit the payment handler"
+"Check the login flow for vulnerabilities"
+"Review the API endpoints for injection risks"
+```
+
+Dispatch your security-focused agents in parallel. Each reviews from a different angle — one checks OWASP vectors, another checks input validation, another checks auth logic. Findings that survive cross-review are real.
+
+---
+
+### Research a codebase before building
+
+```
+"Research how the WebSocket connection lifecycle works before I touch it"
+"Explain the dispatch pipeline — I need to add a new routing mode"
+```
+
+Agents read the code, trace call paths, and write a summary back to session memory. Next time you ask about the same area, they already know it.
+
+---
+
+### Get a second opinion on your own review
+
+```
+"I think there's a race condition in this Map — check if I'm right"
+"Verify whether this fix actually resolves the issue"
+```
+
+Describe what you think you're seeing. Agents check independently and either confirm or disprove it. Author self-review is optimistic by nature — this isn't.
+
+---
+
+### Track which agents are actually reliable
+
+```
+"Show me agent scores"
+"Which agent is best at security reviews?"
+```
+
+Every finding gets verified and turned into a signal. Accuracy, uniqueness, and reliability are tracked per agent. Over time, dispatch weights shift — the agents that keep catching real bugs get more work.
+
+---
+
+### Improve a struggling agent
+
+```
+"Gemini keeps hallucinating about concurrency — fix it"
+"Develop a skill for the reviewer's repeated type-safety misses"
+```
+
+Gossipcat generates a targeted skill file from the agent's failure data and injects it into future prompts. Signals penalize past mistakes; skills prevent future ones.
+
+<br/>
+
 ## Usage
 
 Once gossipcat is installed, you interact with it through natural language in Claude Code. The CLAUDE.md rules file (auto-generated on first boot) teaches Claude Code how to use the gossipcat tools — you just describe what you want.
@@ -203,9 +273,11 @@ Once gossipcat is installed, you interact with it through natural language in Cl
 |---------------|-------------|
 | Review your latest changes | *"Review my recent changes"* |
 | Deep review of critical code | *"Do a consensus review on the auth module"* |
+| Catch security issues | *"Security audit the payment handler"* |
+| Research before building | *"How does the dispatch pipeline work?"* |
+| Get a second opinion | *"Check if I'm right about this race condition"* |
 | Check which agents are performing well | *"Show me agent scores"* |
-| Research before building | *"Research how the dispatch pipeline works"* |
-| Plan a feature | *"Plan the implementation for user notifications"* |
+| Improve a struggling agent | *"Develop a skill for the reviewer's type-safety misses"* |
 | Save context for next session | *"Save session"* |
 
 Claude Code reads the dispatch rules from `.claude/rules/gossipcat.md` and automatically decides whether to use single-agent, parallel, or consensus mode based on what your change touches.
