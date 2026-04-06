@@ -1802,6 +1802,7 @@ server.tool(
         ? (existing.enabled !== enabled ? (enabled ? 'enabled' : 'disabled') : 'updated')
         : 'bound';
 
+      process.stderr.write(`[gossipcat] Skill "${slot.skill}" ${bindAction} for ${agent_id} (v${slot.version})\n`);
       return { content: [{ type: 'text' as const, text: `Skill "${slot.skill}" ${bindAction} for ${agent_id} (v${slot.version}, ${slot.enabled ? 'enabled' : 'disabled'})` }] };
     }
 
@@ -1813,6 +1814,7 @@ server.tool(
       if (!index) return { content: [{ type: 'text' as const, text: 'Skill index not initialized.' }] };
 
       const removed = index.unbind(agent_id, skill);
+      if (removed) process.stderr.write(`[gossipcat] Skill "${skill}" unbound from ${agent_id}\n`);
       return { content: [{ type: 'text' as const, text: removed
         ? `Skill "${skill}" unbound from ${agent_id}`
         : `No slot found for "${skill}" on ${agent_id}`
@@ -1858,10 +1860,12 @@ server.tool(
           ? result.content.slice(0, 1000) + '\n\n... (truncated)'
           : result.content;
 
+        process.stderr.write(`[gossipcat] Skill developed: "${skillName}" for ${agent_id} (category: ${category})\n`);
         return {
           content: [{ type: 'text' as const, text: `Skill generated and saved:\n\nPath: ${result.path}\n\nAuto-bound "${skillName}" to ${agent_id} in skill index.\n\n${preview}` }],
         };
       } catch (err) {
+        process.stderr.write(`[gossipcat] Skill develop failed for ${agent_id}/${category}: ${(err as Error).message}\n`);
         return {
           content: [{ type: 'text' as const, text: `Skill generation failed: ${(err as Error).message}` }],
         };

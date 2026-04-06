@@ -9,6 +9,7 @@ import { signalsHandler } from './api-signals';
 import { learningsHandler } from './api-learnings';
 import { tasksHandler } from './api-tasks';
 import { activeTasksHandler } from './api-active-tasks';
+import { logsHandler } from './api-logs';
 import { readFileSync, existsSync, realpathSync } from 'fs';
 import { join, resolve } from 'path';
 
@@ -202,6 +203,12 @@ export class DashboardRouter {
         catch { this.json(res, 400, { error: 'Invalid JSON body' }); return true; }
         const data = await skillsBindHandler(this.projectRoot, body as any);
         this.json(res, data.success ? 200 : 400, data);
+        return true;
+      }
+
+      if (url === '/dashboard/api/logs' && req.method === 'GET') {
+        const data = logsHandler(this.projectRoot, query ?? undefined);
+        this.json(res, 200, data);
         return true;
       }
 

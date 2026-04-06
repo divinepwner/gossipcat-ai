@@ -265,7 +265,8 @@ Write as a briefing for a new team lead taking over. This output is split into t
 
 Sections:
 
-1. OPEN FOR NEXT SESSION — prioritized bullet list of what needs attention next. Bugs, investigations, half-built features, deferred work. Max 5-7 bullets, ~150 words. Each bullet: one line, actionable, with file path if relevant. This section is the MOST IMPORTANT and MUST be concise — it costs tokens on every agent dispatch.
+1. OPEN FOR NEXT SESSION — prioritized bullet list of what needs attention next. Max 5-7 bullets, ~150 words. Each bullet: one line, actionable, with file path if relevant. This section is the MOST IMPORTANT and MUST be concise — it costs tokens on every agent dispatch.
+   ONLY include items where: (a) work was explicitly started but not committed (half-built), (b) the user or orchestrator explicitly said "defer this" or "next session", or (c) a consensus finding is unresolved AND has a concrete fix action. Do NOT include: items that were merely discussed then dropped, potential improvements nobody committed to, concerns raised and then dismissed in conversation, or theoretical issues without evidence. When in doubt, leave it out — the orchestrator will verify open items against the code at session start anyway.
 2. WHAT SHIPPED — concrete deliverables. Name features, cite file paths. Max ~150 words.
 3. WHAT FAILED AND WHY — approaches that didn't work. Format: "We tried X because Y. It failed because Z. The fix was W." Max ~100 words.
 4. AGENT OBSERVATIONS — which agents are reliable for what, who hallucinates, who finds things others miss. Max ~100 words.

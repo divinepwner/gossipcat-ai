@@ -170,11 +170,15 @@ export async function agentsHandler(
         accuracy: score.accuracy,
         uniqueness: score.uniqueness,
         reliability: score.reliability,
+        impactScore: score.impactScore ?? 0.5,
         dispatchWeight: reader.getDispatchWeight(config.id),
         signals: score.totalSignals,
         agreements: score.agreements,
         disagreements: score.disagreements,
         hallucinations: score.hallucinations,
+        consecutiveFailures: score.consecutiveFailures ?? 0,
+        circuitOpen: score.circuitOpen ?? false,
+        categoryStrengths: score.categoryStrengths ?? {},
       },
     };
   });

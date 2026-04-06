@@ -62,6 +62,7 @@ export class RelayServer {
         this.dashboardAuth = new DashboardAuth();
         this.dashboardAuth.init();
         this.dashboardWs = new DashboardWs();
+        this.dashboardWs.startLogWatcher(this.config.dashboard.projectRoot);
         this.dashboardUpgrader = new WebSocketServer({ noServer: true });
         this.dashboardRouter = new DashboardRouter(
           this.dashboardAuth,
@@ -114,6 +115,7 @@ export class RelayServer {
     this.router.stop();  // stop presence tracker interval
     // Close dashboard clients and upgrader
     if (this.dashboardWs) {
+      this.dashboardWs.stopLogWatcher();
       for (const client of this.dashboardWs.getClients()) {
         client.close(1001, 'Server shutting down');
       }
