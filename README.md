@@ -15,7 +15,7 @@
   <a href="#quickstart"><strong>Quickstart</strong></a> ·
   <a href="#how-it-works"><strong>How It Works</strong></a> ·
   <a href="#usage"><strong>Usage</strong></a> ·
-  <a href="#for-agents"><strong>For Agents</strong></a> ·
+  <a href="#for-ai-agents"><strong>For AI Agents</strong></a> ·
   <a href="#dashboard"><strong>Dashboard</strong></a> ·
   <a href="#configuration"><strong>Configuration</strong></a> ·
   <a href="#roadmap"><strong>Roadmap</strong></a>
@@ -359,9 +359,11 @@ You don't need to type these — Claude Code handles tool selection. But you can
 
 <br/>
 
-## For Agents
+## For AI Agents
 
-If you are an AI agent reading this to understand how to use gossipcat, here is the complete operational guide.
+> **Currently supported orchestrator: Claude Code only.** Cursor, Windsurf, and VS Code agents do not yet have native agent support and cannot run consensus cross-review. If you are reading this as a Claude Code instance with the gossipcat MCP server connected, this guide applies to you.
+
+If you are a Claude Code instance reading this to understand how to use gossipcat, here is the complete operational guide.
 
 **You are the orchestrator.** Gossipcat gives you tools to dispatch work to a team of specialized agents, collect their results, run cross-review consensus, and record accuracy signals. You do not implement code directly — you coordinate.
 
@@ -435,6 +437,8 @@ Use `gossip_dispatch(mode: "consensus")` when the change touches: shared mutable
 ---
 
 ## MCP Tools
+
+These tools are called by the internal LLM (the orchestrator — Claude Code with gossipcat MCP). You don't invoke them manually; the orchestrator selects and calls them based on your requests.
 
 | Tool | Purpose |
 |------|---------|
