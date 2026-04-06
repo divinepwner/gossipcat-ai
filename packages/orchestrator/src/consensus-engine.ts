@@ -464,10 +464,13 @@ Return only valid JSON.`;
       const now = crossReviewTimestamp;
 
       if (entry.action === 'new') {
+        // Sanitize before storage — strip XML-like tags that could be re-injected as instructions
+        // in future sessions via gossip_remember() or session context loading.
+        const sanitize = (t: string) => t.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
         newFindings.push({
           agentId: entry.agentId,
-          finding: entry.finding,
-          evidence: entry.evidence,
+          finding: sanitize(entry.finding),
+          evidence: sanitize(entry.evidence),
           confidence: entry.confidence,
         });
         signals.push({

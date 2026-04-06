@@ -119,8 +119,9 @@ export async function handleDispatchSingle(
 
     evictStaleNativeTasks();
     const taskId = randomUUID().slice(0, 8);
+    const relayToken = randomUUID().slice(0, 12);
     const timeoutMs = timeout_ms ?? NATIVE_TASK_TTL_MS;
-    ctx.nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), timeoutMs, planId: plan_id, step, writeMode: write_mode });
+    ctx.nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), timeoutMs, planId: plan_id, step, writeMode: write_mode, relayToken });
     spawnTimeoutWatcher(taskId, ctx.nativeTaskMap.get(taskId)!);
     persistNativeTaskMap();
     process.stderr.write(`[gossipcat] → dispatch → ${agent_id} (${nativeConfig.model}) [${taskId}]\n`);
@@ -164,7 +165,7 @@ export async function handleDispatchSingle(
       `Step 1 — Run:\n` +
       `Agent(model: "${nativeConfig.model}", prompt: ${JSON.stringify(agentPrompt)}${useWorktree ? ', isolation: "worktree"' : ''}, run_in_background: true)\n\n` +
       `Step 2 — REQUIRED after agent completes:\n` +
-      `gossip_relay(task_id: "${taskId}", result: "<agent output>")\n\n` +
+      `gossip_relay(task_id: "${taskId}", relay_token: "${relayToken}", result: "<agent output>")\n\n` +
       `⚠️ You MUST call gossip_relay for every native dispatch. Without it, the result is lost — no memory, no gossip, no consensus. Never skip this step.`
     }] };
   }
@@ -255,7 +256,8 @@ export async function handleDispatchParallel(
   for (const def of nativeTasks) {
     const nativeConfig = ctx.nativeAgentConfigs.get(def.agent_id)!;
     const taskId = randomUUID().slice(0, 8);
-    ctx.nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now(), timeoutMs: NATIVE_TASK_TTL_MS });
+    const relayToken = randomUUID().slice(0, 12);
+    ctx.nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now(), timeoutMs: NATIVE_TASK_TTL_MS, relayToken });
     spawnTimeoutWatcher(taskId, ctx.nativeTaskMap.get(taskId)!);
     try { ctx.mainAgent.recordNativeTask(taskId, def.agent_id, def.task); } catch { /* best-effort */ }
     persistNativeTaskMap();
@@ -273,7 +275,7 @@ export async function handleDispatchParallel(
     lines.push(`  ${taskId} → ${def.agent_id} (native — dispatch via Agent tool)`);
     nativeInstructions.push(
       `Agent(model: "${nativeConfig.model}", prompt: ${JSON.stringify(agentPrompt)}${def.write_mode === 'worktree' ? ', isolation: "worktree"' : ''}, run_in_background: true)` +
-      `\n  → then: gossip_relay(task_id: "${taskId}", result: "<output>")`
+      `\n  → then: gossip_relay(task_id: "${taskId}", relay_token: "${relayToken}", result: "<output>")`
     );
   }
 
@@ -408,7 +410,8 @@ export async function handleDispatchConsensus(
   for (const def of nativeTasks) {
     const nativeConfig = ctx.nativeAgentConfigs.get(def.agent_id)!;
     const taskId = randomUUID().slice(0, 8);
-    ctx.nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now(), timeoutMs: NATIVE_TASK_TTL_MS });
+    const relayToken = randomUUID().slice(0, 12);
+    ctx.nativeTaskMap.set(taskId, { agentId: def.agent_id, task: def.task, startedAt: Date.now(), timeoutMs: NATIVE_TASK_TTL_MS, relayToken });
     spawnTimeoutWatcher(taskId, ctx.nativeTaskMap.get(taskId)!);
     try { ctx.mainAgent.recordNativeTask(taskId, def.agent_id, def.task); } catch { /* best-effort */ }
     allTaskIds.push(taskId);
@@ -423,7 +426,7 @@ export async function handleDispatchConsensus(
     lines.push(`  ${taskId} → ${def.agent_id} (native — dispatch via Agent tool)`);
     nativeInstructions.push(
       `Agent(model: "${nativeConfig.model}", prompt: ${JSON.stringify(agentPrompt)}, run_in_background: true)` +
-      `\n  → then: gossip_relay(task_id: "${taskId}", result: "<output>")`
+      `\n  → then: gossip_relay(task_id: "${taskId}", relay_token: "${relayToken}", result: "<output>")`
     );
   }
 

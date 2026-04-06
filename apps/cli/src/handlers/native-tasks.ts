@@ -170,7 +170,7 @@ export function restoreNativeTaskMap(projectRoot: string): void {
 }
 
 /** Handle native agent relay — feed Agent tool results back into pipeline */
-export async function handleNativeRelay(task_id: string, result: string, error?: string, agentStartedAt?: number) {
+export async function handleNativeRelay(task_id: string, result: string, error?: string, agentStartedAt?: number, relayToken?: string) {
   await ctx.boot(); // [H3 fix] ensure mainAgent/pipeline are available
 
   // Cancel timeout watcher if still running
@@ -203,6 +203,15 @@ export async function handleNativeRelay(task_id: string, result: string, error?:
     } else {
       return { content: [{ type: 'text' as const, text: `Unknown task ID: ${task_id}. Was it dispatched via gossip_dispatch or gossip_run?` }] };
     }
+  }
+
+  // Validate relay token if one was issued at dispatch time
+  if (taskInfo.relayToken && relayToken !== taskInfo.relayToken) {
+    const msg = relayToken
+      ? `Invalid relay_token for task ${task_id}. The token must match the one issued at dispatch time.`
+      : `Missing relay_token for task ${task_id}. Include the relay_token from the EXECUTE NOW instructions.`;
+    process.stderr.write(`[gossipcat] ⛔ Relay rejected [${task_id}]: ${relayToken ? 'wrong token' : 'missing token'}\n`);
+    return { content: [{ type: 'text' as const, text: msg }] };
   }
 
   // Move to result map BEFORE running pipeline — prevents data loss if pipeline crashes

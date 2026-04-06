@@ -1331,8 +1331,9 @@ server.tool(
     result: z.string().describe('The agent output/result text'),
     error: z.string().optional().describe('Error message if the agent failed'),
     agent_started_at: z.number().optional().describe('Timestamp (ms) when Agent() was launched. Used to measure actual agent execution time vs dispatch overhead.'),
+    relay_token: z.string().optional().describe('One-time token issued at dispatch time. Required for native agent relays — prevents task-ID spoofing.'),
   },
-  async ({ task_id, result, error, agent_started_at }) => handleNativeRelay(task_id, result, error, agent_started_at)
+  async ({ task_id, result, error, agent_started_at, relay_token }) => handleNativeRelay(task_id, result, error, agent_started_at, relay_token)
 );
 
 // ── gossip_run — single-call dispatch (reduces friction) ─────────────────
@@ -1425,7 +1426,8 @@ server.tool(
 
       evictStaleNativeTasks();
       const taskId = require('crypto').randomUUID().slice(0, 8);
-      ctx.nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), timeoutMs: NATIVE_TASK_TTL_MS });
+      const relayToken = require('crypto').randomUUID().slice(0, 12);
+      ctx.nativeTaskMap.set(taskId, { agentId: agent_id, task, startedAt: Date.now(), timeoutMs: NATIVE_TASK_TTL_MS, relayToken });
       spawnTimeoutWatcher(taskId, ctx.nativeTaskMap.get(taskId)!);
       persistNativeTaskMap();
       try { ctx.mainAgent.recordNativeTask(taskId, agent_id, task); } catch { /* best-effort */ }
@@ -1454,7 +1456,7 @@ server.tool(
           `Dispatched to ${agent_id} (native). Task ID: ${taskId}\n\n` +
           `⚠️ EXECUTE NOW — launch this Agent and relay the result:\n\n` +
           `1. Agent(model: "${modelShort}", prompt: ${JSON.stringify(agentPrompt)}, run_in_background: true)\n` +
-          `2. When agent completes → gossip_relay(task_id: "${taskId}", result: "<full agent output>")\n\n` +
+          `2. When agent completes → gossip_relay(task_id: "${taskId}", relay_token: "${relayToken}", result: "<full agent output>")\n\n` +
           `Do BOTH steps in your next response. Do not wait for user input between them.`
         }],
       };

@@ -32,6 +32,8 @@ export interface NativeTaskInfo {
   step?: number;
   utilityType?: 'lens' | 'gossip' | 'summary' | 'session_summary';
   writeMode?: 'sequential' | 'scoped' | 'worktree';
+  /** One-time token that must accompany gossip_relay — prevents task-ID spoofing */
+  relayToken?: string;
 }
 
 export interface NativeResultInfo {
