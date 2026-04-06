@@ -458,20 +458,21 @@ Gossipcat auto-detects the host environment:
 
 | Feature | Status |
 |---------|--------|
-| Consensus code review | Shipped |
-| Adaptive dispatch weights | Shipped |
-| Per-agent skill development | Shipped |
-| Agent cognitive memory | Shipped |
-| Live dashboard | Shipped |
-| Cross-platform key storage | Shipped |
-| Full implementation workflow (agents write code) | In progress |
-| Dashboard enrichment (graphs, trends, session history) | Planned |
-| Local Postgres migration (embedded Postgres for tasks/signals/consensus/memory — unblocks full task results, real queries, no more JSONL scans) | Planned |
-| Local LLM support (Ollama) | Planned |
-| Full Cursor support | Planned |
-| Windsurf / VS Code parity | Planned |
-| Standalone CLI (no IDE required) | Planned |
-| CLI parity with MCP pipeline (gossip, task graph, agent memory in chat mode) | Planned |
+| Consensus code review | ✅ Shipped |
+| Adaptive dispatch weights | ✅ Shipped |
+| Per-agent skill development | ✅ Shipped |
+| Agent cognitive memory | ✅ Shipped |
+| Live dashboard | ✅ Shipped |
+| Cross-platform key storage | ✅ Shipped |
+| OpenClaw integration | ✅ Shipped |
+| Full implementation workflow (agents write code) | 🔄 In progress |
+| Dashboard enrichment (graphs, trends, session history) | ☐ Planned |
+| Local Postgres migration (embedded Postgres for tasks/signals/consensus/memory — unblocks full task results, real queries, no more JSONL scans) | ☐ Planned |
+| Local LLM support (Ollama) | ☐ Planned |
+| Full Cursor support | ☐ Planned |
+| Windsurf / VS Code parity | ☐ Planned |
+| Standalone CLI (no IDE required) | ☐ Planned |
+| CLI parity with MCP pipeline (gossip, task graph, agent memory in chat mode) | ☐ Planned |
 
 <br/>
 

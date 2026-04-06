@@ -1030,7 +1030,7 @@ server.tool(
   'gossip_setup',
   `Create or update gossipcat team. Default mode is "merge" — adds/updates specified agents while keeping existing ones. Use "replace" to overwrite entire config. Detects host environment (${env.host}) and supports both native Claude Code subagents (.claude/agents/*.md) and custom provider agents (Anthropic, OpenAI, Google Gemini).`,
   {
-    main_provider: z.enum(['anthropic', 'openai', 'google', 'none']).default('google')
+    main_provider: z.enum(['anthropic', 'openai', 'google', 'openclaw', 'none']).default('google')
       .describe('Provider for the orchestrator LLM. Use "none" when no API key is available — features degrade gracefully to profile-based.'),
     main_model: z.string().default('gemini-2.5-pro')
       .describe('Model ID for orchestrator (e.g. gemini-2.5-pro, claude-sonnet-4-6, gpt-4o)'),
@@ -1053,7 +1053,7 @@ server.tool(
       instructions: z.string().optional()
         .describe('For native agents: full instructions (markdown body of .claude/agents/*.md)'),
       // Custom agent fields
-      provider: z.enum(['anthropic', 'openai', 'google', 'local']).optional()
+      provider: z.enum(['anthropic', 'openai', 'google', 'openclaw', 'local']).optional()
         .describe('For custom agents: LLM provider'),
       custom_model: z.string().optional()
         .describe('For custom agents: model ID (e.g. gemini-2.5-pro, gpt-4o, claude-sonnet-4-6)'),
