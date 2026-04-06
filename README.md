@@ -15,6 +15,7 @@
   <a href="#quickstart"><strong>Quickstart</strong></a> ·
   <a href="#how-it-works"><strong>How It Works</strong></a> ·
   <a href="#usage"><strong>Usage</strong></a> ·
+  <a href="#for-agents"><strong>For Agents</strong></a> ·
   <a href="#dashboard"><strong>Dashboard</strong></a> ·
   <a href="#configuration"><strong>Configuration</strong></a> ·
   <a href="#roadmap"><strong>Roadmap</strong></a>
@@ -330,6 +331,81 @@ gossip_skills(action: "develop", ...)            → improve struggling agents
 You don't need to type these — Claude Code handles tool selection. But you can call them directly if you want fine-grained control.
 
 <br/>
+
+## For Agents
+
+If you are an AI agent reading this to understand how to use gossipcat, here is the complete operational guide.
+
+**You are the orchestrator.** Gossipcat gives you tools to dispatch work to a team of specialized agents, collect their results, run cross-review consensus, and record accuracy signals. You do not implement code directly — you coordinate.
+
+### Step 1 — Check what you have
+
+```
+gossip_status()
+```
+
+This tells you: which agents are available, their providers/models, relay status, dashboard URL, and suggested workflows. Always call this first in a new session.
+
+### Step 2 — Dispatch work
+
+**Single agent (auto-selected):**
+```
+gossip_run(agent_id: "auto", task: "Review the auth module for security issues")
+```
+The system picks the best agent for the task based on past accuracy. For relay agents, this returns the result directly. For native agents (Claude Code subagents), it returns `⚠️ EXECUTE NOW` instructions — follow them immediately in the same response.
+
+**Parallel (fan-out, no consensus):**
+```
+gossip_dispatch(mode: "parallel", tasks: [
+  { agent_id: "gemini-reviewer", task: "..." },
+  { agent_id: "sonnet-reviewer", task: "..." }
+])
+```
+
+**Consensus (cross-review):**
+```
+gossip_dispatch(mode: "consensus", tasks: [
+  { agent_id: "gemini-reviewer", task: "..." },
+  { agent_id: "sonnet-reviewer", task: "..." },
+  { agent_id: "haiku-researcher", task: "..." }
+])
+```
+
+### Step 3 — Collect results
+
+```
+gossip_collect(task_ids: ["id1", "id2", "id3"], consensus: true)
+```
+
+With `consensus: true`, agents cross-review each other's findings. If native agents are in the round, `gossip_collect` returns `⚠️ EXECUTE NOW` with prompts — dispatch those `Agent()` calls immediately, then relay each result via `gossip_relay_cross_review`.
+
+### Step 4 — Verify and record signals
+
+After consensus, **verify every UNVERIFIED finding** against the actual code (grep/read the cited files). Then record signals:
+
+```
+gossip_signals(action: "record", signals: [{
+  signal: "unique_confirmed",   // or "hallucination_caught", "agreement"
+  agent_id: "gemini-reviewer",
+  finding: "Race condition in task map at line 47",
+  finding_id: "<consensus_id>:<agent_id>:f1"   // mandatory
+}])
+```
+
+Signals update dispatch weights. Agents that hallucinate get penalized. Agents that catch real bugs get promoted.
+
+### Key rules
+
+- **Always follow `⚠️ EXECUTE NOW`** — dispatch those `Agent()` calls in the same response, do not wait.
+- **Never leave UNVERIFIED findings unexamined** — read the code, confirm or deny, record the signal.
+- **`finding_id` is mandatory on every signal** — format: `<consensus_id>:<agent_id>:fN`.
+- **Use `gossip_progress` after reconnect** — if a consensus round was in flight, it re-surfaces the pending EXECUTE NOW prompts.
+
+### When to use consensus
+
+Use `gossip_dispatch(mode: "consensus")` when the change touches: shared mutable state, auth/sessions, file persistence, or the core dispatch pipeline. Use `gossip_run` for single-agent research, exploration, or review tasks that don't need cross-validation.
+
+---
 
 ## MCP Tools
 
