@@ -38,6 +38,9 @@ export class DashboardWs {
 
   /** Start watching mcp.log for new lines and broadcasting them to connected clients. */
   startLogWatcher(projectRoot: string): void {
+    // Idempotent: close any existing watcher before starting a new one.
+    this.stopLogWatcher();
+
     this.logPath = join(projectRoot, '.gossip', 'mcp.log');
     if (!existsSync(this.logPath)) return;
 
@@ -79,12 +82,21 @@ export class DashboardWs {
       }
 
       // Cap read to 64KB per poll to avoid flooding clients.
+      // When capping, also discard logCarry — the skipped bytes break line continuity.
       const readFrom = currentSize - this.logOffset > 65536
-        ? currentSize - 65536
+        ? (this.logCarry = '', currentSize - 65536)
         : this.logOffset;
 
+      let stream;
+      try {
+        stream = createReadStream(this.logPath, { start: readFrom, end: currentSize - 1 });
+      } catch {
+        // createReadStream can throw synchronously (e.g. ENOMEM). Clear guard before returning.
+        this.logReading = false;
+        return;
+      }
+
       const chunks: Buffer[] = [];
-      const stream = createReadStream(this.logPath, { start: readFrom, end: currentSize - 1 });
       stream.on('data', (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
       stream.on('end', () => {
         this.logOffset = currentSize;

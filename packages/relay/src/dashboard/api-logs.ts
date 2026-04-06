@@ -67,9 +67,12 @@ export function logsHandler(
   const MAX_READ = 512 * 1024;
   const readFrom = Math.max(0, fileSize - MAX_READ);
   const readLen = fileSize - readFrom;
-  const buf = Buffer.allocUnsafe(readLen);
+  // Open fd first, allocate buffer inside try so any allocation error is caught
+  // with the fd already guarded by finally.
   const fd = openSync(logPath, 'r');
+  let buf: Buffer = Buffer.alloc(0);
   try {
+    buf = Buffer.allocUnsafe(readLen);
     readSync(fd, buf, 0, readLen, readFrom);
   } finally {
     closeSync(fd);
