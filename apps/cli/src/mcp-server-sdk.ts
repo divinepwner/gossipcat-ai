@@ -23,7 +23,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { randomUUID } from 'crypto';
+import { randomUUID, timingSafeEqual } from 'crypto';
 import { createServer as createHttpServer, IncomingMessage, ServerResponse } from 'http';
 
 // ── Extracted modules ────────────────────────────────────────────────────
@@ -370,7 +370,7 @@ async function doBoot() {
       continue;
     }
     const key = await ctx.keychain.getKey(ac.provider);
-    const llm = m.createProvider(ac.provider, ac.model, key ?? undefined);
+    const llm = m.createProvider(ac.provider, ac.model, key ?? undefined, undefined, (ac as any).base_url);
     const { existsSync, readFileSync } = require('fs');
     const { join } = require('path');
     const instructionsPath = join(process.cwd(), '.gossip', 'agents', ac.id, 'instructions.md');
@@ -728,7 +728,7 @@ server.tool(
         for (const ac of agentConfigs) {
           const key = await ctx.keychain.getKey(ac.provider);
           if (key) {
-            llm = createProvider(ac.provider, ac.model, key);
+            llm = createProvider(ac.provider, ac.model, key, undefined, (ac as any).base_url);
             process.stderr.write(`[gossipcat] gossip_plan: main agent key unavailable, using ${ac.provider}/${ac.model} for planning\n`);
             break;
           }
@@ -1062,6 +1062,8 @@ server.tool(
         .describe('For custom agents: LLM provider'),
       custom_model: z.string().optional()
         .describe('For custom agents: model ID (e.g. gemini-2.5-pro, gpt-4o, claude-sonnet-4-6)'),
+      base_url: z.string().optional()
+        .describe('For openai provider: custom base URL for OpenAI-compatible gateways (e.g. http://localhost:11434/v1 for Ollama, or a self-hosted vLLM/LM Studio endpoint). Defaults to https://api.openai.com/v1'),
       // Shared fields
       role: z.string().optional()
         .describe('Agent role — freeform, e.g. "ui-architect", "security-auditor", "reviewer"'),
@@ -1216,6 +1218,7 @@ server.tool(
           model: agent.custom_model,
           role: (agent as any).role || (agent as any).preset,
           skills: agent.skills || ['general'],
+          ...(agent.base_url ? { base_url: agent.base_url } : {}),
         };
         customCreated.push(agent.id);
 
@@ -2485,13 +2488,30 @@ server.tool(
 // ── HTTP MCP Transport (for remote clients) ───────────────────────────────
 // One StreamableHTTPServerTransport per session, reusing the same McpServer.
 // Port: GOSSIPCAT_HTTP_PORT (default 24421)
-// Auth: GOSSIPCAT_HTTP_TOKEN (optional bearer token — set for remote access)
+// Auth: GOSSIPCAT_HTTP_TOKEN (required for remote access — mandatory when binding 0.0.0.0)
+// Bind: defaults to 127.0.0.1; set GOSSIPCAT_HTTP_BIND=0.0.0.0 with a token to expose remotely
+// Sessions: idle sessions evicted after 30 minutes
 
-const httpMcpSessions = new Map<string, StreamableHTTPServerTransport>();
+const HTTP_SESSION_TTL_MS = 30 * 60 * 1000;
+const httpMcpSessions = new Map<string, { transport: StreamableHTTPServerTransport; timer: ReturnType<typeof setTimeout> }>();
+
+function touchSession(sid: string): void {
+  const entry = httpMcpSessions.get(sid);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  entry.timer = setTimeout(() => {
+    const e = httpMcpSessions.get(sid);
+    if (e) { e.transport.close().catch(() => {}); httpMcpSessions.delete(sid); }
+    process.stderr.write(`[gossipcat] HTTP MCP session evicted (idle): ${sid}\n`);
+  }, HTTP_SESSION_TTL_MS);
+}
 
 function startHttpMcpTransport(): void {
   const port = parseInt(process.env.GOSSIPCAT_HTTP_PORT ?? '24421', 10);
   const token = process.env.GOSSIPCAT_HTTP_TOKEN ?? '';
+  const bindHost = (process.env.GOSSIPCAT_HTTP_BIND === '0.0.0.0' && token) ? '0.0.0.0' : '127.0.0.1';
+
+  const tokenBuf = token ? Buffer.from(token) : null;
 
   const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
     // Only handle /mcp
@@ -2501,11 +2521,14 @@ function startHttpMcpTransport(): void {
       return;
     }
 
-    // Optional bearer token auth
-    if (token) {
+    // Bearer token auth — always required when token is configured; timing-safe comparison
+    if (tokenBuf) {
       const auth = req.headers['authorization'] ?? '';
       const provided = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-      if (provided !== token) {
+      const providedBuf = Buffer.from(provided);
+      const valid = providedBuf.length === tokenBuf.length &&
+        timingSafeEqual(providedBuf, tokenBuf);
+      if (!valid) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Unauthorized' }));
         return;
@@ -2528,15 +2551,20 @@ function startHttpMcpTransport(): void {
 
     // DELETE — client terminating a session
     if (req.method === 'DELETE' && sessionId) {
-      const t = httpMcpSessions.get(sessionId);
-      if (t) { await t.close(); httpMcpSessions.delete(sessionId); }
+      const entry = httpMcpSessions.get(sessionId);
+      if (entry) {
+        clearTimeout(entry.timer);
+        await entry.transport.close();
+        httpMcpSessions.delete(sessionId);
+      }
       res.writeHead(200); res.end();
       return;
     }
 
     // GET (SSE reconnect) or POST with existing session
     if (sessionId && httpMcpSessions.has(sessionId)) {
-      await httpMcpSessions.get(sessionId)!.handleRequest(req, res, body);
+      touchSession(sessionId);
+      await httpMcpSessions.get(sessionId)!.transport.handleRequest(req, res, body);
       return;
     }
 
@@ -2545,14 +2573,20 @@ function startHttpMcpTransport(): void {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid) => {
-          httpMcpSessions.set(sid, transport);
+          const timer = setTimeout(() => {
+            const e = httpMcpSessions.get(sid);
+            if (e) { e.transport.close().catch(() => {}); httpMcpSessions.delete(sid); }
+            process.stderr.write(`[gossipcat] HTTP MCP session evicted (idle): ${sid}\n`);
+          }, HTTP_SESSION_TTL_MS);
+          httpMcpSessions.set(sid, { transport, timer });
           process.stderr.write(`[gossipcat] HTTP MCP session opened: ${sid}\n`);
         },
       });
       transport.onclose = () => {
         const sid = transport.sessionId;
         if (sid) {
-          httpMcpSessions.delete(sid);
+          const entry = httpMcpSessions.get(sid);
+          if (entry) { clearTimeout(entry.timer); httpMcpSessions.delete(sid); }
           process.stderr.write(`[gossipcat] HTTP MCP session closed: ${sid}\n`);
         }
       };
@@ -2565,9 +2599,10 @@ function startHttpMcpTransport(): void {
     res.end(JSON.stringify({ error: 'Bad request' }));
   });
 
-  httpServer.listen(port, '0.0.0.0', () => {
-    const authNote = token ? ' (token protected)' : ' (no auth — set GOSSIPCAT_HTTP_TOKEN for remote use)';
-    process.stderr.write(`[gossipcat] HTTP MCP listening on :${port}/mcp${authNote}\n`);
+  httpServer.listen(port, bindHost, () => {
+    const authNote = token ? ' (token protected)' : ' (no auth — set GOSSIPCAT_HTTP_TOKEN to secure)';
+    const bindNote = bindHost === '0.0.0.0' ? ' [remote]' : ' [localhost only]';
+    process.stderr.write(`[gossipcat] HTTP MCP listening on :${port}/mcp${authNote}${bindNote}\n`);
   });
 
   httpServer.on('error', (err: NodeJS.ErrnoException) => {

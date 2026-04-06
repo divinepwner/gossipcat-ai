@@ -68,7 +68,7 @@ export class ConsensusCoordinator {
           try {
             const key = await this.keyProvider(agentConfig.provider);
             if (key) {
-              agentLlmCache.set(r.agentId, createProvider(agentConfig.provider, agentConfig.model, key));
+              agentLlmCache.set(r.agentId, createProvider(agentConfig.provider, agentConfig.model, key, undefined, (agentConfig as any).base_url));
             } else {
               agentLlmCache.set(r.agentId, null);
             }

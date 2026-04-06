@@ -321,7 +321,7 @@ export class MainAgent {
       if (ac.native) continue; // native agents use host's Agent tool, not relay
       if (this.workers.has(ac.id)) continue;
       const key = await keyProvider(ac.provider);
-      const llm = createProvider(ac.provider, ac.model, key ?? undefined);
+      const llm = createProvider(ac.provider, ac.model, key ?? undefined, undefined, (ac as any).base_url);
 
       const instructionsPath = join(this.projectRoot, '.gossip', 'agents', ac.id, 'instructions.md');
       const instructions = existsSync(instructionsPath)

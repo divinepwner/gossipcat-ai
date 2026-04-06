@@ -194,7 +194,7 @@ export async function handleCollect(
           const agentConfig = ctx.mainAgent.getAgentConfig(r.agentId);
           if (agentConfig) {
             const key = await ctx.keychain.getKey(agentConfig.provider);
-            if (key) agentLlmCache.set(r.agentId, createProvider(agentConfig.provider, agentConfig.model, key));
+            if (key) agentLlmCache.set(r.agentId, createProvider(agentConfig.provider, agentConfig.model, key, undefined, (agentConfig as any).base_url));
           }
         } catch { /* best-effort */ }
       }

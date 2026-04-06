@@ -171,6 +171,7 @@ export class AnthropicProvider implements ILLMProvider {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
     });
 
     if (!res.ok) {
@@ -241,8 +242,16 @@ export class AnthropicProvider implements ILLMProvider {
 
 export class OpenAIProvider implements ILLMProvider {
   private quota: QuotaTracker;
-  constructor(private apiKey: string, private model: string, projectRoot?: string) {
-    this.quota = new QuotaTracker('openai', projectRoot);
+  private baseUrl: string;
+  constructor(
+    private apiKey: string,
+    private model: string,
+    projectRoot?: string,
+    baseUrl?: string,
+    quotaSlot?: string,
+  ) {
+    this.baseUrl = (baseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+    this.quota = new QuotaTracker(quotaSlot ?? 'openai', projectRoot);
   }
 
   async generate(messages: LLMMessage[], options?: LLMGenerateOptions): Promise<LLMResponse> {
@@ -260,10 +269,13 @@ export class OpenAIProvider implements ILLMProvider {
     }
 
     this.quota.checkBeforeRequest();
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+    const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
+      headers,
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
     });
 
     if (!res.ok) {
@@ -364,6 +376,7 @@ export class GeminiProvider implements ILLMProvider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
     });
 
     if (!res.ok) {
@@ -525,10 +538,10 @@ class NullProvider implements ILLMProvider {
 
 // ─── Factory ────────────────────────────────────────────────────────────────
 
-export function createProvider(provider: string, model: string, apiKey?: string, projectRoot?: string): ILLMProvider {
+export function createProvider(provider: string, model: string, apiKey?: string, projectRoot?: string, baseUrl?: string): ILLMProvider {
   switch (provider) {
     case 'anthropic': return new AnthropicProvider(apiKey!, model, projectRoot);
-    case 'openai': return new OpenAIProvider(apiKey!, model, projectRoot);
+    case 'openai': return new OpenAIProvider(apiKey ?? '', model, projectRoot, baseUrl, baseUrl ? `openai:${baseUrl}` : undefined);
     case 'google': return new GeminiProvider(apiKey!, model, projectRoot);
     case 'local': return new OllamaProvider(model);
     case 'none': return new NullProvider();
