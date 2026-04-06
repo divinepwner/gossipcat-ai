@@ -178,6 +178,14 @@ To register globally (available in all projects):
 claude mcp add gossipcat -s user -- node /absolute/path/to/gossipcat-ai/dist-mcp/mcp-server.js
 ```
 
+### 2. Build the dashboard (optional)
+
+```bash
+npm run build:dashboard
+```
+
+Launches automatically on port `24420`. Skip this if you don't need the visual dashboard.
+
 ### 3. API keys
 
 Add env vars for the providers you want to use. Pass them with `-e` when registering, or set them in your shell environment.
@@ -445,6 +453,7 @@ Use `gossip_dispatch(mode: "consensus")` when the change touches: shared mutable
 | `gossip_remember` | Search an agent's cognitive memory |
 | `gossip_progress` | Check in-progress task status |
 | `gossip_tools` | List all available tools |
+| `gossip_update` | Check for or apply gossipcat updates from npm |
 
 <br/>
 
@@ -504,9 +513,15 @@ Gossipcat supports [OpenClaw](https://github.com/openclaw/openclaw) as a provide
 
 ### Wiring an OpenClaw agent
 
-Store your gateway token once:
+Store your gateway token once (macOS):
 ```bash
-gossipcat keys set openclaw <your-gateway-token>
+security add-generic-password -s gossip-mesh -a openclaw -w <your-gateway-token>
+```
+
+On Linux:
+```bash
+secret-tool store --label "Gossip Mesh openclaw" service gossip-mesh provider openclaw
+# (enter token when prompted)
 ```
 
 Then add it to your team:
@@ -565,7 +580,7 @@ Config is searched in order: `.gossip/config.json` > `gossip.agents.json` > `gos
 
 | Field | Description |
 |-------|-------------|
-| `main_agent` | Orchestrator LLM for routing and synthesis |
+| `main_agent` | Internal tool LLM for routing, planning, and synthesis |
 | `utility_model` | Memory compaction, gossip, lens generation |
 | `consensus_judge` | Model for cross-review synthesis |
 | `agents.<id>.provider` | `anthropic`, `google`, `openai`, `openclaw`, `local` |
