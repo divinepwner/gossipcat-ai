@@ -89,25 +89,6 @@ function reroutableAgent(agentId: string): string {
   return agentId;
 }
 
-const CATEGORY_KEYWORDS: Array<{ keywords: string[]; category: string }> = [
-  { keywords: ['race condition', 'concurrent', 'async'],                    category: 'concurrency' },
-  { keywords: ['injection', 'sanitiz', 'xss'],                             category: 'injection_vectors' },
-  { keywords: ['auth', 'token', 'session'],                                category: 'trust_boundaries' },
-  { keywords: ['timeout', 'memory', 'oom', 'leak'],                        category: 'resource_exhaustion' },
-  { keywords: ['type', 'typescript', 'generic'],                           category: 'type_safety' },
-  { keywords: ['error', 'catch', 'throw', 'fallback'],                     category: 'error_handling' },
-  { keywords: ['validat', 'schema', 'input'],                              category: 'input_validation' },
-  { keywords: ['persist', 'corrupt', 'integrity'],                         category: 'data_integrity' },
-];
-
-function detectTaskCategory(task: string): string | null {
-  const lower = task.toLowerCase();
-  for (const { keywords, category } of CATEGORY_KEYWORDS) {
-    if (keywords.some(kw => lower.includes(kw))) return category;
-  }
-  return null;
-}
-
 export async function handleDispatchSingle(
   agent_id: string, task: string,
   write_mode?: 'sequential' | 'scoped' | 'worktree',
@@ -435,28 +416,11 @@ export async function handleDispatchConsensus(
     }
   }
 
-  // Selective consensus: if a single agent is strongly specialized for the task's category,
-  // route to single-agent review (~3 min) instead of full consensus (~10 min).
-  const SELECTIVE_CONSENSUS_THRESHOLD = 0.8;
-  try {
-    const taskText = taskDefs.map(d => d.task).join(' ');
-    const category = detectTaskCategory(taskText);
-    if (category) {
-      const { PerformanceReader } = await import('@gossip/orchestrator');
-      const reader = new PerformanceReader(process.cwd());
-      const scores = reader.getScores();
-      for (const def of taskDefs) {
-        const score = scores.get(def.agent_id);
-        if (score && (score.categoryStrengths[category] ?? 0) >= SELECTIVE_CONSENSUS_THRESHOLD) {
-          process.stderr.write(
-            `[gossipcat] Selective consensus: ${def.agent_id} strong in ${category} ` +
-            `(${(score.categoryStrengths[category]).toFixed(2)}), routing to single review\n`,
-          );
-          return handleDispatchSingle(def.agent_id, def.task);
-        }
-      }
-    }
-  } catch { /* not enough data or reader unavailable — proceed with full consensus */ }
+  // NOTE: Selective consensus optimization removed — when the user explicitly invokes
+  // mode:"consensus" with N tasks, all N must run. The previous shortcut would silently
+  // drop tasks when one agent had categoryStrengths >= 0.8, defeating the user's intent
+  // to get cross-validation. Selective routing belongs in `gossip_run(agent_id:"auto")`
+  // where the orchestrator picks one agent on purpose, not in explicit consensus dispatch.
 
   // Split native vs custom tasks (same pattern as parallel)
   const nativeTasks: Array<{ agent_id: string; task: string }> = [];
