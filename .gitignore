@@ -22,3 +22,4 @@ skills-lock.json
 *.tsbuildinfo
 .DS_Store
 **/.DS_Store
+settings.local.json
