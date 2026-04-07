@@ -101,6 +101,26 @@ class QuotaTracker {
     });
   }
 
+  /**
+   * Handle a 503 (service unavailable / overloaded) response. Same backoff
+   * pattern as 429 but with shorter initial cooldown — 503s typically clear
+   * within seconds-to-minutes rather than the longer rate-limit windows.
+   */
+  handle503(res: Response, errBody: string): never {
+    this.consecutive429s++;
+    const retryAfter = this.parseRetryAfter(res);
+    // Shorter base cooldown for 503: 15s, 30s, 60s, 120s, capped at 300s
+    const cooldownMs = retryAfter ?? Math.min(15_000 * Math.pow(2, this.consecutive429s - 1), 300_000);
+    this.exhaustedUntil = Date.now() + cooldownMs;
+    this.persist();
+    process.stderr.write(`[${this.provider}] 503 service unavailable (${this.consecutive429s}x) — cooling down ${cooldownMs / 1000}s\n`);
+    throw new QuotaExhaustedException({
+      message: `${this.provider} service unavailable (503 #${this.consecutive429s}): ${errBody}`,
+      provider: this.provider,
+      retryAfterMs: cooldownMs,
+    });
+  }
+
   /** Reset on successful response. */
   onSuccess(): void {
     if (this.consecutive429s > 0 || this.exhaustedUntil > 0) {
@@ -177,6 +197,7 @@ export class AnthropicProvider implements ILLMProvider {
     if (!res.ok) {
       const body = (await res.text()).slice(0, 200);
       if (res.status === 429) this.quota.handle429(res, body);
+      if (res.status === 503) this.quota.handle503(res, body);
       throw new Error(`Anthropic API error (${res.status}): ${body}`);
     }
     this.quota.onSuccess();
@@ -281,6 +302,7 @@ export class OpenAIProvider implements ILLMProvider {
     if (!res.ok) {
       const body = (await res.text()).slice(0, 200);
       if (res.status === 429) this.quota.handle429(res, body);
+      if (res.status === 503) this.quota.handle503(res, body);
       throw new Error(`OpenAI API error (${res.status}): ${body}`);
     }
     this.quota.onSuccess();
@@ -384,6 +406,7 @@ export class GeminiProvider implements ILLMProvider {
     if (!res.ok) {
       const errBody = (await res.text()).slice(0, 200);
       if (res.status === 429) this.quota.handle429(res, errBody);
+      if (res.status === 503) this.quota.handle503(res, errBody);
       throw new Error(`Gemini API error (${res.status}): ${errBody}`);
     }
     this.quota.onSuccess();
