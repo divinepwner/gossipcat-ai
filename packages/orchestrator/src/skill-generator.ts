@@ -190,6 +190,14 @@ Requirements:
 
     this.validateSkillContent(cleaned);
 
+    // Snapshot baseline counters at bind time — Tasks 7/8 read these for effectiveness checks
+    const agentScore = this.perfReader.getScores().get(agentId);
+    const baseline_correct = agentScore?.categoryCorrect?.[category] ?? 0;
+    const baseline_hallucinated = agentScore?.categoryHallucinated?.[category] ?? 0;
+    const bound_at = new Date().toISOString();
+
+    cleaned = this.injectSnapshotFields(cleaned, { baseline_correct, baseline_hallucinated, bound_at });
+
     const skillName = normalizeSkillName(category);
     const skillDir = join(this.projectRoot, '.gossip', 'agents', agentId, 'skills');
     mkdirSync(skillDir, { recursive: true });
@@ -197,6 +205,44 @@ Requirements:
     writeFileSync(skillPath, cleaned);
 
     return { path: skillPath, content: cleaned };
+  }
+
+  /**
+   * Post-processes LLM-generated skill content to inject or overwrite snapshot fields
+   * in the YAML frontmatter. This ensures spec compliance regardless of LLM output.
+   */
+  private injectSnapshotFields(
+    content: string,
+    snapshot: { baseline_correct: number; baseline_hallucinated: number; bound_at: string },
+  ): string {
+    const fmMatch = content.match(/^(---\n)([\s\S]*?)(\n---)/);
+    if (!fmMatch) return content;
+
+    let fm = fmMatch[2];
+    const rest = content.slice(fmMatch[0].length);
+
+    // Remove any pre-existing snapshot fields the LLM may have emitted
+    fm = fm
+      .replace(/^baseline_correct:.*\n?/m, '')
+      .replace(/^baseline_hallucinated:.*\n?/m, '')
+      .replace(/^bound_at:.*\n?/m, '')
+      .replace(/^migration_count:.*\n?/m, '')
+      .replace(/^status:.*\n?/m, '');
+
+    // Ensure effectiveness is present as a number
+    if (!fm.match(/^effectiveness:/m)) {
+      fm = fm.trimEnd() + '\neffectiveness: 0.0';
+    }
+
+    // Append snapshot fields
+    fm = fm.trimEnd() +
+      `\nbaseline_correct: ${snapshot.baseline_correct}` +
+      `\nbaseline_hallucinated: ${snapshot.baseline_hallucinated}` +
+      `\nbound_at: ${snapshot.bound_at}` +
+      `\nmigration_count: 0` +
+      `\nstatus: pending`;
+
+    return `---\n${fm}\n---${rest}`;
   }
 
   private validateSkillContent(content: string): void {
