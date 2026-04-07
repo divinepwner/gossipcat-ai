@@ -36,28 +36,7 @@ Do NOT sit idle waiting for task-notification events — the notification system
 **Parallel:** `gossip_dispatch(mode:"parallel", tasks) → gossip_collect(task_ids)`
 **Plan → Execute:** `gossip_plan(task) → gossip_dispatch(mode:"parallel", tasks) → gossip_collect(ids)`
 
-## Available Agents
-- sonnet-reviewer: anthropic/claude-sonnet-4-6 (reviewer) — native
-- haiku-researcher: anthropic/claude-haiku-4-5 (researcher) — native
-- gemini-implementer: google/gemini-2.5-pro (implementer)
-- gemini-reviewer: google/gemini-2.5-pro (reviewer)
-- gemini-tester: google/gemini-2.5-pro (tester)
-- sonnet-implementer: anthropic/claude-sonnet-4-6 (implementer) — native
-- opus-implementer: anthropic/claude-opus-4-6 (implementer) — native
-- openclaw-agent: openclaw/openclaw/default (custom)
-
-## When to Use Multi-Agent vs Single Agent
-
-**Use consensus (3+ agents) for:**
-| Task | Why | Split Strategy |
-|------|-----|----------------|
-| Security review | Different agents catch different vuln classes | Split by package/concern |
-| Code review | Cross-validation catches what single reviewers miss | Split by concern |
-| Bug investigation | Competing hypotheses tested in parallel | One hypothesis per agent |
-| Architecture review | Multiple perspectives on trade-offs | Split by dimension |
-| Pre-ship verification | Catch regressions before merge | Split by area changed |
-
-**Single agent is fine for:** quick lookups, running tests, file reads.
+**Available agents and dispatch decision rules** are loaded dynamically from `gossip_status()` — call it for the live team roster, performance scores, and the multi-agent vs single-agent decision table. Do not duplicate that content here.
 
 ## Consensus Workflow — The Complete Flow
 
