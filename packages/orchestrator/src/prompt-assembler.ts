@@ -6,7 +6,10 @@ const DOC_EXTENSIONS = new Set(['.md', '.txt', '.rst']);
  * Canonical consensus output format instructions injected into agent prompts.
  * Used by both relay (prompt-assembler) and native (dispatch handler) paths.
  */
-export const CONSENSUS_OUTPUT_FORMAT = `End your response with a section titled "## Consensus Summary".
+export const CONSENSUS_OUTPUT_FORMAT = `⚠ CRITICAL — OUTPUT PARSING:
+Your output is parsed by regex looking for <agent_finding> tags. Findings written as prose, numbered lists, or bullet points will NOT appear correctly in the consensus dashboard, will NOT match peer cross-review, and will NOT count as findings. EVERY finding you want recorded MUST be wrapped in an <agent_finding> tag. This is not optional. The format is shown below.
+
+End your response with a section titled "## Consensus Summary".
 
 SOURCE FILES:
 - Always cite original source files, NOT compiled/bundled build output (dist/, build/, out/, *.min.js)

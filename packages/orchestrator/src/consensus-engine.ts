@@ -418,6 +418,11 @@ Return only valid JSON.`;
 
       // Per-agent fallback: if THIS agent produced no tags, use legacy bullet parsing
       if (agentFindingsFound === 0) {
+        process.stderr.write(
+          `[consensus] ⚠ agent "${r.agentId}" emitted ZERO <agent_finding> tags — falling back to bullet parsing. ` +
+          `Cross-review IDs will not roundtrip and dashboard results will be incomplete. ` +
+          `Fix: ensure the agent uses <agent_finding type="finding" severity="..."> wrapping (see CONSENSUS_OUTPUT_FORMAT).\n`
+        );
         const lines = summary.split('\n').filter(l => l.trimStart().startsWith('-'));
         for (const line of lines) {
           let finding = line.replace(/^\s*-\s*/, '').trim();
