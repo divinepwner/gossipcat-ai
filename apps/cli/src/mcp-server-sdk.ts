@@ -2692,7 +2692,7 @@ server.tool(
     const now = Date.now();
     for (const [taskId, info] of [...ctx.nativeTaskMap]) {
       if (ctx.nativeResultMap.has(taskId)) continue; // already completed or timed_out
-      const stuckThreshold = info.timeoutMs ? Math.min(info.timeoutMs * 0.5, 300_000) : 180_000;
+      const stuckThreshold = info.timeoutMs ? Math.min(info.timeoutMs * 0.5, 600_000) : 600_000;
       activeTasks.push({
         taskId,
         agentId: info.agentId,

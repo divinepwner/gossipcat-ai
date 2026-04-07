@@ -15,9 +15,9 @@ Call `gossip_session_save()` before ending your session to preserve context.
 what's running. Use a code block with this format:
 ```
 ┌─ gossipcat dispatch ────────────────────────┐
-│  task-id  → agent-name (relay|native)       │
-│  task-id  → agent-name (relay|native)       │
-│  task-id  → agent-name (relay|native)       │
+│  task-id  → agent-name (relay 📡|native 🧠) │
+│  task-id  → agent-name (relay 📡|native 🧠) │
+│  task-id  → agent-name (relay 📡|native 🧠) │
 └─────────────────────────────────────────────┘
 ```
 This is important — relay agents run invisibly without terminal indicators. The user needs
