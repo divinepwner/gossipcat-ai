@@ -1,6 +1,10 @@
 /**
- * SkillGenerator — generates superpowers-quality skill files per agent
- * based on competency gaps. Uses LLM with reference templates.
+ * SkillEngine — manages the full skill lifecycle per agent:
+ * LLM-driven skill file generation, baseline snapshots, lazy migration,
+ * effectiveness evaluation (checkEffectiveness), and verdict resolution wiring.
+ *
+ * Originally named SkillGenerator; renamed in the checkEffectiveness branch
+ * once the class grew beyond generation into a full lifecycle engine.
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, realpathSync } from 'fs';
@@ -83,7 +87,7 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST.
 - [ ] Tests verify the fix
 `;
 
-export class SkillGenerator {
+export class SkillEngine {
   private techStackCache: string | null | undefined = undefined; // undefined = not yet computed
 
   constructor(

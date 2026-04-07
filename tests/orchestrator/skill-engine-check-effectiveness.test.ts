@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { SkillGenerator } from '../../packages/orchestrator/src/skill-generator';
+import { SkillEngine } from '../../packages/orchestrator/src/skill-engine';
 import type { ILLMProvider } from '../../packages/orchestrator/src/llm-client';
 import { PerformanceReader } from '../../packages/orchestrator/src/performance-reader';
 import type { AgentScore } from '../../packages/orchestrator/src/performance-reader';
@@ -80,7 +80,7 @@ function readFrontmatter(skillPath: string): Record<string, string> {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('SkillGenerator.checkEffectiveness()', () => {
+describe('SkillEngine.checkEffectiveness()', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -106,7 +106,7 @@ describe('SkillGenerator.checkEffectiveness()', () => {
 
     // Live counters: baseline + 20 correct, +20 hallucinated (delta = 40 < 120)
     const perfReader = makeStubPerfReader(tmpDir, agentId, { [category]: 70 }, { [category]: 70 });
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     const verdict = await gen.checkEffectiveness(agentId, category);
 
@@ -138,7 +138,7 @@ describe('SkillGenerator.checkEffectiveness()', () => {
       { [category]: 75 + 102 },
       { [category]: 25 + 18 },
     );
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     const verdict = await gen.checkEffectiveness(agentId, category);
 
@@ -175,7 +175,7 @@ describe('SkillGenerator.checkEffectiveness()', () => {
       { [category]: 110 },
       { [category]: 110 },
     );
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     const verdict = await gen.checkEffectiveness(agentId, category);
 
@@ -218,7 +218,7 @@ describe('SkillGenerator.checkEffectiveness()', () => {
       { [category]: 500 },
       { [category]: 100 },
     );
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     const verdict = await gen.checkEffectiveness(agentId, category);
 
@@ -253,7 +253,7 @@ describe('SkillGenerator.checkEffectiveness()', () => {
       { [category]: 500 },
       { [category]: 100 },
     );
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     const verdict = await gen.checkEffectiveness(agentId, category, { role: 'implementer' });
 
@@ -273,7 +273,7 @@ describe('SkillGenerator.checkEffectiveness()', () => {
   // -------------------------------------------------------------------------
   it('returns pending with shouldUpdate=false when skill file does not exist', async () => {
     const perfReader = makeStubPerfReader(tmpDir, 'agent-x', {}, {});
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     const verdict = await gen.checkEffectiveness('agent-x', 'trust_boundaries');
     expect(verdict.status).toBe('pending');
@@ -301,7 +301,7 @@ describe('SkillGenerator.checkEffectiveness()', () => {
       { [category]: 75 + 102 },
       { [category]: 25 + 18 },
     );
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     await gen.checkEffectiveness(agentId, category);
 
@@ -343,7 +343,7 @@ describe('checkEffectiveness — lazy migration', () => {
       { [category]: 42 },
       { [category]: 8 },
     );
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     await gen.checkEffectiveness(agentId, category);
 
@@ -377,7 +377,7 @@ describe('checkEffectiveness — lazy migration', () => {
       { [category]: 30 },
       { [category]: 10 },
     );
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     const beforeMs = Date.now();
     await gen.checkEffectiveness(agentId, category);
@@ -415,7 +415,7 @@ describe('checkEffectiveness — lazy migration', () => {
       { [category]: 99 },
       { [category]: 1 },
     );
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     const verdict = await gen.checkEffectiveness(agentId, category);
 
@@ -448,7 +448,7 @@ describe('checkEffectiveness — lazy migration', () => {
       { [category]: 10 },
       { [category]: 2 },
     );
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     const beforeMs = Date.now();
     await gen.checkEffectiveness(agentId, category);
@@ -498,7 +498,7 @@ describe('checkEffectiveness — NaN coercion guard', () => {
 
     // Normal live counters
     const perfReader = makeStubPerfReader(tmpDir, agentId, { [category]: 80 }, { [category]: 20 });
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     const verdict = await gen.checkEffectiveness(agentId, category);
 
@@ -518,20 +518,20 @@ describe('checkEffectiveness — NaN coercion guard', () => {
 // Bug 4 — keywords regex: block-style YAML
 // ---------------------------------------------------------------------------
 
-describe('SkillGenerator.validateSkillContent — keywords block-style', () => {
+describe('SkillEngine.validateSkillContent — keywords block-style', () => {
   it('does not throw when keywords uses block-style YAML syntax', () => {
     // Access validateSkillContent via a subclass or via direct test — we need to call it
     // The method is private, so we'll test it via generate() with a mocked LLM response
     // that returns block-style keywords, OR we test the regex behavior indirectly by
     // checking that a content string with block-style keywords passes validation.
     // Since the method is private, we'll subclass to expose it for testing.
-    class TestableSkillGenerator extends SkillGenerator {
+    class TestableSkillEngine extends SkillEngine {
       public validatePublic(content: string): void {
         return (this as unknown as { validateSkillContent: (c: string) => void }).validateSkillContent(content);
       }
     }
 
-    const gen = new TestableSkillGenerator(makeStubLLM(), new PerformanceReader(tmpdir()), tmpdir());
+    const gen = new TestableSkillEngine(makeStubLLM(), new PerformanceReader(tmpdir()), tmpdir());
 
     const blockStyleContent = `---
 name: test-skill
@@ -585,7 +585,7 @@ describe('checkEffectiveness — SAFE_NAME guard', () => {
 
   it('returns pending with shouldUpdate=false for an unsafe agentId and does not touch filesystem', async () => {
     const perfReader = makeStubPerfReader(tmpDir, 'safe-agent', {}, {});
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     const verdict = await gen.checkEffectiveness('../../../tmp/evil', 'trust_boundaries');
 
@@ -595,7 +595,7 @@ describe('checkEffectiveness — SAFE_NAME guard', () => {
 
   it('returns pending with shouldUpdate=false for an agentId with path traversal dots', async () => {
     const perfReader = makeStubPerfReader(tmpDir, 'safe-agent', {}, {});
-    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const gen = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     const verdict = await gen.checkEffectiveness('../../etc/passwd', 'trust_boundaries');
 

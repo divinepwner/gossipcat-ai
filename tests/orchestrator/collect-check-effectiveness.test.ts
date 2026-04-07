@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { SkillGenerator } from '../../packages/orchestrator/src/skill-generator';
+import { SkillEngine } from '../../packages/orchestrator/src/skill-engine';
 import { PerformanceReader } from '../../packages/orchestrator/src/performance-reader';
 import type { AgentScore } from '../../packages/orchestrator/src/performance-reader';
 import type { ILLMProvider } from '../../packages/orchestrator/src/llm-client';
@@ -118,10 +118,10 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
       { [categoryNormalized]: 70 },
     );
 
-    const skillGenerator = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const skillEngine = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     await runCheckEffectivenessForAllSkills({
-      skillGenerator,
+      skillEngine,
       registryGet: (_id: string) => ({ role: 'reviewer' }),
       projectRoot: tmpDir,
     });
@@ -143,11 +143,11 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
     });
 
     const perfReader = makeStubPerfReader(tmpDir, agentId, { [category]: 170 }, { [category]: 70 });
-    const skillGenerator = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
-    const spy = vi.spyOn(skillGenerator, 'checkEffectiveness');
+    const skillEngine = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
+    const spy = vi.spyOn(skillEngine, 'checkEffectiveness');
 
     await runCheckEffectivenessForAllSkills({
-      skillGenerator,
+      skillEngine,
       registryGet: (_id: string) => ({ role: 'implementer' }),
       projectRoot: tmpDir,
     });
@@ -161,12 +161,12 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
     mkdirSync(agentDir, { recursive: true });
 
     const perfReader = new PerformanceReader(tmpDir);
-    const skillGenerator = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
-    const spy = vi.spyOn(skillGenerator, 'checkEffectiveness');
+    const skillEngine = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
+    const spy = vi.spyOn(skillEngine, 'checkEffectiveness');
 
     await expect(
       runCheckEffectivenessForAllSkills({
-        skillGenerator,
+        skillEngine,
         registryGet: () => ({ role: 'reviewer' }),
         projectRoot: tmpDir,
       }),
@@ -177,12 +177,12 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
 
   it('returns immediately when .gossip/agents does not exist', async () => {
     const perfReader = new PerformanceReader(tmpDir);
-    const skillGenerator = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
-    const spy = vi.spyOn(skillGenerator, 'checkEffectiveness');
+    const skillEngine = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
+    const spy = vi.spyOn(skillEngine, 'checkEffectiveness');
 
     await expect(
       runCheckEffectivenessForAllSkills({
-        skillGenerator,
+        skillEngine,
         registryGet: () => ({ role: 'reviewer' }),
         projectRoot: tmpDir,
       }),
@@ -203,10 +203,10 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
     writeFileSync(join(skillDir, `${category2}.md`), `---\nstatus: pending\n---\n\n## Body\n`);
 
     const perfReader = new PerformanceReader(tmpDir);
-    const skillGenerator = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+    const skillEngine = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     let callCount = 0;
-    vi.spyOn(skillGenerator, 'checkEffectiveness').mockImplementation(async () => {
+    vi.spyOn(skillEngine, 'checkEffectiveness').mockImplementation(async () => {
       callCount++;
       if (callCount === 1) throw new Error('simulated error on first skill');
       return { status: 'pending', shouldUpdate: false };
@@ -215,7 +215,7 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
     // Should NOT throw — error for first skill is swallowed, second skill still runs
     await expect(
       runCheckEffectivenessForAllSkills({
-        skillGenerator,
+        skillEngine,
         registryGet: () => ({ role: 'reviewer' }),
         projectRoot: tmpDir,
       }),
@@ -247,11 +247,11 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
       ]),
     );
 
-    const skillGenerator = new SkillGenerator(makeStubLLM(), combinedReader, tmpDir);
-    const spy = vi.spyOn(skillGenerator, 'checkEffectiveness');
+    const skillEngine = new SkillEngine(makeStubLLM(), combinedReader, tmpDir);
+    const spy = vi.spyOn(skillEngine, 'checkEffectiveness');
 
     await runCheckEffectivenessForAllSkills({
-      skillGenerator,
+      skillEngine,
       registryGet: () => ({ role: 'reviewer' }),
       projectRoot: tmpDir,
     });

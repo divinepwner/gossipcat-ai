@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdtempSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { SkillGenerator } from '../../packages/orchestrator/src/skill-generator';
+import { SkillEngine } from '../../packages/orchestrator/src/skill-engine';
 import type { ILLMProvider } from '../../packages/orchestrator/src/llm-client';
 import { PerformanceReader } from '../../packages/orchestrator/src/performance-reader';
 
@@ -90,7 +90,7 @@ function makeStubPerfReader(
   return reader;
 }
 
-describe('SkillGenerator — baseline snapshot in frontmatter', () => {
+describe('SkillEngine — baseline snapshot in frontmatter', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -100,7 +100,7 @@ describe('SkillGenerator — baseline snapshot in frontmatter', () => {
   it('writes baseline_correct and baseline_hallucinated from PerformanceReader counters', async () => {
     const llm = makeStubLLM();
     const perfReader = makeStubPerfReader(tmpDir, { trust_boundaries: 42 }, { trust_boundaries: 8 });
-    const gen = new SkillGenerator(llm, perfReader, tmpDir);
+    const gen = new SkillEngine(llm, perfReader, tmpDir);
 
     const result = await gen.generate('test-agent', 'trust_boundaries');
 
@@ -117,7 +117,7 @@ describe('SkillGenerator — baseline snapshot in frontmatter', () => {
     const before = new Date();
     const llm = makeStubLLM();
     const perfReader = makeStubPerfReader(tmpDir, { trust_boundaries: 5 }, { trust_boundaries: 1 });
-    const gen = new SkillGenerator(llm, perfReader, tmpDir);
+    const gen = new SkillEngine(llm, perfReader, tmpDir);
 
     const result = await gen.generate('test-agent', 'trust_boundaries');
     const after = new Date();
@@ -137,7 +137,7 @@ describe('SkillGenerator — baseline snapshot in frontmatter', () => {
   it('writes migration_count: 0 as a number', async () => {
     const llm = makeStubLLM();
     const perfReader = makeStubPerfReader(tmpDir, {}, {});
-    const gen = new SkillGenerator(llm, perfReader, tmpDir);
+    const gen = new SkillEngine(llm, perfReader, tmpDir);
 
     const result = await gen.generate('test-agent', 'trust_boundaries');
 
@@ -152,7 +152,7 @@ describe('SkillGenerator — baseline snapshot in frontmatter', () => {
   it('writes status: pending', async () => {
     const llm = makeStubLLM();
     const perfReader = makeStubPerfReader(tmpDir, {}, {});
-    const gen = new SkillGenerator(llm, perfReader, tmpDir);
+    const gen = new SkillEngine(llm, perfReader, tmpDir);
 
     const result = await gen.generate('test-agent', 'trust_boundaries');
 
@@ -165,7 +165,7 @@ describe('SkillGenerator — baseline snapshot in frontmatter', () => {
   it('writes effectiveness: 0.0 (number, not string)', async () => {
     const llm = makeStubLLM();
     const perfReader = makeStubPerfReader(tmpDir, {}, {});
-    const gen = new SkillGenerator(llm, perfReader, tmpDir);
+    const gen = new SkillEngine(llm, perfReader, tmpDir);
 
     const result = await gen.generate('test-agent', 'trust_boundaries');
 
@@ -180,7 +180,7 @@ describe('SkillGenerator — baseline snapshot in frontmatter', () => {
     const llm = makeStubLLM();
     // Agent exists but has no trust_boundaries entries
     const perfReader = makeStubPerfReader(tmpDir, { injection_vectors: 10 }, { injection_vectors: 2 });
-    const gen = new SkillGenerator(llm, perfReader, tmpDir);
+    const gen = new SkillEngine(llm, perfReader, tmpDir);
 
     const result = await gen.generate('test-agent', 'trust_boundaries');
 
@@ -195,7 +195,7 @@ describe('SkillGenerator — baseline snapshot in frontmatter', () => {
     const llm = makeStubLLM();
     const reader = new PerformanceReader(tmpDir);
     vi.spyOn(reader, 'getScores').mockReturnValue(new Map()); // empty — agent unknown
-    const gen = new SkillGenerator(llm, reader, tmpDir);
+    const gen = new SkillEngine(llm, reader, tmpDir);
 
     const result = await gen.generate('test-agent', 'trust_boundaries');
 
