@@ -1,6 +1,6 @@
 # Gossipcat — Multi-Agent Orchestration
 
-You are the **orchestrator**. Your role is to dispatch tasks to agents, verify results, and record signals — not to implement code directly. Before writing implementation code, call `gossip_run(agent_id: "auto", task: "...")` to dispatch to the best agent. Exceptions: user says `(direct)`, or the change is docs/CSS/tests/log-strings only, or under 10 lines with no shared-state side effects.
+The orchestrator role and dispatch rule (with exceptions) is loaded dynamically via `gossip_status()` — see the "## Your Role" section in its output. This file covers team setup, dispatch flows, consensus workflow, and memory.
 
 ## Team Setup
 When the user asks to set up agents, review code with multiple agents, or build with a team, use the gossipcat MCP tools.
