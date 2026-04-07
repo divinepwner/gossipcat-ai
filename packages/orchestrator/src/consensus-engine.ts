@@ -127,19 +127,22 @@ export class ConsensusEngine {
     const successful = results.filter(r => r.status === 'completed' && r.result);
     if (successful.length < 2) return [];
 
-    // Build summary map: agentId -> extracted + sanitized summary
+    // Build summary map: agentId -> extracted + sanitized summary (bounded, used for own-context)
+    // Also build rawResults map: agentId -> full sanitized result (used for finding extraction,
+    // so IDs stay in sync with synthesize() which also parses the full raw text).
     const summaries = new Map<string, string>();
+    const rawResults = new Map<string, string>();
+    const sanitize = (s: string) => s.replace(/<\/?(data|anchor|code)\b[^>]*>/gi, '');
     for (const r of successful) {
-      const raw = this.extractSummary(r.result!);
-      // Escape </data> to prevent prompt fence escape (agent output could contain the literal tag)
-      summaries.set(r.agentId, raw.replace(/<\/?(data|anchor|code)\b[^>]*>/gi, ''));
+      summaries.set(r.agentId, sanitize(this.extractSummary(r.result!)));
+      rawResults.set(r.agentId, sanitize(r.result!));
     }
 
     // Dispatch cross-review in parallel, each agent reviews peers
     const allEntries = await Promise.all(
       successful.map(async agent => {
         const start = Date.now();
-        const entries = await this.crossReviewForAgent(agent, summaries);
+        const entries = await this.crossReviewForAgent(agent, summaries, rawResults);
         process.stderr.write(`[consensus] ${agent.agentId} cross-review: ${entries.length} entries (${Math.round((Date.now() - start) / 1000)}s)\n`);
         return entries;
       })
@@ -154,8 +157,12 @@ export class ConsensusEngine {
   private async buildCrossReviewPrompt(
     agent: TaskEntry,
     summaries: Map<string, string>,
+    rawResults?: Map<string, string>,
   ): Promise<{ system: string; user: string }> {
     const ownSummary = summaries.get(agent.agentId) ?? '';
+    // For finding extraction, prefer the full raw result so IDs stay in sync with synthesize().
+    // Fall back to summaries when rawResults isn't provided (legacy callers / tests).
+    const findingSource = rawResults ?? summaries;
 
     // Build peer findings section — parse <agent_finding> tags and assign stable IDs
     const peerLines: string[] = [];
@@ -166,13 +173,14 @@ export class ConsensusEngine {
       if (peerId === agent.agentId) continue;
       const peerConfig = this.config.registryGet(peerId);
       const preset = peerConfig?.preset ?? 'unknown';
+      const peerFindingText = findingSource.get(peerId) ?? peerSummary;
 
       // Extract individual findings from <agent_finding> tags and assign IDs
       const findings: Array<{ id: string; attrs: string; content: string }> = [];
       let afMatch: RegExpExecArray | null;
       const pattern = new RegExp(agentFindingPattern.source, agentFindingPattern.flags);
       let findingIdx = 0;
-      while ((afMatch = pattern.exec(peerSummary)) !== null) {
+      while ((afMatch = pattern.exec(peerFindingText)) !== null) {
         const attrs = afMatch[1];
         const content = afMatch[2].trim();
         // MUST match synthesize() filtering exactly: length 15-2000, type attribute required.
@@ -272,8 +280,9 @@ Return only valid JSON.`;
   private async crossReviewForAgent(
     agent: TaskEntry,
     summaries: Map<string, string>,
+    rawResults?: Map<string, string>,
   ): Promise<CrossReviewEntry[]> {
-    const { system, user } = await this.buildCrossReviewPrompt(agent, summaries);
+    const { system, user } = await this.buildCrossReviewPrompt(agent, summaries, rawResults);
     const messages: LLMMessage[] = [
       { role: 'system', content: system },
       { role: 'user', content: user },
@@ -315,14 +324,16 @@ Return only valid JSON.`;
     const consensusId = shortConsensusId();
 
     const summaries = new Map<string, string>();
+    const rawResults = new Map<string, string>();
+    const sanitize = (s: string) => s.replace(/<\/?(data|anchor|code)\b[^>]*>/gi, '');
     for (const r of successful) {
-      const raw = this.extractSummary(r.result!);
-      summaries.set(r.agentId, raw.replace(/<\/?(data|anchor|code)\b[^>]*>/gi, ''));
+      summaries.set(r.agentId, sanitize(this.extractSummary(r.result!)));
+      rawResults.set(r.agentId, sanitize(r.result!));
     }
 
     const prompts: Array<{ agentId: string; system: string; user: string; isNative: boolean }> = [];
     for (const agent of successful) {
-      const { system, user } = await this.buildCrossReviewPrompt(agent, summaries);
+      const { system, user } = await this.buildCrossReviewPrompt(agent, summaries, rawResults);
       prompts.push({
         agentId: agent.agentId,
         system,
@@ -361,14 +372,19 @@ Return only valid JSON.`;
     const findingIdToKey = new Map<string, string>();
 
     for (const r of successful) {
+      // Parse findings from the FULL raw result so tags placed before the
+      // `## Consensus Summary` header (or past the fallback truncation window)
+      // are not silently dropped. extractSummary remains the source for the
+      // bounded "own context" block in cross-review prompts.
+      const raw = r.result!;
       const summary = this.extractSummary(r.result!);
       let agentFindingsFound = 0;
 
-      // Primary: parse <agent_finding> tags from raw summary
+      // Primary: parse <agent_finding> tags from the full raw result
       const agentFindingPattern = /<agent_finding\s+([^>]*)>([\s\S]*?)<\/agent_finding>/g;
       let afMatch: RegExpExecArray | null;
       let findingIdx = 0;
-      while ((afMatch = agentFindingPattern.exec(summary)) !== null) {
+      while ((afMatch = agentFindingPattern.exec(raw)) !== null) {
         const attrs = afMatch[1];
         const content = afMatch[2].trim();
         if (!content || content.length < 15 || content.length > 2000) continue;

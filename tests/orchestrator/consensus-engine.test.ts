@@ -921,4 +921,37 @@ describe('synthesizeWithCrossReview()', () => {
     expect(report.unique.length + report.unverified.length).toBeGreaterThanOrEqual(2);
     expect(report.confirmed.length).toBe(0);
   });
+
+  it('should parse <agent_finding> tags placed BEFORE the Consensus Summary header', async () => {
+    // Regression: extractSummary() returned only text after `## Consensus Summary`,
+    // so findings above that header were silently dropped. Finding extraction now
+    // reads the full raw result.
+    const engine = new ConsensusEngine(baseConfig);
+
+    const buildResult = (agent: string, prefix: string) => {
+      const findings = [
+        `<agent_finding type="finding" severity="high">Missing auth check in ${prefix}/router.ts:42 exposes admin routes</agent_finding>`,
+        `<agent_finding type="finding" severity="medium">SQL injection risk in ${prefix}/db.ts:87 via string concat</agent_finding>`,
+        `<agent_finding type="suggestion" severity="low">Add rate limiting to ${prefix}/api.ts:15 login endpoint</agent_finding>`,
+      ].join('\n\n');
+      // Findings come BEFORE the summary header — this is the bug scenario.
+      return `# Review by ${agent}\n\nHere are my findings:\n\n${findings}\n\n## Consensus Summary\n\nReviewed the module; see findings above.`;
+    };
+
+    const results: TaskEntry[] = [
+      createTaskEntry('agent-a', 'completed', buildResult('agent-a', 'src')),
+      createTaskEntry('agent-b', 'completed', buildResult('agent-b', 'lib')),
+    ];
+
+    const report = await engine.synthesize(results, []);
+
+    const total =
+      report.confirmed.length +
+      report.disputed.length +
+      report.unverified.length +
+      report.unique.length +
+      report.insights.length;
+    // 2 agents × 3 findings each = 6 total, minus any semantic dedup.
+    expect(total).toBeGreaterThanOrEqual(3);
+  });
 });
