@@ -379,26 +379,13 @@ Return only valid JSON.`;
       // bounded "own context" block in cross-review prompts.
       const raw = r.result!;
       const summary = this.extractSummary(r.result!);
-      let agentFindingsFound = 0;
 
       // Primary: parse <agent_finding> tags from the full raw result
-      const agentFindingPattern = /<agent_finding\s+([^>]*)>([\s\S]*?)<\/agent_finding>/g;
-      let afMatch: RegExpExecArray | null;
+      const parsed = this.parseAgentFindings(r.agentId, raw);
       let findingIdx = 0;
-      while ((afMatch = agentFindingPattern.exec(raw)) !== null) {
-        const attrs = afMatch[1];
-        const content = afMatch[2].trim();
-        if (!content || content.length < 15 || content.length > 2000) continue;
-
-        const typeMatch = attrs.match(/type="(finding|suggestion|insight)"/);
-        if (!typeMatch) continue;
-        const severityMatch = attrs.match(/severity="(critical|high|medium|low)"/);
-
+      for (const p of parsed) {
         findingIdx++;
-        const findingType = typeMatch[1] as 'finding' | 'suggestion' | 'insight';
-        const severity = severityMatch?.[1] as 'critical' | 'high' | 'medium' | 'low' | undefined;
-        const key = `${r.agentId}::${content}`;
-        const hasAnchor = ANCHOR_PATTERN.test(content);
+        const key = `${r.agentId}::${p.content}`;
 
         // Register stable findingId matching the IDs assigned in buildCrossReviewPrompt
         const findingId = `${r.agentId}:f${findingIdx}`;
@@ -406,16 +393,17 @@ Return only valid JSON.`;
 
         findingMap.set(key, {
           originalAgentId: r.agentId,
-          finding: content,
-          findingType,
-          severity,
+          finding: p.content,
+          findingType: p.findingType,
+          severity: p.severity,
+          category: p.category,
           confirmedBy: [],
           disputedBy: [],
           unverifiedBy: [],
-          confidences: hasAnchor ? [] : [2],
+          confidences: p.hasAnchor ? [] : [2],
         });
-        agentFindingsFound++;
       }
+      let agentFindingsFound = parsed.length;
 
       // Per-agent fallback: if THIS agent produced no tags, use legacy bullet parsing
       if (agentFindingsFound === 0) {
@@ -1119,6 +1107,48 @@ Return only valid JSON.`;
     }
 
     return null;
+  }
+
+  /**
+   * Parse <agent_finding> tags from raw agent output into structured findings.
+   * Extracted so it can be unit-tested independently of synthesize().
+   */
+  private parseAgentFindings(agentId: string, raw: string): Array<{
+    findingType: 'finding' | 'suggestion' | 'insight';
+    severity?: 'critical' | 'high' | 'medium' | 'low';
+    category?: string;
+    content: string;
+    hasAnchor: boolean;
+  }> {
+    const ANCHOR_PATTERN = /[\w./-]+\.(ts|js|tsx|jsx|py|go|rs|java|rb|md|json|yaml|yml|toml|sh):\d+/;
+    const agentFindingPattern = /<agent_finding\s+([^>]*)>([\s\S]*?)<\/agent_finding>/g;
+    const out: Array<{
+      findingType: 'finding' | 'suggestion' | 'insight';
+      severity?: 'critical' | 'high' | 'medium' | 'low';
+      category?: string;
+      content: string;
+      hasAnchor: boolean;
+    }> = [];
+    let afMatch: RegExpExecArray | null;
+    while ((afMatch = agentFindingPattern.exec(raw)) !== null) {
+      const attrs = afMatch[1];
+      const content = afMatch[2].trim();
+      if (!content || content.length < 15 || content.length > 2000) continue;
+
+      const typeMatch = attrs.match(/type="(finding|suggestion|insight)"/);
+      if (!typeMatch) continue;
+      const severityMatch = attrs.match(/severity="(critical|high|medium|low)"/);
+      const categoryMatch = attrs.match(/category="([a-z_]+)"/);
+
+      out.push({
+        findingType: typeMatch[1] as 'finding' | 'suggestion' | 'insight',
+        severity: severityMatch?.[1] as 'critical' | 'high' | 'medium' | 'low' | undefined,
+        category: categoryMatch?.[1],
+        content,
+        hasAnchor: ANCHOR_PATTERN.test(content),
+      });
+    }
+    return out;
   }
 
   /**
