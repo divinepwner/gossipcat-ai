@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import type { TaskItem } from '@/lib/types';
-import { timeAgo, formatDuration, cleanFindingTags } from '@/lib/utils';
+import { timeAgo, formatDuration, cleanFindingTags, renderMarkdown } from '@/lib/utils';
 
 interface TaskDetailModalProps {
   task: TaskItem | null;
@@ -78,14 +78,15 @@ export function TaskDetailModal({ task, onClose }: TaskDetailModalProps) {
 
         {/* Body */}
         <div className="max-h-[calc(100vh-220px)] space-y-5 overflow-y-auto px-5 py-4">
-          {/* Task prompt */}
+          {/* Task prompt — rendered as markdown */}
           <section>
             <h3 className="mb-2 font-mono text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
               Task
             </h3>
-            <pre className="whitespace-pre-wrap rounded-md border border-border/40 bg-background/40 p-3 font-mono text-xs leading-relaxed text-foreground/90">
-              {task.task}
-            </pre>
+            <div
+              className="task-md rounded-md border border-border/40 bg-background/40 p-3 text-xs leading-relaxed text-foreground/90 overflow-x-auto"
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(task.task) }}
+            />
           </section>
 
           {/* Result */}
