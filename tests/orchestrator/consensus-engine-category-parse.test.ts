@@ -1,5 +1,25 @@
-import { describe, it, expect } from 'vitest';
-import { ConsensusEngine } from '../../packages/orchestrator/src/consensus-engine';
+import { describe, it, expect, vi } from 'vitest';
+import { ConsensusEngine, CrossReviewEntry } from '../../packages/orchestrator/src/consensus-engine';
+import { TaskEntry } from '../../packages/orchestrator/src/types';
+
+// Minimal engine config so formatReport's registryGet call doesn't throw
+const makeEngine = () => new ConsensusEngine({
+  llm: { generate: vi.fn() } as any,
+  registryGet: (id: string) => ({ id, provider: 'local', model: 'test', preset: `preset-${id}`, skills: [] }),
+} as any);
+
+// Minimal stub: synthesize() only needs status/result/id/agentId from TaskEntry
+const makeTask = (agentId: string, result: string): TaskEntry => ({
+  id: `task-${agentId}`,
+  agentId,
+  task: 'review',
+  status: 'completed',
+  result,
+  startedAt: Date.now(),
+  completedAt: Date.now(),
+  inputTokens: 0,
+  outputTokens: 0,
+});
 
 describe('ConsensusEngine — category attribute parsing', () => {
   it('extracts category from <agent_finding> tag attribute', () => {
@@ -19,5 +39,95 @@ SQL injection at db.ts:42
     const findings = (engine as any).parseAgentFindings('agent-x', raw);
     expect(findings).toHaveLength(1);
     expect(findings[0].category).toBeUndefined();
+  });
+
+  describe('synthesize() — category propagation onto signals', () => {
+    it('propagates category onto agreement signal', async () => {
+      const engine = makeEngine();
+
+      // Agent A emits a categorised finding
+      const resultA = makeTask('agent-a', `<agent_finding type="finding" severity="high" category="injection_vectors">SQL injection at db.ts:42</agent_finding>`);
+      // Agent B is a peer (needs a finding too so synthesize counts it as successful)
+      const resultB = makeTask('agent-b', `<agent_finding type="finding" severity="low">Unrelated finding at util.ts:10</agent_finding>`);
+
+      // Agent B agrees with agent-a:f1
+      const crossReview: CrossReviewEntry[] = [
+        {
+          action: 'agree',
+          agentId: 'agent-b',
+          peerAgentId: 'agent-a',
+          findingId: 'agent-a:f1',
+          finding: 'SQL injection at db.ts:42',
+          evidence: 'Confirmed — input unsanitised before query',
+          confidence: 5,
+        },
+      ];
+
+      const report = await engine.synthesize([resultA, resultB], crossReview);
+
+      const agreementSignal = report.signals.find(
+        s => s.signal === 'agreement' && s.agentId === 'agent-b',
+      );
+      expect(agreementSignal, 'agreement signal must exist').toBeDefined();
+      expect(agreementSignal!.category).toBe('injection_vectors');
+    });
+
+    it('propagates category onto hallucination_caught signal (disagree path)', async () => {
+      const engine = makeEngine();
+
+      const resultA = makeTask('agent-a', `<agent_finding type="finding" severity="high" category="injection_vectors">SQL injection at db.ts:42</agent_finding>`);
+      const resultB = makeTask('agent-b', `<agent_finding type="finding" severity="low">Unrelated finding at util.ts:10</agent_finding>`);
+
+      // Agent B disagrees with a hallucination keyword + fabricated citation trigger
+      // Use keywords known to trigger detectHallucination (e.g. "does not exist")
+      const crossReview: CrossReviewEntry[] = [
+        {
+          action: 'disagree',
+          agentId: 'agent-b',
+          peerAgentId: 'agent-a',
+          findingId: 'agent-a:f1',
+          finding: 'SQL injection at db.ts:42',
+          evidence: 'this function does not exist anywhere in the codebase, I cannot find it',
+          confidence: 1,
+        },
+      ];
+
+      const report = await engine.synthesize([resultA, resultB], crossReview);
+
+      // Either hallucination_caught or disagreement will be emitted — both must carry category
+      const relatedSignal = report.signals.find(
+        s => (s.signal === 'hallucination_caught' || s.signal === 'disagreement') && s.agentId === 'agent-b',
+      );
+      expect(relatedSignal, 'disagreement or hallucination_caught signal must exist').toBeDefined();
+      expect(relatedSignal!.category).toBe('injection_vectors');
+    });
+
+    it('propagates category onto unique_confirmed signal', async () => {
+      const engine = makeEngine();
+
+      const resultA = makeTask('agent-a', `<agent_finding type="finding" severity="critical" category="injection_vectors">SQL injection at db.ts:42</agent_finding>`);
+      const resultB = makeTask('agent-b', `<agent_finding type="finding" severity="low">Unrelated finding at util.ts:10</agent_finding>`);
+
+      // Agent B agrees — makes it confirmed; unique because only agent-a found it
+      const crossReview: CrossReviewEntry[] = [
+        {
+          action: 'agree',
+          agentId: 'agent-b',
+          peerAgentId: 'agent-a',
+          findingId: 'agent-a:f1',
+          finding: 'SQL injection at db.ts:42',
+          evidence: 'Confirmed',
+          confidence: 5,
+        },
+      ];
+
+      const report = await engine.synthesize([resultA, resultB], crossReview);
+
+      const uniqueConfirmed = report.signals.find(
+        s => s.signal === 'unique_confirmed' && s.agentId === 'agent-a',
+      );
+      expect(uniqueConfirmed, 'unique_confirmed signal must exist').toBeDefined();
+      expect(uniqueConfirmed!.category).toBe('injection_vectors');
+    });
   });
 });

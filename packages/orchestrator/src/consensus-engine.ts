@@ -510,6 +510,7 @@ Return only valid JSON.`;
             evidence: capEvidence(entry.evidence),
             timestamp: now,
             severity: f.severity,
+            category: f.category,
           });
         }
         continue;
@@ -543,6 +544,7 @@ Return only valid JSON.`;
               evidence: capEvidence(entry.evidence),
               timestamp: now,
               severity: f.severity,
+              category: f.category,
             });
           } else {
             f.disputedBy.push({
@@ -560,6 +562,7 @@ Return only valid JSON.`;
               evidence: capEvidence(entry.evidence),
               timestamp: now,
               severity: f.severity,
+              category: f.category,
             });
           }
         }
@@ -585,6 +588,7 @@ Return only valid JSON.`;
             evidence: capEvidence(entry.evidence),
             timestamp: now,
             severity: f.severity,
+            category: f.category,
           });
         }
       }
@@ -644,6 +648,7 @@ Return only valid JSON.`;
             evidence: capEvidence(`Confirmed finding cites non-existent code: "${entry.finding.slice(0, 200)}"`),
             timestamp: now,
             severity: entry.severity,
+            category: entry.category,
           });
           continue;
         } else if (hasFabricatedCitation) {
@@ -660,6 +665,7 @@ Return only valid JSON.`;
             evidence: capEvidence(`Confirmed finding has unresolvable citation (stale?): "${entry.finding.slice(0, 200)}"`),
             timestamp: now,
             severity: entry.severity,
+            category: entry.category,
           });
           continue;
         }
@@ -679,6 +685,7 @@ Return only valid JSON.`;
             evidence: capEvidence(entry.finding),
             timestamp: now,
             severity: entry.severity,
+            category: entry.category,
           });
         }
       } else if (entry.unverifiedBy.length > 0) {
@@ -701,6 +708,7 @@ Return only valid JSON.`;
           evidence: capEvidence(entry.finding),
           timestamp: now,
           severity: entry.severity,
+          category: entry.category,
         });
       } else {
         finding.tag = 'unique';
@@ -714,6 +722,7 @@ Return only valid JSON.`;
           evidence: capEvidence(entry.finding),
           timestamp: now,
           severity: entry.severity,
+          category: entry.category,
         });
       }
     }
