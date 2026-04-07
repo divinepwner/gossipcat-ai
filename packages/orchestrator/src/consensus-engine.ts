@@ -1121,7 +1121,7 @@ Return only valid JSON.`;
    * Parse <agent_finding> tags from raw agent output into structured findings.
    * Extracted so it can be unit-tested independently of synthesize().
    */
-  private parseAgentFindings(agentId: string, raw: string): Array<{
+  private parseAgentFindings(_agentId: string, raw: string): Array<{
     findingType: 'finding' | 'suggestion' | 'insight';
     severity?: 'critical' | 'high' | 'medium' | 'low';
     category?: string;
