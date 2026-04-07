@@ -219,35 +219,84 @@ export async function handleCollect(
       const { prompts, consensusId } = await engine.generateCrossReviewPrompts(allResults, nativeAgentIds);
 
       // Phase 2b: Run relay agents' cross-review inline (using their own LLM)
+      //
+      // Failure modes that previously dropped silently (root cause of the
+      // gemini-reviewer disappearing-from-consensus regression — see
+      // commit e633243):
+      //   1. QuotaExhaustedException (503/429 on the agent's provider)
+      //   2. parseCrossReviewResponse returning [] on prose-wrapped JSON
+      //   3. network / unknown errors from llm.generate
+      //
+      // All three are now logged and recorded in `relayCrossReviewSkipped` so
+      // synthesis can surface the dropout instead of pretending the round was
+      // complete. Quota errors get one short retry after the cooldown expires.
       const relayEntries: any[] = [];
-      const relayPrompts = prompts.filter(p => !p.isNative);
-      await Promise.all(relayPrompts.map(async (p) => {
+      const relayCrossReviewSkipped: Array<{ agentId: string; reason: string }> = [];
+      const relayPrompts = prompts.filter((p: any) => !p.isNative);
+      const validPeerIds = new Set(allResults.filter((r: any) => r.status === 'completed').map((r: any) => r.agentId));
+
+      const runOneRelayCrossReview = async (p: any, attempt: number): Promise<void> => {
+        let llm = agentLlmCache.get(p.agentId);
+        if (!llm) {
+          process.stderr.write(`[gossipcat] WARNING: ${p.agentId} has no per-agent LLM — falling back to orchestrator LLM for cross-review\n`);
+          llm = mainLlm;
+        }
+        const response = await llm.generate(
+          [{ role: 'system', content: p.system }, { role: 'user', content: p.user }],
+          { temperature: 0 },
+        );
+        const parsed = engine.parseCrossReviewResponse(p.agentId, response.text, 50);
+        const filtered = parsed.filter((e: any) => e.peerAgentId !== p.agentId && validPeerIds.has(e.peerAgentId));
+        if (filtered.length === 0) {
+          // The parser already logged + dumped on full failure; an empty
+          // result here means parse-succeeded-but-yielded-nothing-useful.
+          process.stderr.write(`[consensus] ${p.agentId} cross-review produced 0 entries (attempt ${attempt + 1})\n`);
+          relayCrossReviewSkipped.push({
+            agentId: p.agentId,
+            reason: 'parser produced 0 entries (likely prose-wrapped or off-format JSON)',
+          });
+          return;
+        }
+        relayEntries.push(...filtered);
+      };
+
+      await Promise.all(relayPrompts.map(async (p: any) => {
         try {
-          let llm = agentLlmCache.get(p.agentId);
-          if (!llm) {
-            process.stderr.write(`[gossipcat] WARNING: ${p.agentId} has no per-agent LLM — falling back to orchestrator LLM for cross-review\n`);
-            llm = mainLlm;
+          await runOneRelayCrossReview(p, 0);
+        } catch (err: any) {
+          // Quota: wait for cooldown then try once more.
+          if (err && err.name === 'QuotaExhaustedException') {
+            const waitMs = Math.min((err.retryAfterMs ?? 5_000) + 250, 20_000);
+            process.stderr.write(`[consensus] ${p.agentId} cross-review hit ${err.provider ?? 'provider'} quota — retrying once after ${Math.round(waitMs/1000)}s cooldown\n`);
+            await new Promise((res) => setTimeout(res, waitMs));
+            try {
+              await runOneRelayCrossReview(p, 1);
+              return;
+            } catch (err2: any) {
+              const reason = err2 && err2.name === 'QuotaExhaustedException'
+                ? `${err2.provider ?? 'provider'} quota still exhausted after retry (${Math.round((err2.retryAfterMs ?? 0)/1000)}s remaining)`
+                : `retry failed: ${(err2 as Error)?.message ?? String(err2)}`;
+              process.stderr.write(`[consensus] ${p.agentId} cross-review FAILED after retry: ${reason}\n`);
+              relayCrossReviewSkipped.push({ agentId: p.agentId, reason });
+              return;
+            }
           }
-          const response = await llm.generate(
-            [{ role: 'system', content: p.system }, { role: 'user', content: p.user }],
-            { temperature: 0 },
-          );
-          const parsed = engine.parseCrossReviewResponse(p.agentId, response.text, 50);
-          // Filter to round members only — same guard as native path in relay-cross-review.ts
-          const validPeerIds = new Set(allResults.filter((r: any) => r.status === 'completed').map((r: any) => r.agentId));
-          const filtered = parsed.filter((e: any) => e.peerAgentId !== p.agentId && validPeerIds.has(e.peerAgentId));
-          relayEntries.push(...filtered);
-        } catch { /* graceful degradation */ }
+          // Any other error: log + record, do not retry.
+          const reason = (err as Error)?.message ?? String(err);
+          process.stderr.write(`[consensus] ${p.agentId} cross-review FAILED: ${reason}\n`);
+          relayCrossReviewSkipped.push({ agentId: p.agentId, reason });
+        }
       }));
 
       // Phase 2c: Check if native agents need external dispatch
-      const nativePrompts = prompts.filter(p => p.isNative);
+      const nativePrompts = prompts.filter((p: any) => p.isNative);
       if (nativePrompts.length === 0) {
         // Edge case: all native agents had no completed results — synthesize immediately
         consensusReport = await engine.synthesizeWithCrossReview(
           allResults.filter((r: any) => r.status === 'completed'),
           relayEntries,
           consensusId,
+          relayCrossReviewSkipped,
         );
       } else {
         // Store pending round for native agents to complete.
@@ -256,11 +305,12 @@ export async function handleCollect(
           consensusId,
           allResults: allResults.filter((r: any) => r.status === 'completed'),
           relayCrossReviewEntries: relayEntries,
-          pendingNativeAgents: new Set(nativePrompts.map(p => p.agentId)),
+          relayCrossReviewSkipped,
+          pendingNativeAgents: new Set(nativePrompts.map((p: any) => p.agentId)),
           nativeCrossReviewEntries: [],
           deadline: Date.now() + CONSENSUS_TIMEOUT_MS,
           createdAt: Date.now(),
-          nativePrompts: nativePrompts.map(p => ({ agentId: p.agentId, system: p.system, user: p.user })),
+          nativePrompts: nativePrompts.map((p: any) => ({ agentId: p.agentId, system: p.system, user: p.user })),
         });
 
         // Start timeout watcher — auto-synthesizes if native agents don't respond
@@ -411,22 +461,39 @@ export async function handleCollect(
         ...(consensusReport.unique || []),
       ];
 
-      // Only record provisional signals for finding authors NOT already covered
+      // Derive consensusId from any finding ID. Findings carry IDs in
+      // <consensusId>:<agentId>:fN format set by synthesizeWithCrossReview;
+      // pull the consensusId off the first one rather than re-deriving.
+      const provisionalConsensusId =
+        allFindings.length > 0 && typeof allFindings[0].id === 'string'
+          ? allFindings[0].id.split(':').slice(0, 2).join(':')
+          : undefined;
+
+      // Only record provisional signals for finding authors NOT already covered.
+      // CRITICAL: populate findingId (not just taskId) so dashboard back-search
+      // can resolve signal → consensus round → score adjustment. The previous
+      // writer set taskId = f.id but left findingId undefined, leaving these
+      // signals invisible to the dashboard pipeline (consensus round 4c88bcd3
+      // confirmed this gap, sonnet-reviewer:f3).
       const provisionalSignals = allFindings
         .filter((f: any) => !alreadySignaled.has(f.originalAgentId))
         .map((f: any) => ({
           type: 'consensus' as const,
           taskId: f.id || '',
+          consensusId: provisionalConsensusId,
+          findingId: typeof f.id === 'string' ? f.id : undefined,
           signal: tagToSignal[f.tag] || 'unique_unconfirmed',
           agentId: f.originalAgentId,
           evidence: `[provisional] ${(f.finding || '').slice(0, 200)}`,
+          severity: f.severity,
+          category: f.category,
           timestamp,
         }));
 
       if (provisionalSignals.length > 0) {
         writer.appendSignals(provisionalSignals);
         provisionalSignalCount = provisionalSignals.length;
-        process.stderr.write(`[gossipcat] Auto-recorded ${provisionalSignalCount} provisional signal(s). Retract incorrect ones with gossip_signals(action: "retract").\n`);
+        process.stderr.write(`[gossipcat] Auto-recorded ${provisionalSignalCount} provisional signal(s) with finding_id. Use gossip_signals to override or add nuance; retract with action: "retract".\n`);
       }
     } catch { /* best-effort */ }
   }
@@ -439,7 +506,11 @@ export async function handleCollect(
   }
 
   if (provisionalSignalCount > 0) {
-    output += `\n\n📊 ${provisionalSignalCount} provisional signals auto-recorded. Retract incorrect ones with gossip_signals(action: "retract", agent_id, reason).`;
+    // Per consensus 4c88bcd3, gemini-reviewer:f2 — explicit override-discoverability
+    // message preserves the orchestrator's judgment moment without making manual
+    // recording the default. Auto-record handles the unambiguous cases; the
+    // orchestrator only needs to act on findings it disagrees with.
+    output += `\n\n📊 ${provisionalSignalCount} provisional signals auto-recorded with finding_id (visible to dashboard back-search). You can call gossip_signals(action: "record") to add nuance (counterpart_id, severity correction, hallucination_caught) or gossip_signals(action: "retract") to override.`;
   }
 
   if (!consensusReport?.summary && consensus) {

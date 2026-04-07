@@ -1,4 +1,5 @@
 import { readFile, readdir, stat } from 'fs/promises';
+import { mkdirSync, writeFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { join, resolve } from 'path';
 
@@ -1407,54 +1408,71 @@ Return only valid JSON.`;
 
   /**
    * Parse LLM cross-review response into structured entries.
-   * Handles markdown code fences, invalid JSON, and confidence clamping.
+   *
+   * Robust against the failure modes we see from real LLMs (especially Gemini):
+   *   1. Plain JSON                                              → JSON.parse
+   *   2. Fenced JSON (```json ... ```)                            → fence strip + parse
+   *   3. JSON wrapped in prose                                   → balanced-bracket array extraction
+   *   4. Single object instead of array                          → wrap in array
+   *   5. NDJSON / multiple {} objects with prose between them    → object salvage
+   *
+   * Bracket extraction is string-aware (respects "..." and \-escapes) so quoted
+   * strings containing `]` or `}` no longer break the scan. When all strategies
+   * fail, the raw payload is dumped to .gossip/cross-review-failures/ for triage.
    */
   parseCrossReviewResponse(reviewerAgentId: string, text: string, limit: number): CrossReviewEntry[] {
     // Strip markdown code fences if present (Gemini often wraps JSON in prose + fences)
     let cleaned = text.trim();
-    const fenceMatch = cleaned.match(/```(?:json)?\s*\n([\s\S]*?)\n?\s*```/);
+    const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
     if (fenceMatch) {
       cleaned = fenceMatch[1].trim();
     }
 
     let parsed: unknown;
+
+    // Strategy 1: parse the whole cleaned blob
     try {
       parsed = JSON.parse(cleaned);
-    } catch {
-      // Fallback: try to extract a JSON array from within the text (native agents often wrap JSON in prose)
-      // Try each '[' position paired with each ']' from the end, narrowing the window
-      let startIdx = 0;
-      while (!parsed && (startIdx = cleaned.indexOf('[', startIdx)) !== -1) {
-        let endIdx = cleaned.length;
-        while (!parsed && (endIdx = cleaned.lastIndexOf(']', endIdx - 1)) > startIdx) {
-          try {
-            parsed = JSON.parse(cleaned.slice(startIdx, endIdx + 1));
-          } catch {
-            // Not valid JSON with this window, try narrower
-          }
-        }
-        startIdx++;
+    } catch { /* fall through */ }
+
+    // Strategy 2: balanced-bracket array extraction (string-aware)
+    if (parsed === undefined) {
+      parsed = this.extractFirstBalancedJson(cleaned, '[');
+    }
+
+    // Strategy 3: salvage individual {} objects from prose-interleaved output
+    if (parsed === undefined || (Array.isArray(parsed) && parsed.length === 0)) {
+      const objects = this.salvageJsonObjects(cleaned);
+      if (objects.length > 0) parsed = objects;
+    }
+
+    if (parsed === undefined) {
+      if (cleaned.length > 0) {
+        process.stderr.write(`[consensus] ${reviewerAgentId} cross-review response is not valid JSON (${cleaned.length} chars)\n`);
+        this.dumpFailedCrossReview(reviewerAgentId, text);
       }
-      if (!parsed) {
-        if (cleaned.length > 0) {
-          process.stderr.write(`[consensus] ${reviewerAgentId} cross-review response is not valid JSON (${cleaned.length} chars)\n`);
-        }
+      return [];
+    }
+
+    // Single-object response → wrap into a one-element array
+    if (!Array.isArray(parsed)) {
+      if (parsed && typeof parsed === 'object') {
+        parsed = [parsed];
+      } else {
+        process.stderr.write(`[consensus] ${reviewerAgentId} cross-review response is not an array\n`);
+        this.dumpFailedCrossReview(reviewerAgentId, text);
         return [];
       }
     }
 
-    if (!Array.isArray(parsed)) {
-      process.stderr.write(`[consensus] ${reviewerAgentId} cross-review response is not an array\n`);
-      return [];
-    }
-
     // SECURITY: Limit the number of entries to prevent DoS attacks.
-    const limited = parsed.slice(0, limit);
+    const limited = (parsed as unknown[]).slice(0, limit);
 
     const entries: CrossReviewEntry[] = [];
-    for (const item of limited) {
-      if (!item || typeof item !== 'object') continue;
-      if (!VALID_ACTIONS.has(item.action)) continue;
+    for (const raw of limited) {
+      if (!raw || typeof raw !== 'object') continue;
+      const item = raw as Record<string, unknown>;
+      if (typeof item.action !== 'string' || !VALID_ACTIONS.has(item.action)) continue;
       if (!item.finding || !item.evidence) continue;
 
       // Clamp confidence to 1-5, default 3 if missing/non-numeric
@@ -1467,20 +1485,108 @@ Return only valid JSON.`;
 
       // Derive peerAgentId from findingId (e.g., "gemini-reviewer:f1" → "gemini-reviewer")
       // Fall back to item.agentId for backward compatibility
-      const findingId = item.findingId ?? '';
+      const findingId = typeof item.findingId === 'string' ? item.findingId : '';
       const peerFromId = findingId.includes(':') ? findingId.split(':')[0] : '';
+      const fallbackAgentId = typeof item.agentId === 'string' ? item.agentId : '';
       entries.push({
         action: item.action as CrossReviewEntry['action'],
         agentId: reviewerAgentId,
-        peerAgentId: peerFromId || item.agentId || '',
+        peerAgentId: peerFromId || fallbackAgentId,
         findingId: findingId || undefined,
-        finding: item.finding,
-        evidence: item.evidence,
+        finding: String(item.finding),
+        evidence: String(item.evidence),
         confidence,
       });
     }
 
     return entries;
+  }
+
+  /**
+   * Find the first balanced JSON value (`[...]` or `{...}`) embedded in arbitrary
+   * text. String-aware: respects `"..."` and `\`-escapes so quoted brackets do
+   * not break the scan. Returns the parsed value, or undefined if no balanced
+   * block parses successfully.
+   */
+  private extractFirstBalancedJson(text: string, openChar: '[' | '{'): unknown {
+    const closeChar = openChar === '[' ? ']' : '}';
+    let start = text.indexOf(openChar);
+    while (start !== -1) {
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      for (let i = start; i < text.length; i++) {
+        const c = text[i];
+        if (escape) { escape = false; continue; }
+        if (c === '\\') { escape = true; continue; }
+        if (c === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (c === openChar) depth++;
+        else if (c === closeChar) {
+          depth--;
+          if (depth === 0) {
+            try { return JSON.parse(text.slice(start, i + 1)); }
+            catch { break; } // give up on this start, advance to next openChar
+          }
+        }
+      }
+      start = text.indexOf(openChar, start + 1);
+    }
+    return undefined;
+  }
+
+  /**
+   * Salvage individual JSON objects from prose-interleaved LLM output.
+   * Walks the text finding every balanced `{...}` block and tries to parse
+   * each. Used as a last resort when neither full-text parse nor array
+   * extraction yields a usable result.
+   */
+  private salvageJsonObjects(text: string): unknown[] {
+    const out: unknown[] = [];
+    let i = 0;
+    while (i < text.length) {
+      const start = text.indexOf('{', i);
+      if (start === -1) break;
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      let end = -1;
+      for (let j = start; j < text.length; j++) {
+        const c = text[j];
+        if (escape) { escape = false; continue; }
+        if (c === '\\') { escape = true; continue; }
+        if (c === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (c === '{') depth++;
+        else if (c === '}') {
+          depth--;
+          if (depth === 0) { end = j; break; }
+        }
+      }
+      if (end === -1) break; // unbalanced — bail out
+      try {
+        const obj = JSON.parse(text.slice(start, end + 1));
+        if (obj && typeof obj === 'object' && !Array.isArray(obj)) out.push(obj);
+      } catch { /* skip this block */ }
+      i = end + 1;
+    }
+    return out;
+  }
+
+  /**
+   * Best-effort dump of an unparseable cross-review payload to disk so the
+   * raw LLM output is recoverable for debugging. Silent on failure — never
+   * blocks the consensus pipeline.
+   */
+  private dumpFailedCrossReview(reviewerAgentId: string, text: string): void {
+    if (!this.config.projectRoot) return;
+    try {
+      const dir = join(this.config.projectRoot, '.gossip', 'cross-review-failures');
+      mkdirSync(dir, { recursive: true });
+      const safeId = reviewerAgentId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      writeFileSync(join(dir, `${safeId}-${ts}.txt`), text);
+    } catch { /* best effort */ }
   }
 
   /**
@@ -1492,8 +1598,20 @@ Return only valid JSON.`;
     results: TaskEntry[],
     crossReviewEntries: CrossReviewEntry[],
     consensusId: string,
+    relayCrossReviewSkipped?: Array<{ agentId: string; reason: string }>,
   ): Promise<ConsensusReport> {
     const report = await this.synthesize(results, crossReviewEntries);
+
+    // Capture the auto-generated (internal) consensusId BEFORE overwriting it,
+    // so we can also rewrite the formatted summary text. The summary was built
+    // by formatReport() inside synthesize() using the internal IDs — without
+    // this rewrite the orchestrator sees one set of finding IDs in the EXECUTE
+    // NOW block while signals/findings on disk are stored under another set,
+    // leaving rounds permanently flagged as "signals pending" even after the
+    // orchestrator records them. The auto-generated ID format is the short
+    // hex pair "<8hex>-<8hex>" set by shortConsensusId(); pull it from any
+    // existing signal before we overwrite that field.
+    const internalConsensusId = report.signals.find(s => s.consensusId)?.consensusId;
 
     // Overwrite the auto-generated consensusId with the one from phase 1
     for (const signal of report.signals) {
@@ -1507,6 +1625,25 @@ Return only valid JSON.`;
         const suffix = f.id.split(':').pop() || f.id;
         f.id = `${consensusId}:${suffix}`;
       }
+    }
+
+    // Rewrite the summary text so the EXECUTE NOW pre-filled finding_ids
+    // match what's actually stored on disk. Plain string replace is safe here
+    // because the internal consensusId is a short hex pair that does not
+    // collide with substrings elsewhere in the report.
+    if (internalConsensusId && internalConsensusId !== consensusId) {
+      report.summary = report.summary.split(internalConsensusId).join(consensusId);
+    }
+
+    // Surface dropped relay agents so the orchestrator can see who silently
+    // failed instead of pretending the round was complete.
+    if (relayCrossReviewSkipped && relayCrossReviewSkipped.length > 0) {
+      report.relayCrossReviewSkipped = relayCrossReviewSkipped;
+      const lines = ['', '⚠️  Relay cross-review skipped:'];
+      for (const s of relayCrossReviewSkipped) {
+        lines.push(`  - ${s.agentId}: ${s.reason}`);
+      }
+      report.summary += '\n' + lines.join('\n') + '\n';
     }
 
     return report;

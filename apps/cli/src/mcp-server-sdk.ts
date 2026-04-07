@@ -992,6 +992,71 @@ server.tool(
       }
     } catch { /* quota-state.json not present — skip */ }
 
+    // Signals pending — recent consensus rounds with no manually-recorded signals.
+    // Surfaces the back-search gap (per consensus 4c88bcd3, haiku:f17) so the
+    // orchestrator can SEE which rounds it skipped without having to remember.
+    // Mirrors the existing gossip_status reconnect-recovery pattern for
+    // pendingConsensusRounds re-surfacing.
+    try {
+      const { readFileSync, readdirSync, statSync } = await import('fs');
+      const reportsDir = join(process.cwd(), '.gossip', 'consensus-reports');
+      const perfPath = join(process.cwd(), '.gossip', 'agent-performance.jsonl');
+
+      // Window: rounds completed within the last 24h are still actionable.
+      const WINDOW_MS = 24 * 60 * 60 * 1000;
+      const now = Date.now();
+      const recentReports: Array<{ id: string; mtimeMs: number }> = [];
+      try {
+        for (const fname of readdirSync(reportsDir)) {
+          if (!fname.endsWith('.json')) continue;
+          const fpath = join(reportsDir, fname);
+          const st = statSync(fpath);
+          if (now - st.mtimeMs > WINDOW_MS) continue;
+          recentReports.push({ id: fname.replace(/\.json$/, ''), mtimeMs: st.mtimeMs });
+        }
+      } catch { /* reports dir missing — no rounds yet */ }
+
+      if (recentReports.length > 0) {
+        // Build set of consensusIds that have at least one manually-recorded signal.
+        const covered = new Set<string>();
+        try {
+          const perfRaw = readFileSync(perfPath, 'utf8');
+          for (const line of perfRaw.split('\n')) {
+            if (!line) continue;
+            try {
+              const sig = JSON.parse(line);
+              if (sig.source !== 'manual') continue;
+              const fid: string | undefined = sig.findingId;
+              if (typeof fid === 'string' && fid.includes(':')) {
+                // findingId is "<consensusId>:<agentId>:fN" — first two segments are consensusId
+                covered.add(fid.split(':').slice(0, 2).join(':'));
+              }
+            } catch { /* skip malformed line */ }
+          }
+        } catch { /* no perf log yet — every round is pending */ }
+
+        const pending = recentReports.filter(r => !covered.has(r.id));
+        if (pending.length > 0) {
+          // Sort newest first, show up to 3 with relative ages
+          pending.sort((a, b) => b.mtimeMs - a.mtimeMs);
+          const displayed = pending.slice(0, 3);
+          const ageStr = (ms: number) => {
+            const sec = Math.floor((now - ms) / 1000);
+            if (sec < 60) return `${sec}s ago`;
+            if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+            return `${Math.floor(sec / 3600)}h ago`;
+          };
+          lines.push(`  ⚠️ Signals pending: ${pending.length} consensus round${pending.length === 1 ? '' : 's'} with no recorded signals — back-search will be incomplete`);
+          for (const p of displayed) {
+            lines.push(`     - ${p.id} (${ageStr(p.mtimeMs)}) → call gossip_signals(action: "record")`);
+          }
+          if (pending.length > displayed.length) {
+            lines.push(`     - … and ${pending.length - displayed.length} more`);
+          }
+        }
+      }
+    } catch { /* best-effort — never block status on this */ }
+
     // Agent list (formerly gossip_agents)
     const agentSections: string[] = [];
     const configPath = findConfigPath();

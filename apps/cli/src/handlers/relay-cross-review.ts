@@ -28,7 +28,7 @@ export function startConsensusTimeout(consensusId: string): void {
 
     const missingAgents = [...current.pendingNativeAgents];
     // Delete round BEFORE async work to prevent double-synthesis race with concurrent relay
-    const snapshot = { allResults: current.allResults, relayCrossReviewEntries: current.relayCrossReviewEntries, nativeCrossReviewEntries: [...current.nativeCrossReviewEntries] };
+    const snapshot = { allResults: current.allResults, relayCrossReviewEntries: current.relayCrossReviewEntries, relayCrossReviewSkipped: current.relayCrossReviewSkipped, nativeCrossReviewEntries: [...current.nativeCrossReviewEntries] };
     ctx.pendingConsensusRounds.delete(consensusId);
     persistPendingConsensus();
     process.stderr.write(`[gossipcat] ⏰ Consensus ${consensusId} timed out. Missing: ${missingAgents.join(', ')}. Synthesizing with available entries.\n`);
@@ -63,7 +63,7 @@ export function startConsensusTimeout(consensusId: string): void {
       });
 
       const allEntries = [...snapshot.relayCrossReviewEntries, ...snapshot.nativeCrossReviewEntries];
-      const report = await engine.synthesizeWithCrossReview(snapshot.allResults, allEntries, consensusId);
+      const report = await engine.synthesizeWithCrossReview(snapshot.allResults, allEntries, consensusId, snapshot.relayCrossReviewSkipped);
 
       // Persist report
       try {
@@ -167,6 +167,7 @@ export async function handleRelayCrossReview(
   const synthSnapshot = {
     allResults: round.allResults,
     relayCrossReviewEntries: round.relayCrossReviewEntries,
+    relayCrossReviewSkipped: round.relayCrossReviewSkipped,
     nativeCrossReviewEntries: [...round.nativeCrossReviewEntries],
     consensusId: round.consensusId,
   };
@@ -195,6 +196,7 @@ export async function handleRelayCrossReview(
       synthSnapshot.allResults,
       allCrossReviewEntries,
       synthSnapshot.consensusId,
+      synthSnapshot.relayCrossReviewSkipped,
     );
 
     // Persist report for dashboard
@@ -265,6 +267,7 @@ export function persistPendingConsensus(): void {
           status: r.status, result: r.result?.slice(0, 10000),
         })),
         relayCrossReviewEntries: round.relayCrossReviewEntries,
+        relayCrossReviewSkipped: round.relayCrossReviewSkipped,
         pendingNativeAgents: [...round.pendingNativeAgents],
         nativeCrossReviewEntries: round.nativeCrossReviewEntries,
         deadline: round.deadline,
@@ -302,6 +305,7 @@ export function restorePendingConsensus(projectRoot: string): void {
         consensusId: data.consensusId,
         allResults: data.allResults,
         relayCrossReviewEntries: data.relayCrossReviewEntries || [],
+        relayCrossReviewSkipped: data.relayCrossReviewSkipped,
         pendingNativeAgents: new Set(data.pendingNativeAgents || []),
         nativeCrossReviewEntries: data.nativeCrossReviewEntries || [],
         deadline: data.deadline,

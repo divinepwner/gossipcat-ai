@@ -104,6 +104,37 @@ describe('PerformanceWriter — gossip_signals backing store', () => {
     expect(JSON.parse(lines[1]).agentId).toBe('a2');
   });
 
+  it('preserves findingId and consensusId fields when appended', () => {
+    // Regression for the provisional-signal back-search gap (consensus 4c88bcd3,
+    // sonnet-reviewer:f3): the auto-recorder at collect.ts:438-481 was writing
+    // signals without findingId, so the dashboard could not back-trace from
+    // finding to signal to score adjustment. After the fix, findingId and
+    // consensusId must round-trip through appendSignals unchanged.
+    const writer = new PerformanceWriter(testDir);
+    const ts = new Date().toISOString();
+    writer.appendSignals([
+      {
+        type: 'consensus' as const,
+        signal: 'unique_unconfirmed' as const,
+        agentId: 'gemini-reviewer',
+        taskId: '4c88bcd3-00cf4810:gemini-reviewer:f1',
+        consensusId: '4c88bcd3-00cf4810',
+        findingId: '4c88bcd3-00cf4810:gemini-reviewer:f1',
+        severity: 'high' as const,
+        category: 'error_handling',
+        evidence: '[provisional] auto-recorded',
+        timestamp: ts,
+      },
+    ]);
+
+    const raw = readFileSync(join(testDir, '.gossip', 'agent-performance.jsonl'), 'utf-8').trim();
+    const parsed = JSON.parse(raw);
+    expect(parsed.findingId).toBe('4c88bcd3-00cf4810:gemini-reviewer:f1');
+    expect(parsed.consensusId).toBe('4c88bcd3-00cf4810');
+    expect(parsed.severity).toBe('high');
+    expect(parsed.category).toBe('error_handling');
+  });
+
   it('rejects a signal with missing agentId', () => {
     const writer = new PerformanceWriter(testDir);
     expect(() => writer.appendSignal({

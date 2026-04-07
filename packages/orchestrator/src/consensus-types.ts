@@ -50,6 +50,12 @@ export interface ConsensusReport {
   newFindings: ConsensusNewFinding[];
   signals: ConsensusSignal[];
   summary: string;       // formatted text report
+  /**
+   * Relay agents whose cross-review LLM call failed (quota / parse / network).
+   * Surfaced so the orchestrator can see when an agent silently dropped from
+   * consensus instead of pretending the round was complete.
+   */
+  relayCrossReviewSkipped?: Array<{ agentId: string; reason: string }>;
 }
 
 /** Return type for collect() */

@@ -15,6 +15,8 @@ export interface PendingConsensusRound {
   consensusId: string;
   allResults: any[];  // TaskEntry[]
   relayCrossReviewEntries: CrossReviewEntry[];
+  /** Relay agents whose phase-2 cross-review failed (quota / parse / network). Surfaced in the final report. */
+  relayCrossReviewSkipped?: Array<{ agentId: string; reason: string }>;
   pendingNativeAgents: Set<string>;
   nativeCrossReviewEntries: CrossReviewEntry[];
   deadline: number;

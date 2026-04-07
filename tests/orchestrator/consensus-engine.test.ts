@@ -192,9 +192,50 @@ describe('ConsensusEngine', () => {
       expect(parse(json)).toEqual([]);
     });
 
-    it('should return an empty array for a non-array JSON object', () => {
+    it('should return an empty array for an object missing required fields', () => {
       const json = `{ "action": "agree" }`;
       expect(parse(json)).toEqual([]);
+    });
+
+    it('should wrap a single valid object response into a one-element array', () => {
+      const json = `{"action": "agree", "findingId": "p1:f1", "finding": "F1", "evidence": "E1", "confidence": 4}`;
+      const result = parse(json);
+      expect(result.length).toBe(1);
+      expect(result[0].action).toBe('agree');
+      expect(result[0].confidence).toBe(4);
+    });
+
+    it('should tolerate quoted close-brackets inside string values', () => {
+      const tricky = `[{"action": "agree", "findingId": "p1:f1", "finding": "Array literal [a,b,c]", "evidence": "Saw \\"]\\" in the source", "confidence": 3}]`;
+      const result = parse(tricky);
+      expect(result.length).toBe(1);
+      expect(result[0].finding).toContain('[a,b,c]');
+    });
+
+    it('should salvage individual JSON objects from prose-interleaved output', () => {
+      // Failure mode: LLM emits each finding as a standalone object with prose between
+      const ndjsonish = `Here is my analysis:
+
+For the first finding:
+{"action": "agree", "findingId": "p1:f1", "finding": "Race condition", "evidence": "No mutex", "confidence": 5}
+
+For the second finding, after reviewing the code:
+{"action": "disagree", "findingId": "p1:f2", "finding": "Off-by-one", "evidence": "Loop bound is correct", "confidence": 4}
+
+That concludes my review.`;
+      const result = parse(ndjsonish);
+      expect(result.length).toBe(2);
+      expect(result[0].action).toBe('agree');
+      expect(result[1].action).toBe('disagree');
+    });
+
+    it('should pick the first valid balanced array even when text contains broken brackets later', () => {
+      const broken = `Some prose with a [stray bracket.
+[{"action": "agree", "findingId": "p1:f1", "finding": "Confirmed", "evidence": "OK", "confidence": 4}]
+And then ] some more junk.`;
+      const result = parse(broken);
+      expect(result.length).toBe(1);
+      expect(result[0].finding).toBe('Confirmed');
     });
 
     it('should handle JSON enclosed in markdown code fences', () => {
@@ -906,6 +947,69 @@ describe('synthesizeWithCrossReview()', () => {
     for (const signal of report.signals) {
       expect(signal.consensusId).toBe(consensusId);
     }
+  });
+
+  it('should rewrite the summary text so EXECUTE NOW finding IDs match stored finding IDs', async () => {
+    // Regression: synthesize() generates an internal consensusId and bakes it
+    // into the formatted summary via formatReport(). synthesizeWithCrossReview
+    // then overwrites signal/finding IDs to use the externally-provided
+    // consensusId, but if it doesn't ALSO rewrite the summary text, the
+    // orchestrator sees one set of IDs in the EXECUTE NOW block while signals
+    // are stored under another set — and rounds stay flagged as "signals
+    // pending" even after the orchestrator records them.
+    const engine = new ConsensusEngine(baseConfig);
+    const results: TaskEntry[] = [
+      createTaskEntry('agent-a', 'completed', '## Consensus Summary\n<agent_finding type="finding" severity="high">SQL injection in db.ts:42</agent_finding>'),
+      createTaskEntry('agent-b', 'completed', '## Consensus Summary\n<agent_finding type="finding" severity="medium">Null deref in handler.ts:7</agent_finding>'),
+    ];
+
+    const externalConsensusId = 'rewrite0-test0001';
+    const report = await engine.synthesizeWithCrossReview(results, [], externalConsensusId);
+
+    // Every signal must carry the external consensusId
+    for (const s of report.signals) {
+      expect(s.consensusId).toBe(externalConsensusId);
+    }
+    // Every finding ID must start with the external consensusId
+    const allFindings = [...report.confirmed, ...report.disputed, ...report.unverified, ...report.unique, ...(report.insights || [])];
+    for (const f of allFindings) {
+      if (f.id) {
+        expect(f.id.startsWith(externalConsensusId + ':')).toBe(true);
+      }
+    }
+    // The formatted summary must contain the external consensusId in any
+    // pre-filled finding_id references — and must NOT contain the internal one.
+    if (report.summary.includes('finding_id')) {
+      expect(report.summary).toContain(externalConsensusId);
+      // No leftover short-hex consensusIds of the form xxxxxxxx-xxxxxxxx that
+      // are NOT the external one. Match any 8hex-8hex token in finding_id refs.
+      const internalIdRefs = report.summary.match(/[0-9a-f]{8}-[0-9a-f]{8}:f\d+/g) || [];
+      for (const ref of internalIdRefs) {
+        expect(ref.startsWith(externalConsensusId + ':')).toBe(true);
+      }
+    }
+  });
+
+  it('should surface relayCrossReviewSkipped agents in the report and summary', async () => {
+    // Regression for the silent-catch bug at collect.ts:240 (commit e633243)
+    // where relay agents that hit quota cooldown or parse failures vanished
+    // from consensus with no operator signal. The handler now records skipped
+    // agents and synthesizeWithCrossReview surfaces them in the final report.
+    const engine = new ConsensusEngine(baseConfig);
+    const results: TaskEntry[] = [
+      createTaskEntry('agent-a', 'completed', '## Consensus Summary\n<agent_finding type="finding" severity="high">SQL injection in db.ts:42</agent_finding>'),
+      createTaskEntry('agent-b', 'completed', '## Consensus Summary\n<agent_finding type="finding" severity="medium">Missing null check in handler.ts:7</agent_finding>'),
+    ];
+    const skipped = [
+      { agentId: 'gemini-reviewer', reason: 'google quota exhausted — 15s cooldown remaining' },
+    ];
+
+    const report = await engine.synthesizeWithCrossReview(results, [], 'skip0001-skip0001', skipped);
+
+    expect(report.relayCrossReviewSkipped).toEqual(skipped);
+    expect(report.summary).toContain('Relay cross-review skipped');
+    expect(report.summary).toContain('gemini-reviewer');
+    expect(report.summary).toContain('google quota exhausted');
   });
 
   it('should work with empty cross-review entries', async () => {
