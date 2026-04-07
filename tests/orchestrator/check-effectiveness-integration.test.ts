@@ -9,7 +9,6 @@
  * canonical outcomes the spec guarantees.
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   resolveVerdict,
   type SkillSnapshot,

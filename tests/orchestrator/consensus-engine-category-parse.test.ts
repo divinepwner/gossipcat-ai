@@ -1,10 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
 import { ConsensusEngine, CrossReviewEntry } from '../../packages/orchestrator/src/consensus-engine';
 import { TaskEntry } from '../../packages/orchestrator/src/types';
 
 // Minimal engine config so formatReport's registryGet call doesn't throw
 const makeEngine = () => new ConsensusEngine({
-  llm: { generate: vi.fn() } as any,
+  llm: { generate: jest.fn() } as any,
   registryGet: (id: string) => ({ id, provider: 'local', model: 'test', preset: `preset-${id}`, skills: [] }),
 } as any);
 
@@ -68,7 +67,7 @@ SQL injection at db.ts:42
       const agreementSignal = report.signals.find(
         s => s.signal === 'agreement' && s.agentId === 'agent-b',
       );
-      expect(agreementSignal, 'agreement signal must exist').toBeDefined();
+      expect(agreementSignal).toBeDefined(); // agreement signal must exist
       expect(agreementSignal!.category).toBe('injection_vectors');
     });
 
@@ -98,7 +97,7 @@ SQL injection at db.ts:42
       const relatedSignal = report.signals.find(
         s => (s.signal === 'hallucination_caught' || s.signal === 'disagreement') && s.agentId === 'agent-b',
       );
-      expect(relatedSignal, 'disagreement or hallucination_caught signal must exist').toBeDefined();
+      expect(relatedSignal).toBeDefined(); // disagreement or hallucination_caught signal must exist
       expect(relatedSignal!.category).toBe('injection_vectors');
     });
 
@@ -126,7 +125,7 @@ SQL injection at db.ts:42
       const uniqueConfirmed = report.signals.find(
         s => s.signal === 'unique_confirmed' && s.agentId === 'agent-a',
       );
-      expect(uniqueConfirmed, 'unique_confirmed signal must exist').toBeDefined();
+      expect(uniqueConfirmed).toBeDefined(); // unique_confirmed signal must exist
       expect(uniqueConfirmed!.category).toBe('injection_vectors');
     });
   });

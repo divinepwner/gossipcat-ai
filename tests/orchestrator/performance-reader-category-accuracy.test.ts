@@ -1,4 +1,3 @@
-import { describe, it, expect } from 'vitest';
 import { PerformanceReader } from '../../packages/orchestrator/src/performance-reader';
 import type { ConsensusSignal } from '../../packages/orchestrator/src/consensus-types';
 

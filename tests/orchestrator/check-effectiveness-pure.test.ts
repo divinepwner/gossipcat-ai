@@ -1,9 +1,6 @@
-import { describe, it, expect } from 'vitest';
 import {
   oneSidedZTest,
   resolveVerdict,
-  MIN_EVIDENCE,
-  ALPHA,
   type SkillSnapshot,
   type CategoryCounters,
 } from '../../packages/orchestrator/src/check-effectiveness';

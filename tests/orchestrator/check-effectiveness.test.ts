@@ -10,7 +10,6 @@
  * Integration tests (silent skill, happy path, failure) live in check-effectiveness-integration.test.ts.
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   resolveVerdict,
   type SkillSnapshot,

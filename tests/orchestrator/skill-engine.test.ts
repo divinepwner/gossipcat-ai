@@ -131,7 +131,25 @@ describe('SkillEngine', () => {
     expect(result.content).toContain('name: injection-audit');
     expect(result.path).toContain('agent-a/skills/injection-vectors.md');
     expect(existsSync(result.path)).toBe(true);
-    expect(readFileSync(result.path, 'utf-8')).toBe(VALID_SKILL.trim());
+    // Written file contains the LLM body verbatim plus bind-time snapshot
+    // fields injected into frontmatter (baseline_correct, baseline_hallucinated,
+    // bound_at, migration_count, status). Assert structural shape rather than
+    // strict equality so the dynamic bound_at timestamp doesn't break the test.
+    const written = readFileSync(result.path, 'utf-8');
+    const fmEnd = written.indexOf('\n---', 4);
+    const frontmatter = written.slice(4, fmEnd);
+    const body = written.slice(fmEnd + 4).trimStart();
+    expect(frontmatter).toContain('name: injection-audit');
+    expect(frontmatter).toContain('category: injection_vectors');
+    expect(frontmatter).toContain('agent: agent-a');
+    expect(frontmatter).toContain('baseline_correct:');
+    expect(frontmatter).toContain('baseline_hallucinated:');
+    expect(frontmatter).toContain('bound_at:');
+    expect(frontmatter).toContain('migration_count:');
+    expect(frontmatter).toContain('status:');
+    expect(body).toContain('# Injection Audit');
+    expect(body).toContain('## Iron Law');
+    expect(body).toContain('## Quality Gate');
   });
 
   test('rejects LLM output missing required sections', async () => {

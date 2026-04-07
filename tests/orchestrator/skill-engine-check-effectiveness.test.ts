@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -13,7 +12,7 @@ import type { AgentScore } from '../../packages/orchestrator/src/performance-rea
 
 function makeStubLLM(): ILLMProvider {
   return {
-    generate: vi.fn().mockResolvedValue({ text: '' }),
+    generate: jest.fn().mockResolvedValue({ text: '' }),
   } as unknown as ILLMProvider;
 }
 
@@ -26,16 +25,23 @@ function makeStubPerfReader(
   const reader = new PerformanceReader(projectRoot);
   const score: AgentScore = {
     agentId,
-    score: 0,
+    accuracy: 0,
+    uniqueness: 0,
+    reliability: 0,
+    impactScore: 0,
     totalSignals: 0,
-    correctSignals: 0,
-    hallucinationCount: 0,
+    agreements: 0,
+    disagreements: 0,
+    uniqueFindings: 0,
+    hallucinations: 0,
+    consecutiveFailures: 0,
+    circuitOpen: false,
     categoryStrengths: {},
     categoryAccuracy: {},
     categoryCorrect,
     categoryHallucinated,
   };
-  vi.spyOn(reader, 'getScores').mockReturnValue(new Map([[agentId, score]]));
+  jest.spyOn(reader, 'getScores').mockReturnValue(new Map([[agentId, score]]));
   return reader;
 }
 

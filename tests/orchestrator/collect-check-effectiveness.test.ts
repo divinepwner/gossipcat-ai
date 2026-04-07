@@ -5,7 +5,6 @@
  * .gossip/agents/<agentId>/skills/*.md and calls checkEffectiveness on each
  * (agentId, category) pair. collect.ts calls it AFTER signals are written.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -21,7 +20,7 @@ import { runCheckEffectivenessForAllSkills } from '../../apps/cli/src/handlers/c
 
 function makeStubLLM(): ILLMProvider {
   return {
-    generate: vi.fn().mockResolvedValue({ text: '' }),
+    generate: jest.fn().mockResolvedValue({ text: '' }),
   } as unknown as ILLMProvider;
 }
 
@@ -34,16 +33,23 @@ function makeStubPerfReader(
   const reader = new PerformanceReader(projectRoot);
   const score: AgentScore = {
     agentId,
-    score: 0,
+    accuracy: 0,
+    uniqueness: 0,
+    reliability: 0,
+    impactScore: 0,
     totalSignals: 0,
-    correctSignals: 0,
-    hallucinationCount: 0,
+    agreements: 0,
+    disagreements: 0,
+    uniqueFindings: 0,
+    hallucinations: 0,
+    consecutiveFailures: 0,
+    circuitOpen: false,
     categoryStrengths: {},
     categoryAccuracy: {},
     categoryCorrect,
     categoryHallucinated,
   };
-  vi.spyOn(reader, 'getScores').mockReturnValue(new Map([[agentId, score]]));
+  jest.spyOn(reader, 'getScores').mockReturnValue(new Map([[agentId, score]]));
   return reader;
 }
 
@@ -144,7 +150,7 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
 
     const perfReader = makeStubPerfReader(tmpDir, agentId, { [category]: 170 }, { [category]: 70 });
     const skillEngine = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
-    const spy = vi.spyOn(skillEngine, 'checkEffectiveness');
+    const spy = jest.spyOn(skillEngine, 'checkEffectiveness');
 
     await runCheckEffectivenessForAllSkills({
       skillEngine,
@@ -162,7 +168,7 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
 
     const perfReader = new PerformanceReader(tmpDir);
     const skillEngine = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
-    const spy = vi.spyOn(skillEngine, 'checkEffectiveness');
+    const spy = jest.spyOn(skillEngine, 'checkEffectiveness');
 
     await expect(
       runCheckEffectivenessForAllSkills({
@@ -178,7 +184,7 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
   it('returns immediately when .gossip/agents does not exist', async () => {
     const perfReader = new PerformanceReader(tmpDir);
     const skillEngine = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
-    const spy = vi.spyOn(skillEngine, 'checkEffectiveness');
+    const spy = jest.spyOn(skillEngine, 'checkEffectiveness');
 
     await expect(
       runCheckEffectivenessForAllSkills({
@@ -206,7 +212,7 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
     const skillEngine = new SkillEngine(makeStubLLM(), perfReader, tmpDir);
 
     let callCount = 0;
-    vi.spyOn(skillEngine, 'checkEffectiveness').mockImplementation(async () => {
+    jest.spyOn(skillEngine, 'checkEffectiveness').mockImplementation(async () => {
       callCount++;
       if (callCount === 1) throw new Error('simulated error on first skill');
       return { status: 'pending', shouldUpdate: false };
@@ -240,7 +246,7 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
 
     // Use a shared reader that covers both agents
     const combinedReader = new PerformanceReader(tmpDir);
-    vi.spyOn(combinedReader, 'getScores').mockReturnValue(
+    jest.spyOn(combinedReader, 'getScores').mockReturnValue(
       new Map([
         ['agent-a', (perfA.getScores() as Map<string, AgentScore>).get('agent-a')!],
         ['agent-b', (perfB.getScores() as Map<string, AgentScore>).get('agent-b')!],
@@ -248,7 +254,7 @@ describe('collect → checkEffectiveness wiring (runCheckEffectivenessForAllSkil
     );
 
     const skillEngine = new SkillEngine(makeStubLLM(), combinedReader, tmpDir);
-    const spy = vi.spyOn(skillEngine, 'checkEffectiveness');
+    const spy = jest.spyOn(skillEngine, 'checkEffectiveness');
 
     await runCheckEffectivenessForAllSkills({
       skillEngine,

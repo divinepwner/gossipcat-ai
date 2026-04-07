@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdtempSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -59,7 +58,7 @@ NEVER trust data from outside the process boundary without explicit validation.
 
 function makeStubLLM(): ILLMProvider {
   return {
-    generate: vi.fn().mockResolvedValue({ text: STUB_SKILL }),
+    generate: jest.fn().mockResolvedValue({ text: STUB_SKILL }),
   } as unknown as ILLMProvider;
 }
 
@@ -69,16 +68,23 @@ function makeStubPerfReader(
   categoryHallucinated: Record<string, number>,
 ): PerformanceReader {
   const reader = new PerformanceReader(projectRoot);
-  vi.spyOn(reader, 'getScores').mockReturnValue(
+  jest.spyOn(reader, 'getScores').mockReturnValue(
     new Map([
       [
         'test-agent',
         {
           agentId: 'test-agent',
-          score: 0,
+          accuracy: 0,
+          uniqueness: 0,
+          reliability: 0,
+          impactScore: 0,
           totalSignals: 0,
-          correctSignals: 0,
-          hallucinationCount: 0,
+          agreements: 0,
+          disagreements: 0,
+          uniqueFindings: 0,
+          hallucinations: 0,
+          consecutiveFailures: 0,
+          circuitOpen: false,
           categoryStrengths: {},
           categoryAccuracy: {},
           categoryCorrect,
@@ -106,7 +112,7 @@ describe('SkillEngine — baseline snapshot in frontmatter', () => {
 
     const written = readFileSync(result.path, 'utf-8');
     const fmMatch = written.match(/^---\n([\s\S]*?)\n---/);
-    expect(fmMatch, 'file must have YAML frontmatter').toBeTruthy();
+    expect(fmMatch).toBeTruthy(); // file must have YAML frontmatter
 
     const fm = fmMatch![1];
     expect(fm).toMatch(/baseline_correct:\s*42/);
@@ -127,9 +133,9 @@ describe('SkillEngine — baseline snapshot in frontmatter', () => {
     const fm = fmMatch![1];
 
     const boundAtMatch = fm.match(/bound_at:\s*(.+)/);
-    expect(boundAtMatch, 'bound_at must be present in frontmatter').toBeTruthy();
+    expect(boundAtMatch).toBeTruthy(); // bound_at must be present in frontmatter
     const ts = new Date(boundAtMatch![1].trim());
-    expect(isNaN(ts.getTime()), 'bound_at must be a parseable date').toBe(false);
+    expect(isNaN(ts.getTime())).toBe(false); // bound_at must be a parseable date
     expect(ts.getTime()).toBeGreaterThanOrEqual(before.getTime());
     expect(ts.getTime()).toBeLessThanOrEqual(after.getTime());
   });
@@ -194,7 +200,7 @@ describe('SkillEngine — baseline snapshot in frontmatter', () => {
   it('defaults to 0 when the agent is not in the scores map at all', async () => {
     const llm = makeStubLLM();
     const reader = new PerformanceReader(tmpDir);
-    vi.spyOn(reader, 'getScores').mockReturnValue(new Map()); // empty — agent unknown
+    jest.spyOn(reader, 'getScores').mockReturnValue(new Map()); // empty — agent unknown
     const gen = new SkillEngine(llm, reader, tmpDir);
 
     const result = await gen.generate('test-agent', 'trust_boundaries');

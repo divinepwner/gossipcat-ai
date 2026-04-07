@@ -9,6 +9,7 @@ function makeProfile(id: string, strengths: Record<string, number>): AgentScore 
     totalSignals: 20, agreements: 10, disagreements: 2,
     uniqueFindings: 3, hallucinations: 0,
     consecutiveFailures: 0, circuitOpen: false,
+    categoryCorrect: {}, categoryHallucinated: {}, categoryAccuracy: {},
   };
 }
 
