@@ -529,7 +529,9 @@ export async function handleDispatchConsensus(
   msg += `  5. → Call gossip_collect(consensus: true) AGAIN to get the final synthesized consensus output\n`;
   msg += `\nStopping at step 2 produces fake-consensus results — agents never cross-validate each other's findings.`;
   if (nativeInstructions.length > 0) {
-    msg += `\n\nNATIVE_DISPATCH: Execute these ${nativeInstructions.length} Agent calls, then relay ALL results:\n\n${nativeInstructions.join('\n\n')}`;
+    msg += `\n\n⚠️ NATIVE_DISPATCH — PASS EACH PROMPT VERBATIM TO Agent(prompt: ...).\n`;
+    msg += `Do NOT condense, summarize, or rewrite the prompts below. The CONSENSUS_OUTPUT_FORMAT block embedded in each prompt is what trains the agent to emit <agent_finding> tags. If you write your own shorter prompt, the agent will emit prose, the consensus parser will fall back to bullet extraction, finding IDs will not roundtrip to peer cross-review, and the dashboard will show degraded results.\n\n`;
+    msg += `Execute these ${nativeInstructions.length} Agent calls, then relay ALL results:\n\n${nativeInstructions.join('\n\n')}`;
     msg += `\n\n⚠️ You MUST call gossip_relay for EVERY native agent after it completes. Without it, results are lost — no memory, no consensus cross-review.`;
   }
   return { content: [{ type: 'text' as const, text: msg }] };

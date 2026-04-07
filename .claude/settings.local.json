@@ -17,7 +17,8 @@
       "Bash(npx vite:*)",
       "mcp__gossipcat__gossip_run",
       "Bash(python3:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(/Users/goku/Desktop/gossip/node_modules/.bin/tsc --noEmit -p packages/orchestrator)"
     ]
   },
   "enabledMcpjsonServers": [

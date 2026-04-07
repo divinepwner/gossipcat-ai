@@ -2563,6 +2563,16 @@ server.tool(
 );
 
 server.tool(
+  'gossip_format',
+  'Return the canonical CONSENSUS_OUTPUT_FORMAT block. Use this when you need to write an ad-hoc Agent() prompt for a native subagent that should produce findings the consensus engine can parse. Paste the returned string into your prompt verbatim — the format trains the agent to emit <agent_finding> tags instead of prose.',
+  {},
+  async () => {
+    const { CONSENSUS_OUTPUT_FORMAT } = await import('@gossip/orchestrator');
+    return { content: [{ type: 'text' as const, text: `--- CONSENSUS OUTPUT FORMAT ---\n${CONSENSUS_OUTPUT_FORMAT}\n--- END CONSENSUS OUTPUT FORMAT ---\n\nPaste this entire block into any Agent() prompt that should produce parseable findings. Do not condense or summarize — the verbatim format with examples is what makes the agent comply.` }] };
+  }
+);
+
+server.tool(
   'gossip_tools',
   'List all available gossipcat MCP tools with descriptions. Call after /mcp reconnect to discover new tools.',
   {},
@@ -2585,6 +2595,7 @@ server.tool(
       { name: 'gossip_remember', desc: 'Search an agent\'s archived knowledge files by keyword query.' },
       { name: 'gossip_tools', desc: 'List available tools (this command).' },
       { name: 'gossip_progress', desc: 'Show active task progress and consensus phase. No params.' },
+      { name: 'gossip_format', desc: 'Return the CONSENSUS_OUTPUT_FORMAT block to paste into ad-hoc Agent() prompts so native subagents emit parseable <agent_finding> tags.' },
     ];
     const list = tools.map(t => `- ${t.name}: ${t.desc}`).join('\n');
     return { content: [{ type: 'text' as const, text: `Gossipcat Tools (${tools.length}):\n\n${list}` }] };

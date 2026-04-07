@@ -168,7 +168,7 @@ export async function handleCollect(
   // Step 5: Run consensus on merged results (relay + native together)
   let consensusReport: any = undefined;
   let provisionalSignalCount = 0;
-  const CONSENSUS_TIMEOUT_MS = 900_000;   // 15 min — gives orchestrator time to dispatch native cross-review
+  const CONSENSUS_TIMEOUT_MS = 1_800_000; // 30 min — native subagents (sonnet/opus) frequently take 2-5 min per cross-review, plus orchestrator dispatch overhead. 15 min was too tight in practice.
   // MIN_AGENTS_FOR_CONSENSUS = 2 (see @gossip/orchestrator/types)
   if (consensus && allResults.filter((r: any) => r.status === 'completed').length >= 2) {
     // Detect which completed agents are native
