@@ -431,7 +431,7 @@ describe('checkEffectiveness — lazy migration', () => {
   });
 
   it('sets bound_at to now() and does NOT set migration_reason when bound_at is absent entirely', async () => {
-    const agentId = 'agent-no-boundAt';
+    const agentId = 'agent-no-boundat';
     const category = 'trust_boundaries';
 
     // Construct a skill file fixture WITH effectiveness: 0.0 but WITHOUT bound_at, baseline_correct, or migration_count
@@ -469,5 +469,137 @@ describe('checkEffectiveness — lazy migration', () => {
     expect(Number(fm.baseline_hallucinated)).toBe(2);
     // frontmatter.migration_count === 1
     expect(Number(fm.migration_count)).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 2 — NaN coercion guard
+// ---------------------------------------------------------------------------
+
+describe('checkEffectiveness — NaN coercion guard', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'skill-nan-test-'));
+  });
+
+  it('handles non-numeric baseline_correct without producing NaN verdict', async () => {
+    const agentId = 'agent-x';
+    const category = 'trust_boundaries';
+
+    // Write a skill file with a corrupted (non-numeric) baseline_correct
+    const skillDir = join(tmpDir, '.gossip', 'agents', agentId, 'skills');
+    mkdirSync(skillDir, { recursive: true });
+    const skillPath = join(skillDir, 'trust-boundaries.md');
+    writeFileSync(
+      skillPath,
+      `---\nbaseline_correct: not-a-number\nbaseline_hallucinated: also-bad\nstatus: pending\nbound_at: ${new Date().toISOString()}\nmigration_count: 0\n---\n\n## Body\n\nContent.\n`,
+    );
+
+    // Normal live counters
+    const perfReader = makeStubPerfReader(tmpDir, agentId, { [category]: 80 }, { [category]: 20 });
+    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+
+    const verdict = await gen.checkEffectiveness(agentId, category);
+
+    // Verdict must be a valid VerdictStatus — not NaN-corrupted
+    const validStatuses = ['pending', 'passed', 'failed', 'inconclusive', 'flagged_for_manual_review', 'not_applicable', 'silent_skill', 'insufficient_evidence'];
+    expect(validStatuses).toContain(verdict.status);
+    // shouldUpdate must be a boolean
+    expect(typeof verdict.shouldUpdate).toBe('boolean');
+    // effectiveness must not be NaN if present
+    if (verdict.effectiveness !== undefined) {
+      expect(Number.isFinite(verdict.effectiveness)).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 4 — keywords regex: block-style YAML
+// ---------------------------------------------------------------------------
+
+describe('SkillGenerator.validateSkillContent — keywords block-style', () => {
+  it('does not throw when keywords uses block-style YAML syntax', () => {
+    // Access validateSkillContent via a subclass or via direct test — we need to call it
+    // The method is private, so we'll test it via generate() with a mocked LLM response
+    // that returns block-style keywords, OR we test the regex behavior indirectly by
+    // checking that a content string with block-style keywords passes validation.
+    // Since the method is private, we'll subclass to expose it for testing.
+    class TestableSkillGenerator extends SkillGenerator {
+      public validatePublic(content: string): void {
+        return (this as unknown as { validateSkillContent: (c: string) => void }).validateSkillContent(content);
+      }
+    }
+
+    const gen = new TestableSkillGenerator(makeStubLLM(), new PerformanceReader(tmpdir()), tmpdir());
+
+    const blockStyleContent = `---
+name: test-skill
+category: trust_boundaries
+keywords:
+  - auth
+  - session
+effectiveness: 0.0
+---
+
+## Iron Law
+
+NEVER skip auth checks.
+
+## When This Skill Activates
+
+- Auth-related code
+
+## Methodology
+
+1. Check auth
+
+## Key Patterns
+
+- Token validation
+
+## Anti-Patterns
+
+- **"Skip checks"** — Always validate.
+
+## Quality Gate
+
+- [ ] Auth checked
+`;
+
+    // Should not throw
+    expect(() => gen.validatePublic(blockStyleContent)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 7 — SAFE_NAME guard in checkEffectiveness
+// ---------------------------------------------------------------------------
+
+describe('checkEffectiveness — SAFE_NAME guard', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'skill-safename-test-'));
+  });
+
+  it('returns pending with shouldUpdate=false for an unsafe agentId and does not touch filesystem', async () => {
+    const perfReader = makeStubPerfReader(tmpDir, 'safe-agent', {}, {});
+    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+
+    const verdict = await gen.checkEffectiveness('../../../tmp/evil', 'trust_boundaries');
+
+    expect(verdict.status).toBe('pending');
+    expect(verdict.shouldUpdate).toBe(false);
+  });
+
+  it('returns pending with shouldUpdate=false for an agentId with path traversal dots', async () => {
+    const perfReader = makeStubPerfReader(tmpDir, 'safe-agent', {}, {});
+    const gen = new SkillGenerator(makeStubLLM(), perfReader, tmpDir);
+
+    const verdict = await gen.checkEffectiveness('../../etc/passwd', 'trust_boundaries');
+
+    expect(verdict.status).toBe('pending');
+    expect(verdict.shouldUpdate).toBe(false);
   });
 });

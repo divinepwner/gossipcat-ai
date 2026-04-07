@@ -25,6 +25,13 @@ describe('oneSidedZTest', () => {
     const r = oneSidedZTest({ correct: 30, total: 100 }, 0.7, 'negative');
     expect(r.rejects).toBe(true);
   });
+
+  // Bug 5 — oneSidedZTest negative-total guard
+  it('returns { rejects: false, zScore: 0 } when total is negative (defense in depth)', () => {
+    const r = oneSidedZTest({ correct: -5, total: -10 }, 0.5, 'positive');
+    expect(r.rejects).toBe(false);
+    expect(r.zScore).toBe(0);
+  });
 });
 
 describe('resolveVerdict', () => {
@@ -87,5 +94,37 @@ describe('resolveVerdict', () => {
     // This test fixes the contract: resolveVerdict accepts an optional role argument.
     const v = resolveVerdict(baseSnapshot, counters(0, 0), Date.now(), { role: 'implementer' });
     expect(v.status).toBe('not_applicable');
+  });
+
+  // Bug 1 — Negative postTotal from signal expiry
+  it('returns pending when postTotal goes negative due to signal expiry', () => {
+    // Baseline snapshotted with cumulative signals: 100 correct + 20 hallucinated.
+    // After 30 days, expired signals fall out of live counters: only 60 correct + 10 hallucinated remain.
+    // deltaCorrect = -40, deltaHallucinated = -10, postTotal = -50.
+    const snap: SkillSnapshot = {
+      baseline_correct: 100,
+      baseline_hallucinated: 20,
+      bound_at: new Date(Date.now() - 45 * 86400_000).toISOString(),
+      status: 'pending',
+      migration_count: 0,
+    };
+    const v = resolveVerdict(snap, { correct: 60, hallucinated: 10 }, Date.now());
+    expect(v.status).toBe('pending');
+    expect(v.shouldUpdate).toBe(false);
+  });
+
+  it('returns pending (not insufficient_evidence) when postTotal is negative AND timeout has fired', () => {
+    // Same scenario but skill is 91 days old — without the guard, the timeout branch fires
+    // and returns insufficient_evidence (wrong). With the guard it returns pending/shouldUpdate:false.
+    const snap: SkillSnapshot = {
+      baseline_correct: 100,
+      baseline_hallucinated: 20,
+      bound_at: new Date(Date.now() - 91 * 86400_000).toISOString(),
+      status: 'pending',
+      migration_count: 0,
+    };
+    const v = resolveVerdict(snap, { correct: 60, hallucinated: 10 }, Date.now());
+    expect(v.status).toBe('pending');
+    expect(v.shouldUpdate).toBe(false);
   });
 });

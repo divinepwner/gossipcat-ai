@@ -267,7 +267,7 @@ Requirements:
       throw new Error(`Generated skill is ${lines} lines (max 200). LLM output too verbose.`);
     }
     // Validate keywords presence for contextual activation
-    if (!content.match(/keywords:\s*\[/)) {
+    if (!content.match(/keywords:(\s*\[|\s*\n\s*-)/)) {
       throw new Error('Generated skill missing keywords in frontmatter. Contextual activation requires keywords.');
     }
   }
@@ -394,6 +394,9 @@ ${inputs.join('\n')}
     category: string,
     opts?: { role?: string },
   ): Promise<VerdictResult> {
+    if (!SAFE_NAME.test(agentId)) {
+      return { status: 'pending', shouldUpdate: false };
+    }
     const skillPath = this.resolveSkillPath(agentId, category);
     if (!existsSync(skillPath)) {
       return { status: 'pending', shouldUpdate: false };
@@ -419,24 +422,24 @@ ${inputs.join('\n')}
     }
 
     const snapshot: SkillSnapshot = {
-      baseline_correct: Number(frontmatter.baseline_correct ?? 0),
-      baseline_hallucinated: Number(frontmatter.baseline_hallucinated ?? 0),
+      baseline_correct: this.safeNumber(frontmatter.baseline_correct ?? 0, 0),
+      baseline_hallucinated: this.safeNumber(frontmatter.baseline_hallucinated ?? 0, 0),
       bound_at: String(frontmatter.bound_at ?? new Date(nowMs).toISOString()),
       status: (frontmatter.status as VerdictStatus) ?? 'pending',
-      migration_count: Number(frontmatter.migration_count ?? 0),
+      migration_count: this.safeNumber(frontmatter.migration_count ?? 0, 0),
       inconclusive_correct:
         frontmatter.inconclusive_correct != null
-          ? Number(frontmatter.inconclusive_correct)
+          ? (Number.isFinite(Number(frontmatter.inconclusive_correct)) ? Number(frontmatter.inconclusive_correct) : undefined)
           : undefined,
       inconclusive_hallucinated:
         frontmatter.inconclusive_hallucinated != null
-          ? Number(frontmatter.inconclusive_hallucinated)
+          ? (Number.isFinite(Number(frontmatter.inconclusive_hallucinated)) ? Number(frontmatter.inconclusive_hallucinated) : undefined)
           : undefined,
       inconclusive_at:
         typeof frontmatter.inconclusive_at === 'string' ? frontmatter.inconclusive_at : undefined,
       inconclusive_strikes:
         frontmatter.inconclusive_strikes != null
-          ? Number(frontmatter.inconclusive_strikes)
+          ? (Number.isFinite(Number(frontmatter.inconclusive_strikes)) ? Number(frontmatter.inconclusive_strikes) : undefined)
           : undefined,
     };
 
@@ -555,6 +558,15 @@ ${inputs.join('\n')}
     }
 
     return { frontmatter, body };
+  }
+
+  /**
+   * Safely converts a value to a number, returning fallback if the result is not
+   * finite (NaN, Infinity). Guards against corrupted frontmatter from manual edits.
+   */
+  private safeNumber(value: unknown, fallback: number): number {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
   }
 
   /**

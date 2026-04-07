@@ -54,7 +54,7 @@ export function oneSidedZTest(
   baselineP: number,
   direction: 'positive' | 'negative',
 ): { rejects: boolean; zScore: number } {
-  if (observed.total === 0) return { rejects: false, zScore: 0 };
+  if (observed.total <= 0) return { rejects: false, zScore: 0 };
   const pHat = observed.correct / observed.total;
   const se = Math.sqrt(baselineP * (1 - baselineP) / observed.total);
   if (se === 0) return { rejects: false, zScore: 0 };
@@ -91,6 +91,15 @@ export function resolveVerdict(
 
   const effBaselineTotal = effBaselineCorrect + effBaselineHallucinated;
   const baselineP = effBaselineTotal > 0 ? effBaselineCorrect / effBaselineTotal : 0.5;
+
+  // Defensive: signal expiry can produce negative deltas if the baseline was
+  // snapshotted before signals expired from the 30-day window in performance-reader.
+  // A negative postTotal is a semantic error, not "not enough data" — return pending
+  // without writing snapshot fields so the next round (after baseline catches up) re-evaluates.
+  // TODO: root fix is to snapshot delta-from-bind instead of cumulative counters.
+  if (postTotal < 0) {
+    return { status: 'pending', shouldUpdate: false };
+  }
 
   // Timeout check (against original bound_at, not inconclusive epoch)
   const boundAtMs = new Date(snapshot.bound_at).getTime();
