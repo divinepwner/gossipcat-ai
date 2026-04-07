@@ -1028,8 +1028,11 @@ server.tool(
               if (sig.source !== 'manual') continue;
               const fid: string | undefined = sig.findingId;
               if (typeof fid === 'string' && fid.includes(':')) {
-                // findingId is "<consensusId>:<agentId>:fN" — first two segments are consensusId
-                covered.add(fid.split(':').slice(0, 2).join(':'));
+                // findingId is "<consensusId>:<agentId>:fN" (modern) or
+                // "<consensusId>:fN" (legacy). consensusId is itself a single
+                // token of the form "<8hex>-<8hex>" — the dash is NOT a colon
+                // separator. Take the first colon-segment in both shapes.
+                covered.add(fid.split(':')[0]);
               }
             } catch { /* skip malformed line */ }
           }

@@ -979,14 +979,15 @@ describe('synthesizeWithCrossReview()', () => {
     }
     // The formatted summary must contain the external consensusId in any
     // pre-filled finding_id references — and must NOT contain the internal one.
-    if (report.summary.includes('finding_id')) {
-      expect(report.summary).toContain(externalConsensusId);
-      // No leftover short-hex consensusIds of the form xxxxxxxx-xxxxxxxx that
-      // are NOT the external one. Match any 8hex-8hex token in finding_id refs.
-      const internalIdRefs = report.summary.match(/[0-9a-f]{8}-[0-9a-f]{8}:f\d+/g) || [];
-      for (const ref of internalIdRefs) {
-        expect(ref.startsWith(externalConsensusId + ':')).toBe(true);
-      }
+    // Assert unconditionally that finding_id references exist (otherwise the
+    // regression isn't actually exercised).
+    expect(report.summary).toContain('finding_id');
+    expect(report.summary).toContain(externalConsensusId);
+    // No leftover short-hex consensusIds of the form xxxxxxxx-xxxxxxxx that
+    // are NOT the external one. Match any 8hex-8hex token in finding_id refs.
+    const internalIdRefs = report.summary.match(/[0-9a-f]{8}-[0-9a-f]{8}:f\d+/g) || [];
+    for (const ref of internalIdRefs) {
+      expect(ref.startsWith(externalConsensusId + ':')).toBe(true);
     }
   });
 

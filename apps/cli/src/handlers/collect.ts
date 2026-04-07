@@ -462,11 +462,13 @@ export async function handleCollect(
       ];
 
       // Derive consensusId from any finding ID. Findings carry IDs in
-      // <consensusId>:<agentId>:fN format set by synthesizeWithCrossReview;
-      // pull the consensusId off the first one rather than re-deriving.
+      // "<consensusId>:<agentId>:fN" (modern) or "<consensusId>:fN" (legacy)
+      // shape. The consensusId is itself a single token "<8hex>-<8hex>" where
+      // the dash is NOT a colon, so the first colon-segment is the full
+      // consensusId in both shapes.
       const provisionalConsensusId =
         allFindings.length > 0 && typeof allFindings[0].id === 'string'
-          ? allFindings[0].id.split(':').slice(0, 2).join(':')
+          ? allFindings[0].id.split(':')[0]
           : undefined;
 
       // Only record provisional signals for finding authors NOT already covered.

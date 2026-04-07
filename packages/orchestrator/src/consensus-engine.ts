@@ -1628,11 +1628,13 @@ Return only valid JSON.`;
     }
 
     // Rewrite the summary text so the EXECUTE NOW pre-filled finding_ids
-    // match what's actually stored on disk. Plain string replace is safe here
-    // because the internal consensusId is a short hex pair that does not
-    // collide with substrings elsewhere in the report.
+    // match what's actually stored on disk. Anchor the replace on the colon
+    // suffix that always follows a consensusId in a finding_id reference
+    // (`<consensusId>:<agentId>:fN`) — this eliminates the theoretical risk
+    // of an unrelated 8hex-8hex pattern in finding text being silently
+    // rewritten (e.g., a git SHA fragment, a UUID slice, a nonce).
     if (internalConsensusId && internalConsensusId !== consensusId) {
-      report.summary = report.summary.split(internalConsensusId).join(consensusId);
+      report.summary = report.summary.split(`${internalConsensusId}:`).join(`${consensusId}:`);
     }
 
     // Surface dropped relay agents so the orchestrator can see who silently
