@@ -302,10 +302,25 @@ async function refreshBootstrap() {
 async function doBoot() {
   const m = await getModules();
 
+  // Degraded-mode boot: if no config file exists (fresh install, first run),
+  // we still boot the relay + dashboard so the user can see the UI and run
+  // gossip_setup from inside Claude Code. Previously this threw and the error
+  // was silently swallowed by the stderr→logfile redirect, leaving users with
+  // a "nothing works" experience on first install. Fix: synthesize a minimal
+  // empty config and let the existing `mainProvider === 'none'` degraded path
+  // handle the missing orchestrator LLM.
   const configPath = m.findConfigPath();
-  if (!configPath) throw new Error('No gossip.agents.json found. Run gossipcat setup first.');
-
-  const config = m.loadConfig(configPath);
+  let config: any;
+  if (configPath) {
+    config = m.loadConfig(configPath);
+  } else {
+    process.stderr.write('[gossipcat] ⚠️  No gossip.agents.json found — booting in degraded mode (dashboard + relay only). Run gossip_setup inside Claude Code to create your agent team.\n');
+    config = {
+      main_agent: { provider: 'none', model: 'none' },
+      utility_model: { provider: 'none', model: 'none' },
+      agents: {},
+    };
+  }
   const agentConfigs = m.configToAgentConfigs(config);
   ctx.keychain = new m.Keychain();
 
@@ -327,8 +342,17 @@ async function doBoot() {
   // Generate a per-process relay key so only co-launched agents can connect.
   const relayApiKey = randomBytes(32).toString('hex');
 
+  // Port selection: try a user-provided port via GOSSIPCAT_PORT env var,
+  // otherwise let the OS assign a free port (port: 0). This lets multiple
+  // Claude Code instances run gossipcat in parallel on the same machine
+  // without fighting over 24420. Each instance gets its own port; the actual
+  // port is logged to stderr + written to .gossip/relay.pid + exposed via
+  // gossip_status() and the MCP `instructions` field after boot.
+  const envPort = process.env.GOSSIPCAT_PORT ? parseInt(process.env.GOSSIPCAT_PORT, 10) : NaN;
+  const relayPort = Number.isFinite(envPort) && envPort >= 0 && envPort <= 65535 ? envPort : 0;
+
   ctx.relay = new m.RelayServer({
-    port: 24420,
+    port: relayPort,
     apiKey: relayApiKey,
     dashboard: {
       projectRoot: process.cwd(),
