@@ -80,7 +80,15 @@ export class ConsensusEngine {
     }
     if (changed) {
       this.currentWorktreeRoots = next;
+      // Clear both caches on worktree change. pathCache holds ref→abspath,
+      // fileCache holds abspath→content (or null on read failure). If only
+      // pathCache clears, a cached null from a previous worktree can shadow
+      // a file that now exists at the same absolute path after the switch
+      // (or vice versa), biasing verifyCitations toward stale benefit-of-
+      // doubt outcomes. See consensus round 82a3c123-19db41e7 Tier 1A
+      // Fix #4 — fileCache invalidation parity with pathCache.
       this.pathCache.clear();
+      this.fileCache.clear();
     }
   }
 
@@ -595,6 +603,10 @@ Return only valid JSON.`;
             // Don't add fabricated disputes to the finding's disputedBy list —
             // they should not influence the confirmed/disputed tagging.
             // Penalize the REVIEWER who fabricated the disagreement, not the original author.
+            // outcome is always 'fabricated_citation' here: isHallucination = isKeywordHallucination
+            // && isCitationFabricated, so the second half is guaranteed true by construction.
+            // The previous ternary `isCitationFabricated ? 'fabricated_citation' : 'incorrect'`
+            // had an unreachable 'incorrect' branch. See consensus 82a3c123-19db41e7 Tier 1A Fix #2.
             signals.push({
               type: 'consensus',
               taskId: getTaskId(entry.agentId),
@@ -602,7 +614,7 @@ Return only valid JSON.`;
               signal: 'hallucination_caught',
               agentId: entry.agentId,
               counterpartId: entry.peerAgentId,
-              outcome: isCitationFabricated ? 'fabricated_citation' : 'incorrect',
+              outcome: 'fabricated_citation',
               evidence: capEvidence(entry.evidence),
               timestamp: now,
               severity: f.severity,
@@ -969,7 +981,17 @@ Return only valid JSON.`;
 
         if (citation.line > lines.length) { failed++; continue; }
       } catch {
-        // File read failed — benefit of doubt, don't count as failed
+        // File read threw — count as failed. The previous "benefit of doubt"
+        // behavior was an asymmetric escape hatch: I/O hiccups (EACCES, ENOENT
+        // race, network FS latency) silently helped hallucinators by keeping
+        // the failed counter at 0 even when citations could not be verified.
+        // Counting errors as failures makes the I/O-failure case symmetric
+        // with resolve-failure (line 972) and read-returned-null (line 975).
+        // The pre-filter AND-gate at :700 (detectHallucination && fabricated
+        // citation) is the blast-radius guard that prevents a single transient
+        // error from firing hallucination_caught on its own. See consensus
+        // round 82a3c123-19db41e7 Tier 1A Fix #5.
+        failed++;
         continue;
       }
     }

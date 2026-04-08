@@ -199,3 +199,210 @@ describe('ConsensusEngine.synthesize — citation verification integration', () 
 });
 
 // verifyCitations on confirmed findings is tested via the synthesize integration test above
+
+// ────────────────────────────────────────────────────────────────────
+// Tier 1A — Fix #4: fileCache invalidation parity with pathCache
+// Consensus round 82a3c123-19db41e7
+// ────────────────────────────────────────────────────────────────────
+describe('Tier 1A Fix #4 — fileCache parity with pathCache on worktree change', () => {
+  const testDir = resolve(tmpdir(), 'gossip-filecache-parity-' + Date.now());
+  const targetFile = resolve(testDir, 'src', 'ephemeral.ts');
+
+  beforeAll(() => {
+    mkdirSync(resolve(testDir, 'src'), { recursive: true });
+    writeFileSync(targetFile, 'export const X = 1;\nexport const Y = 2;\nexport const Z = 3;\n');
+  });
+
+  afterAll(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  test('fileCache cleared alongside pathCache when worktree set changes', async () => {
+    const engine = new ConsensusEngine({
+      llm: mockLlm,
+      registryGet: mockRegistryGet,
+      projectRoot: testDir,
+    });
+
+    // Warm cache with a legitimate resolution
+    const warm = await engine.verifyCitations('Code at src/ephemeral.ts:2 defines Y');
+    expect(warm).toBe(false); // file exists, line in range
+
+    // Access the private caches via any-cast to verify the invariant directly.
+    // This is the tightest possible test of the fix — we assert BOTH caches
+    // clear together when updateWorktreeRoots detects a change.
+    const eng = engine as unknown as {
+      pathCache: Map<string, string | null>;
+      fileCache: Map<string, string | null>;
+      updateWorktreeRoots: (results: unknown[]) => void;
+    };
+    expect(eng.pathCache.size).toBeGreaterThan(0);
+    expect(eng.fileCache.size).toBeGreaterThan(0);
+
+    // Trigger a worktree-set change by feeding a synthetic TaskEntry with a
+    // scope hint pointing at a brand-new worktree path.
+    const fakeWorktree = resolve(tmpdir(), 'gossip-wt-' + Date.now());
+    mkdirSync(fakeWorktree, { recursive: true });
+    try {
+      eng.updateWorktreeRoots([
+        { id: 't', agentId: 'a', task: 'r', status: 'completed', result: '', startedAt: 0, worktreeInfo: { path: fakeWorktree } } as unknown as never,
+      ]);
+      // Both caches must be empty after the worktree-set change.
+      expect(eng.pathCache.size).toBe(0);
+      expect(eng.fileCache.size).toBe(0);
+    } finally {
+      rmSync(fakeWorktree, { recursive: true, force: true });
+    }
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Tier 1A — Fix #5: I/O errors in per-citation read now increment `failed`
+// Consensus round 82a3c123-19db41e7
+// ────────────────────────────────────────────────────────────────────
+describe('Tier 1A Fix #5 — I/O errors count as failed citations', () => {
+  const testDir = resolve(tmpdir(), 'gossip-io-fail-' + Date.now());
+  const readableFile = resolve(testDir, 'src', 'readable.ts');
+
+  beforeAll(() => {
+    mkdirSync(resolve(testDir, 'src'), { recursive: true });
+    writeFileSync(readableFile, 'const a = 1;\nconst b = 2;\nconst c = 3;\n');
+  });
+
+  afterAll(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  test('per-citation read error counts toward failed (not swallowed)', async () => {
+    // We cannot easily inject an fs.readFile throw without monkey-patching, so
+    // we exercise the equivalent code path via a citation whose RESOLVED path
+    // points at something that throws on read: a directory treated as a file.
+    // readFile on a directory throws EISDIR, which is caught at the per-citation
+    // try/catch. Post-Fix-#5 this increments `failed`; pre-fix it was swallowed.
+    const dirAsFile = resolve(testDir, 'src', 'isadir.ts');
+    mkdirSync(dirAsFile, { recursive: true });
+    try {
+      const engine = new ConsensusEngine({
+        llm: mockLlm,
+        registryGet: mockRegistryGet,
+        projectRoot: testDir,
+      });
+      // One citation, one EISDIR failure — should now trip `failed > 0.5` (majority of 1).
+      const result = await engine.verifyCitations('At src/isadir.ts:1 we have a constant');
+      expect(result).toBe(true); // EISDIR increments failed → majority (1/1) → fabricated
+    } finally {
+      rmSync(dirAsFile, { recursive: true, force: true });
+    }
+  });
+
+  test('I/O error on one of many citations still allows verification of others', async () => {
+    // With Fix #5, the I/O error increments failed, but the majority rule at
+    // :985 still protects against single-bad-citation false positives under
+    // the CURRENT (pre-Fix-#3) threshold of `failed > citations.length / 2`.
+    // This test pins the pre-Fix-#3 behavior so that when Fix #3 ships the
+    // threshold change will be the ONLY thing that flips this assertion.
+    const dirAsFile = resolve(testDir, 'src', 'isadir2.ts');
+    mkdirSync(dirAsFile, { recursive: true });
+    try {
+      const engine = new ConsensusEngine({
+        llm: mockLlm,
+        registryGet: mockRegistryGet,
+        projectRoot: testDir,
+      });
+      // Two citations, one EISDIR, one valid → failed=1, total=2 → 1 > 1 is false.
+      const result = await engine.verifyCitations(
+        'See src/isadir2.ts:1 and src/readable.ts:2',
+      );
+      expect(result).toBe(false); // below majority threshold — no fabrication
+    } finally {
+      rmSync(dirAsFile, { recursive: true, force: true });
+    }
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Tier 1A — Fix #2: dead ternary deletion — outcome is always 'fabricated_citation'
+// Consensus round 82a3c123-19db41e7
+// ────────────────────────────────────────────────────────────────────
+describe('Tier 1A Fix #2 — dispute hallucination signal outcome is always fabricated_citation', () => {
+  const testDir = resolve(tmpdir(), 'gossip-dispute-outcome-' + Date.now());
+
+  beforeAll(() => {
+    mkdirSync(resolve(testDir, 'src'), { recursive: true });
+    writeFileSync(
+      resolve(testDir, 'src', 'real.ts'),
+      [
+        'export function findAgent(id: string) {', // line 1
+        '  if (!id) throw new Error("empty");',    // line 2
+        '  return registry.get(id);',              // line 3
+        '}',                                        // line 4
+      ].join('\n'),
+    );
+  });
+
+  afterAll(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  test('dispute with hallucination keywords + fabricated citation → signal.outcome is fabricated_citation (not incorrect)', async () => {
+    const engine = new ConsensusEngine({
+      llm: mockLlm,
+      registryGet: mockRegistryGet,
+      projectRoot: testDir,
+    });
+
+    // Result text uses the `## Consensus Summary\n- ` format so the bullet-
+    // fallback parser in synthesize() extracts a finding into findingMap.
+    const results = [
+      {
+        id: 't1',
+        agentId: 'agent-a',
+        task: 'review',
+        status: 'completed' as const,
+        result: '## Consensus Summary\n- findAgent at src/real.ts:2 throws on empty id',
+        startedAt: 0,
+        completedAt: 1,
+      },
+      {
+        id: 't2',
+        agentId: 'agent-b',
+        task: 'review',
+        status: 'completed' as const,
+        result: '## Consensus Summary\n- unrelated style observation',
+        startedAt: 0,
+        completedAt: 1,
+      },
+    ];
+
+    // agent-b disagrees with agent-a's finding using BOTH a hallucination keyword
+    // ("does not exist") AND a fabricated citation (nonexistent-made-up-file.ts).
+    // The AND-gate at :592 will fire hallucination_caught against agent-b.
+    const crossReview = [
+      {
+        action: 'disagree' as const,
+        agentId: 'agent-b',
+        peerAgentId: 'agent-a',
+        finding: 'findAgent at src/real.ts:2 throws on empty id',
+        evidence: 'Wrong — nonexistent-made-up-file.ts:999 does not exist and proves this is fabricated.',
+        confidence: 3,
+        findingId: 'agent-a:f1',
+      },
+    ];
+
+    const report = await engine.synthesize(results, crossReview);
+
+    // The finding should NOT be marked disputed — the dispute itself is flagged as hallucination.
+    expect(report.disputed.find(f => f.finding.includes('findAgent'))).toBeUndefined();
+
+    // A hallucination_caught signal should target agent-b (the disputer) with
+    // outcome === 'fabricated_citation'. The dead ternary removal encodes the
+    // invariant: this field is ALWAYS 'fabricated_citation' in this code path,
+    // never 'incorrect' (which was unreachable).
+    const halluc = report.signals.find(
+      s => s.signal === 'hallucination_caught' && s.agentId === 'agent-b',
+    );
+    expect(halluc).toBeDefined();
+    expect((halluc as { outcome?: string }).outcome).toBe('fabricated_citation');
+    expect((halluc as { outcome?: string }).outcome).not.toBe('incorrect');
+  });
+});
