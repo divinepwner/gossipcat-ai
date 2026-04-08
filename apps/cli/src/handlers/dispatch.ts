@@ -218,19 +218,20 @@ export async function handleDispatchSingle(
 
     // Split into two content items so relay_token stays in orchestrator-only text
     // and AGENT_PROMPT is passed verbatim to Agent(prompt: ...).
+    // Tag format matches parallel/consensus: `AGENT_PROMPT:<taskId> (<agentId>)`.
     return { content: [
       { type: 'text' as const, text:
         `NATIVE_DISPATCH: Execute this via Claude Code Agent tool, then relay the result.\n\n` +
         `Task ID: ${taskId}\n` +
         `Agent: ${agent_id}\n` +
         `Model: ${nativeConfig.model}\n\n` +
-        `Step 1 — Pass the AGENT_PROMPT content item below verbatim to Agent(prompt: ...):\n` +
-        `Agent(model: "${nativeConfig.model}", prompt: <AGENT_PROMPT below>${useWorktree ? ', isolation: "worktree"' : ''}, run_in_background: true)\n\n` +
+        `Step 1 — Pass the AGENT_PROMPT:${taskId} content item below verbatim to Agent(prompt: ...):\n` +
+        `Agent(model: "${nativeConfig.model}", prompt: <AGENT_PROMPT:${taskId} below>${useWorktree ? ', isolation: "worktree"' : ''}, run_in_background: true)\n\n` +
         `Step 2 — REQUIRED after agent completes:\n` +
         `gossip_relay(task_id: "${taskId}", relay_token: "${relayToken}", result: "<agent output>")\n\n` +
         `⚠️ You MUST call gossip_relay for every native dispatch. Without it, the result is lost — no memory, no gossip, no consensus. Never skip this step.`
       },
-      { type: 'text' as const, text: `AGENT_PROMPT:\n${agentPrompt}` },
+      { type: 'text' as const, text: `AGENT_PROMPT:${taskId} (${agent_id})\n${agentPrompt}` },
     ] };
   }
 

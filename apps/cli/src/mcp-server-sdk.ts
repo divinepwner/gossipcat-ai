@@ -1686,11 +1686,11 @@ server.tool(
           { type: 'text' as const, text:
             `Dispatched to ${agent_id} (native). Task ID: ${taskId}\n\n` +
             `⚠️ EXECUTE NOW — launch this Agent and relay the result:\n\n` +
-            `1. Agent(model: "${modelShort}", prompt: <AGENT_PROMPT below>, run_in_background: true) — pass the AGENT_PROMPT content item verbatim\n` +
+            `1. Agent(model: "${modelShort}", prompt: <AGENT_PROMPT:${taskId} below>, run_in_background: true) — pass the AGENT_PROMPT:${taskId} content item verbatim\n` +
             `2. When agent completes → gossip_relay(task_id: "${taskId}", relay_token: "${relayToken}", result: "<full agent output>")\n\n` +
             `Do BOTH steps in your next response. Do not wait for user input between them.`
           },
-          { type: 'text' as const, text: `AGENT_PROMPT:\n${agentPrompt}` },
+          { type: 'text' as const, text: `AGENT_PROMPT:${taskId} (${agent_id})\n${agentPrompt}` },
         ],
       };
     }
@@ -2628,12 +2628,12 @@ server.tool(
           { type: 'text' as const, text:
             `Session data gathered. Dispatching native utility for summary.\n\n` +
             `⚠️ EXECUTE NOW — launch this Agent and re-call gossip_session_save:\n\n` +
-            `1. Agent(model: "${modelShort}", prompt: <AGENT_PROMPT below>, run_in_background: true) — pass the AGENT_PROMPT content item verbatim\n` +
+            `1. Agent(model: "${modelShort}", prompt: <AGENT_PROMPT:${taskId} below>, run_in_background: true) — pass the AGENT_PROMPT:${taskId} content item verbatim\n` +
             `2. When agent completes → gossip_relay(task_id: "${taskId}", result: "<full agent output>")\n` +
             `3. Then re-call: gossip_session_save(notes: ${JSON.stringify(notes || '')}, _utility_task_id: "${taskId}")\n\n` +
             `Do ALL steps in order. Do not wait for user input between them.`
           },
-          { type: 'text' as const, text: `AGENT_PROMPT:\n${agentPrompt}` },
+          { type: 'text' as const, text: `AGENT_PROMPT:${taskId} (_utility)\n${agentPrompt}` },
         ],
       };
     }
