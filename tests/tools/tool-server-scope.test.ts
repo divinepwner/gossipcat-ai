@@ -1,3 +1,4 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -10,14 +11,14 @@ import { ToolServer } from '../../packages/tools/src/tool-server';
 // and calling assignScope/assignRoot + executeTool directly.
 
 // Mock GossipAgent to avoid actual relay connection
-jest.mock('@gossip/client', () => ({
-  GossipAgent: jest.fn().mockImplementation(() => ({
-    connect: jest.fn().mockResolvedValue(undefined),
-    disconnect: jest.fn().mockResolvedValue(undefined),
-    on: jest.fn(),
-    agentId: 'tool-server',
-    sendEnvelope: jest.fn().mockResolvedValue(undefined),
-  })),
+vi.mock('@gossip/client', () => ({
+  GossipAgent: class {
+    agentId = 'tool-server';
+    async connect() {}
+    async disconnect() {}
+    on() {}
+    async sendEnvelope() {}
+  },
 }));
 
 describe('ToolServer scope enforcement', () => {
@@ -69,13 +70,10 @@ describe('ToolServer scope enforcement', () => {
       ).rejects.toThrow(/Git commit blocked/);
     });
 
-    it('allows file_read (read tools not restricted)', async () => {
-      // file_read may fail (no actual file), but it should NOT throw a scope error
-      try {
-        await server.executeTool('file_read', { path: 'packages/tools/bar.ts' }, 'agent-1');
-      } catch (err) {
-        expect((err as Error).message).not.toContain('scope');
-      }
+    it('blocks file_read outside scope', async () => {
+      await expect(
+        server.executeTool('file_read', { path: 'packages/tools/bar.ts' }, 'agent-1')
+      ).rejects.toThrow(/outside scope/);
     });
 
     it('blocks file_write to sibling prefix without trailing slash', async () => {

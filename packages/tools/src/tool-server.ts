@@ -7,7 +7,7 @@ import { ShellTools } from './shell-tools';
 import { GitTools } from './git-tools';
 import { SkillTools } from './skill-tools';
 import { Sandbox } from './sandbox';
-import { resolve, relative } from 'path';
+import { resolve } from 'path';
 import { realpathSync, existsSync } from 'fs';
 
 /**
@@ -205,14 +205,11 @@ export class ToolServer {
     if (toolName === 'file_write') {
       const filePath = args.path as string;
       if (scope) {
-        // Resolve path to prevent traversal attacks (e.g. 'packages/tools/../relay/evil.ts')
+        // Resolve path to prevent traversal attacks (e.g. 'packages/tools/../relay/evil.ts').
+        // scope is stored absolute+trailing-slash (see assignScope), so compare absolute→absolute.
         const resolved = resolve(this.sandbox.projectRoot, filePath);
-        const rel = relative(this.sandbox.projectRoot, resolved);
-        if (rel.startsWith('..')) {
-          throw new Error(`Write blocked: "${filePath}" resolves outside project root`);
-        }
-        const normalizedRel = rel.endsWith('/') ? rel : rel + '/';
-        if (!normalizedRel.startsWith(scope)) {
+        const normalizedResolved = resolved.endsWith('/') ? resolved : resolved + '/';
+        if (!normalizedResolved.startsWith(scope)) {
           throw new Error(`Write blocked: "${filePath}" is outside scope "${scope}"`);
         }
       }
@@ -262,12 +259,8 @@ export class ToolServer {
       const filePath = args.path as string;
       if (scope) {
         const resolved = resolve(this.sandbox.projectRoot, filePath);
-        const rel = relative(this.sandbox.projectRoot, resolved);
-        if (rel.startsWith('..')) {
-          throw new Error(`Delete blocked: "${filePath}" resolves outside project root`);
-        }
-        const normalizedRel = rel.endsWith('/') ? rel : rel + '/';
-        if (!normalizedRel.startsWith(scope)) {
+        const normalizedResolved = resolved.endsWith('/') ? resolved : resolved + '/';
+        if (!normalizedResolved.startsWith(scope)) {
           throw new Error(`Delete blocked: "${filePath}" is outside scope "${scope}"`);
         }
       }
@@ -315,9 +308,8 @@ export class ToolServer {
         const readScope = callerId ? this.agentScopes.get(callerId) : undefined;
         if (readScope) {
           const resolved = resolve(this.sandbox.projectRoot, args.path as string);
-          const rel = relative(this.sandbox.projectRoot, resolved);
-          const normalizedRel = rel.endsWith('/') ? rel : rel + '/';
-          if (rel.startsWith('..') || !normalizedRel.startsWith(readScope)) {
+          const normalizedResolved = resolved.endsWith('/') ? resolved : resolved + '/';
+          if (!normalizedResolved.startsWith(readScope)) {
             throw new Error(`Read blocked: "${args.path}" is outside scope "${readScope}"`);
           }
         }
