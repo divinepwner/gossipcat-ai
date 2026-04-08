@@ -5,6 +5,7 @@
 import { ctx } from '../mcp-context';
 import { startConsensusTimeout, persistPendingConsensus } from './relay-cross-review';
 import { persistRelayTasks } from './relay-tasks';
+import { FILE_TOOLS, FileTools, Sandbox } from '@gossip/tools';
 
 export async function handleCollect(
   task_ids: string[],
@@ -235,16 +236,47 @@ export async function handleCollect(
       const relayPrompts = prompts.filter((p: any) => !p.isNative);
       const validPeerIds = new Set(allResults.filter((r: any) => r.status === 'completed').map((r: any) => r.agentId));
 
+      // Tool-blindness fix: relay cross-reviewers were called with raw llm.generate
+      // and no tools, forcing them to evaluate findings purely from prompt snippets.
+      // That drove gemini's 6× hallucination rate vs. native sonnet (which gets
+      // file_read/grep via Claude Code). We now expose read-only file_read +
+      // file_grep through a small inline tool loop so reviewers can verify
+      // identifiers and snippets against the actual repo.
+      const verifierTools = FILE_TOOLS.filter(t => t.name === 'file_read' || t.name === 'file_grep');
+      const verifierFs = new FileTools(new Sandbox(process.cwd()));
+      const MAX_VERIFIER_TURNS = 6;
+
       const runOneRelayCrossReview = async (p: any, attempt: number): Promise<void> => {
         let llm = agentLlmCache.get(p.agentId);
         if (!llm) {
           process.stderr.write(`[gossipcat] WARNING: ${p.agentId} has no per-agent LLM — falling back to orchestrator LLM for cross-review\n`);
           llm = mainLlm;
         }
-        const response = await llm.generate(
-          [{ role: 'system', content: p.system }, { role: 'user', content: p.user }],
-          { temperature: 0 },
-        );
+        const messages: any[] = [
+          { role: 'system', content: p.system },
+          { role: 'user', content: p.user },
+        ];
+        let response: any;
+        let turn = 0;
+        while (true) {
+          response = await llm.generate(messages, { temperature: 0, tools: verifierTools });
+          const calls = response.toolCalls ?? [];
+          if (calls.length === 0 || turn >= MAX_VERIFIER_TURNS) break;
+          messages.push({ role: 'assistant', content: response.text ?? '', toolCalls: calls });
+          for (const tc of calls) {
+            let out: string;
+            try {
+              if (tc.name === 'file_read') out = await verifierFs.fileRead(tc.arguments as any);
+              else if (tc.name === 'file_grep') out = await verifierFs.fileGrep(tc.arguments as any);
+              else out = `Tool ${tc.name} not available to cross-reviewers`;
+            } catch (e) {
+              out = `Error: ${(e as Error).message}`;
+            }
+            if (out.length > 8000) out = out.slice(0, 8000) + '\n…[truncated]';
+            messages.push({ role: 'tool', toolCallId: tc.id, name: tc.name, content: out });
+          }
+          turn++;
+        }
         const parsed = engine.parseCrossReviewResponse(p.agentId, response.text, 50);
         const filtered = parsed.filter((e: any) => e.peerAgentId !== p.agentId && validPeerIds.has(e.peerAgentId));
         if (filtered.length === 0) {
