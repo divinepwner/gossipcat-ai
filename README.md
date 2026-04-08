@@ -64,7 +64,7 @@ Agent accuracy is tracked per-category. Dispatch weights adjust automatically �
 </td>
 <td align="center" width="33%">
 <h3>Skill Development</h3>
-When an agent keeps failing in a category, targeted skills are generated from failure data and injected into future prompts.
+When an agent keeps failing in a category, targeted skills are generated from failure data and injected into future prompts. Effectiveness is measured with a z-test on post-bind signals — passed, failed, or inconclusive.
 </td>
 </tr>
 <tr>
@@ -154,7 +154,7 @@ Per-agent cognitive memory persists across sessions. Agents remember past findin
 | **Consensus** | Yes | Yes |
 | **Memory & Skills** | Yes | Yes |
 
-Both types participate equally in consensus, cross-review, and skill development.
+Both types participate equally in consensus, cross-review, and skill development. Native subagents get skill files injected into their system prompts and can call `gossip_remember` for memory recall. Relay workers call the equivalent `memory_query` tool and get `file_read` + `file_grep` during cross-review so their verification parity matches natives.
 
 <br/>
 
@@ -620,10 +620,13 @@ Gossipcat auto-detects the host environment:
 | Cross-platform key storage | ✅ Shipped |
 | OpenAI-compatible gateway support (`base_url`) | ✅ Shipped |
 | OpenClaw provider integration 🦞 | ✅ Shipped |
+| Local LLM support (Ollama) | ✅ Shipped |
+| Statistical skill effectiveness (z-test on per-category accuracy, auto pass/fail verdicts) | ✅ Shipped |
+| Native subagents get skill injection + cognitive memory recall | ✅ Shipped |
+| Relay cross-reviewers get `file_read` + `file_grep` (closes tool-blindness gap with natives) | ✅ Shipped |
 | Full implementation workflow (agents write code) | 🔄 In progress |
 | Dashboard enrichment (graphs, trends, session history) | ☐ Planned |
 | Local Postgres migration (embedded Postgres for tasks/signals/consensus/memory — unblocks full task results, real queries, no more JSONL scans) | ☐ Planned |
-| Local LLM support (Ollama) | ☐ Planned |
 | Full Cursor support | ☐ Planned |
 | Windsurf / VS Code parity | ☐ Planned |
 | Standalone CLI (no IDE required) | ☐ Planned |
