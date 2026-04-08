@@ -68,9 +68,12 @@ export class QuotaExhaustedException extends Error {
   }
 }
 
+type CooldownReason = 'quota' | 'unavailable';
+
 interface QuotaProviderState {
   exhaustedUntil: number;
   consecutive429s: number;
+  reason?: CooldownReason;
 }
 
 interface QuotaStateFile {
@@ -82,6 +85,7 @@ interface QuotaStateFile {
 class QuotaTracker {
   private consecutive429s = 0;
   private exhaustedUntil = 0;
+  private reason: CooldownReason = 'quota';
   private statePath: string | null;
 
   constructor(private provider: string, projectRoot?: string) {
@@ -96,6 +100,7 @@ class QuotaTracker {
       if (state[this.provider]) {
         this.exhaustedUntil = state[this.provider].exhaustedUntil;
         this.consecutive429s = state[this.provider].consecutive429s;
+        this.reason = state[this.provider].reason ?? 'quota';
       }
     } catch { /* start fresh */ }
   }
@@ -108,18 +113,19 @@ class QuotaTracker {
       // Merge with existing state (other providers may have entries)
       let existing: QuotaStateFile = {};
       try { existing = JSON.parse(readFileSync(this.statePath, 'utf-8')); } catch { /* fresh */ }
-      existing[this.provider] = { exhaustedUntil: this.exhaustedUntil, consecutive429s: this.consecutive429s };
+      existing[this.provider] = { exhaustedUntil: this.exhaustedUntil, consecutive429s: this.consecutive429s, reason: this.reason };
       writeFileSync(this.statePath, JSON.stringify(existing, null, 2));
     } catch { /* best-effort */ }
   }
 
-  /** Check if quota is exhausted. Throws QuotaExhaustedException if so. */
+  /** Check if quota/availability cooldown is active. Throws QuotaExhaustedException if so. */
   checkBeforeRequest(): void {
     if (this.exhaustedUntil > Date.now()) {
       const remainingMs = this.exhaustedUntil - Date.now();
-      process.stderr.write(`[${this.provider}] quota exhausted, ${Math.round(remainingMs / 1000)}s cooldown remaining\n`);
+      const label = this.reason === 'unavailable' ? 'service unavailable' : 'quota exhausted';
+      process.stderr.write(`[${this.provider}] ${label}, ${Math.round(remainingMs / 1000)}s cooldown remaining\n`);
       throw new QuotaExhaustedException({
-        message: `${this.provider} quota exhausted — ${Math.round(remainingMs / 1000)}s cooldown remaining`,
+        message: `${this.provider} ${label} — ${Math.round(remainingMs / 1000)}s cooldown remaining`,
         provider: this.provider,
         retryAfterMs: remainingMs,
       });
@@ -129,6 +135,7 @@ class QuotaTracker {
   /** Handle a 429 response. Parses Retry-After, sets cooldown, persists, throws. */
   handle429(res: Response, errBody: string): never {
     this.consecutive429s++;
+    this.reason = 'quota';
     const retryAfter = this.parseRetryAfter(res);
     const cooldownMs = retryAfter ?? Math.min(60_000 * Math.pow(2, this.consecutive429s - 1), 300_000);
     this.exhaustedUntil = Date.now() + cooldownMs;
@@ -145,9 +152,12 @@ class QuotaTracker {
    * Handle a 503 (service unavailable / overloaded) response. Same backoff
    * pattern as 429 but with shorter initial cooldown — 503s typically clear
    * within seconds-to-minutes rather than the longer rate-limit windows.
+   * Uses a separate reason ('unavailable') so subsequent checkBeforeRequest
+   * calls don't mislabel the cooldown as quota exhaustion.
    */
   handle503(res: Response, errBody: string): never {
     this.consecutive429s++;
+    this.reason = 'unavailable';
     const retryAfter = this.parseRetryAfter(res);
     // Shorter base cooldown for 503: 15s, 30s, 60s, 120s, capped at 300s
     const cooldownMs = retryAfter ?? Math.min(15_000 * Math.pow(2, this.consecutive429s - 1), 300_000);
@@ -166,6 +176,7 @@ class QuotaTracker {
     if (this.consecutive429s > 0 || this.exhaustedUntil > 0) {
       this.consecutive429s = 0;
       this.exhaustedUntil = 0;
+      this.reason = 'quota';
       this.persist();
     }
   }

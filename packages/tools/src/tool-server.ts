@@ -41,9 +41,18 @@ export type AgentLookup = (agentId: string) => AgentIdentity | undefined;
  * Render an AgentIdentity as a markdown ## Identity block. Used by both the
  * native dispatch path (dispatch.ts) and the relay worker bootstrap so every
  * agent sees the same shape at the top of its system prompt.
+ *
+ * Includes a ready-to-copy memory recall example with the literal agent_id
+ * pre-substituted. Without this, agents have been observed inventing an
+ * agent_id from their role description (e.g. "senior-reviewer" from "You are
+ * a senior code reviewer") instead of using the actual string from the block.
  */
 export function formatIdentityBlock(identity: AgentIdentity): string {
-  return `## Identity\nagent_id: ${identity.agent_id}\nruntime: ${identity.runtime}\nprovider: ${identity.provider}\nmodel: ${identity.model}\n`;
+  const base = `## Identity\nagent_id: ${identity.agent_id}\nruntime: ${identity.runtime}\nprovider: ${identity.provider}\nmodel: ${identity.model}\n`;
+  const example = identity.runtime === 'native'
+    ? `\nTo recall your own past findings, call EXACTLY:\n  mcp__gossipcat__gossip_remember(agent_id: "${identity.agent_id}", query: "<topic>")\nThe agent_id above is your canonical identity — do NOT invent a different one from your role description.\n`
+    : `\nTo recall your own past findings, call EXACTLY:\n  memory_query(query: "<topic>")\nYour identity ("${identity.agent_id}") is inferred from the relay envelope — do NOT pass an agent_id argument.\n`;
+  return base + example;
 }
 
 export interface ToolServerConfig {
