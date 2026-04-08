@@ -83,7 +83,7 @@ export function formatIdentityBlock(identity: AgentIdentity): string {
   const base = `## Identity\nagent_id: ${identity.agent_id}\nruntime: ${identity.runtime}\nprovider: ${identity.provider}\nmodel: ${identity.model}\n`;
   const example = identity.runtime === 'native'
     ? `\nYour agent_id is \`${identity.agent_id}\`. When a tool asks for an agent_id, use this exact string — it identifies you in the memory store and the consensus signal pipeline. Role descriptions like "senior reviewer" are not your agent_id.\n\nExample memory recall:\n  mcp__gossipcat__gossip_remember(agent_id: "${identity.agent_id}", query: "<topic>")\n`
-    : `\nYour agent_id is \`${identity.agent_id}\`. For relay tools, your identity is carried by the envelope — you do not pass agent_id as an argument.\n\nExample memory recall:\n  memory_query(query: "<topic>")\n`;
+    : `\nYour agent_id is \`${identity.agent_id}\`. Role descriptions like "senior reviewer" are not your agent_id — the literal string above is. For relay tools, your identity travels with the relay message automatically, so you do not pass agent_id as an argument.\n\nExample memory recall:\n  memory_query(query: "<topic>")\n`;
   return base + example;
 }
 
