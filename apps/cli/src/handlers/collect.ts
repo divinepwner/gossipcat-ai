@@ -124,12 +124,25 @@ export async function handleCollect(
   }
 
   // Step 3.5: Auto-signal on failed/timeout/empty results
-  // Only flag truly empty responses (no content at all), not valid short answers
+  // Only flag truly empty responses (no content at all), not valid short answers.
+  //
+  // Scope rules to avoid phantom fan-out (see project_auto_failure_signal_fanout_bug.md):
+  //   1. Skip synthetic agent buckets like `_utility` — those are internal dispatches,
+  //      not real agents, and penalizing them inflates failure counts and pollutes the
+  //      scoring pipeline. A single timeout was recording 14 signals (1 real agent +
+  //      13 stale `_utility` orphans restored from prior MCP sessions).
+  //   2. When the caller passed explicit taskIds, only fan out signals for results in
+  //      that set — never iterate stale orphans from prior sessions still living in
+  //      nativeResultMap.
   try {
-    const failedResults = allResults.filter((r: any) =>
-      r.status === 'failed' ||
-      r.status === 'timed_out' ||
-      (r.status === 'completed' && (!r.result || r.result.trim().length === 0 || r.result.includes('[No response from')))
+    const scopedResults = requestedIds
+      ? allResults.filter((r: any) => requestedIds.includes(r.id))
+      : allResults;
+    const failedResults = scopedResults.filter((r: any) =>
+      !String(r.agentId || '').startsWith('_') &&
+      (r.status === 'failed' ||
+        r.status === 'timed_out' ||
+        (r.status === 'completed' && (!r.result || r.result.trim().length === 0 || r.result.includes('[No response from'))))
     );
     if (failedResults.length > 0) {
       const { PerformanceWriter } = await import('@gossip/orchestrator');
