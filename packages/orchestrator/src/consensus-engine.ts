@@ -528,6 +528,29 @@ Return only valid JSON.`;
     const capEvidence = (e: string): string =>
       e.length > MAX_EVIDENCE_LENGTH ? e.slice(0, MAX_EVIDENCE_LENGTH) : e;
 
+    // Helper: cap the severity of auto-emitted hallucination signals.
+    //
+    // Heuristic fabrication detection (verifyCitations + detectHallucination)
+    // runs without human judgment — it can only inspect structural patterns
+    // in text. When it fires on a finding whose *original* severity was
+    // critical, the resulting hallucination_caught signal inherits that
+    // severity AND the outcome='fabricated_citation' 3.0× multiplier in
+    // performance-reader.ts:454. Combined, a single false positive on a
+    // critical-severity meta-finding can move an agent 22 accuracy points
+    // (demonstrated against sonnet-reviewer in consensus round
+    // 99f15984-eb844568, retracted immediately after detection).
+    //
+    // Capping auto-emits at 'medium' is defense in depth: even after the
+    // citation dedup + meta-reference exemption fixes from task #9, any
+    // future false positive from this detection path has limited blast
+    // radius on agent scores. Human-recorded signals via gossip_signals
+    // can still carry critical severity because a human verified the
+    // finding — the cap only applies to the automatic emit sites here in
+    // synthesize().
+    const capAutoSeverity = (s: 'critical' | 'high' | 'medium' | 'low' | undefined):
+      'critical' | 'high' | 'medium' | 'low' =>
+      s === 'critical' || s === 'high' ? 'medium' : (s ?? 'medium');
+
     // Helper: resolve cross-review entry to a findingMap key.
     // Tries findingId first (exact, fast), falls back to text matching (fuzzy, slow).
     const resolveEntry = (entry: CrossReviewEntry): string | null => {
@@ -617,7 +640,7 @@ Return only valid JSON.`;
               outcome: 'fabricated_citation',
               evidence: capEvidence(entry.evidence),
               timestamp: now,
-              severity: f.severity,
+              severity: capAutoSeverity(f.severity),
               category: f.category,
             });
           } else {
@@ -728,7 +751,7 @@ Return only valid JSON.`;
             outcome: 'fabricated_citation',
             evidence: capEvidence(`Confirmed finding cites non-existent code: "${entry.finding.slice(0, 200)}"`),
             timestamp: now,
-            severity: entry.severity,
+            severity: capAutoSeverity(entry.severity),
             category: entry.category,
           });
           continue;
