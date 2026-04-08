@@ -91,10 +91,14 @@ export function resolveVerdict(
   // Pending: not enough evidence yet
   if (postTotal < MIN_EVIDENCE) {
     if (timedOut) {
+      // If the skill was previously inconclusive, it had activity at some point —
+      // a current postTotal===0 means evidence ran dry, not that the skill never fired.
+      const everActive = postTotal > 0 || snapshot.inconclusive_at != null;
+      const status: VerdictStatus = everActive ? 'insufficient_evidence' : 'silent_skill';
       return {
-        status: postTotal === 0 ? 'silent_skill' : 'insufficient_evidence',
+        status,
         shouldUpdate: true,
-        newSnapshotFields: { status: postTotal === 0 ? 'silent_skill' : 'insufficient_evidence' },
+        newSnapshotFields: { status },
       };
     }
     return { status: 'pending', shouldUpdate: false };

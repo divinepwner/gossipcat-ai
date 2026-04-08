@@ -129,7 +129,7 @@ export class PerformanceReader {
       if (s.agentId !== agentId) continue;
       if (s.category !== category) continue;
       const ts = s.timestamp ? new Date(s.timestamp).getTime() : 0;
-      if (!isFinite(ts) || ts === 0 || ts <= sinceMs) continue;
+      if (!isFinite(ts) || ts === 0 || ts < sinceMs) continue;
 
       switch (s.signal) {
         case 'agreement':
