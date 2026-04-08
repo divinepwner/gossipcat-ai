@@ -182,6 +182,60 @@ export class SkillIndex {
     this.save();
   }
 
+  /**
+   * Ensure a set of default skills is bound to every listed agent with the
+   * EXACT mode the caller specifies (which should match the skill file's
+   * declared frontmatter mode — the caller is responsible for parsing and
+   * filtering). Idempotent: existing slots are untouched, missing ones are
+   * added. Runs on EVERY boot (unlike seedFromConfigs which only runs on
+   * first-ever init) so default skills reach all agents, including existing
+   * installs with a previously-seeded index.
+   *
+   * **No overlap invariant:** if the same skill already exists on an agent
+   * with a different mode, we respect the existing slot and do NOT overwrite
+   * it. Permanent and contextual bindings for the same skill file on the same
+   * agent cannot co-exist — the existing binding wins. This prevents the
+   * ambiguity the user flagged ("there shouldn't be overlap between permanent
+   * skills and context-based skills") — once bound, a slot's mode is
+   * authoritative for that agent.
+   *
+   * Introduced 2026-04-08 after validation revealed mode:permanent default
+   * skills were never injected into any agent — skill-loader.ts:42-45 uses
+   * index.getEnabledSkills(agentId) which only returns bound slots, so a
+   * permanent-mode file sitting in default-skills/ never reached any agent.
+   */
+  ensureBoundWithMode(
+    skillNames: string[],
+    agentIds: string[],
+    mode: 'permanent' | 'contextual',
+  ): void {
+    let changed = false;
+    for (const agentId of agentIds) {
+      if (DANGEROUS_KEYS.has(agentId) || !agentId) continue;
+      if (!this.data[agentId]) this.data[agentId] = Object.create(null);
+      for (const skill of skillNames) {
+        if (typeof skill !== 'string' || !skill) continue;
+        const name = normalizeSkillName(skill);
+        if (!name) continue;
+        if (!this.data[agentId][name]) {
+          this.data[agentId][name] = {
+            skill: name,
+            enabled: true,
+            source: 'auto',
+            mode,
+            version: 1,
+            boundAt: new Date().toISOString(),
+          };
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      this.dirty = true;
+      this.save();
+    }
+  }
+
   private validateAgentId(agentId: string): void {
     if (!agentId || typeof agentId !== 'string' || DANGEROUS_KEYS.has(agentId)) {
       throw new Error(`Invalid agentId: "${agentId}"`);
