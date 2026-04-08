@@ -1,27 +1,38 @@
 ---
 name: memory-retrieval
 mode: permanent
-description: When to call gossip_remember to recall past learnings before making new claims
+description: Call gossip_remember BEFORE reviewing — recall prior findings on the same code so you don't re-discover or contradict yourself
 ---
 
-You have access to `mcp__gossipcat__gossip_remember(query)` which searches your own archived findings, task summaries, and consensus signals from prior sessions.
+# STEP 0 — DO THIS BEFORE READING ANY CODE
 
-## When to call it
+Call `mcp__gossipcat__gossip_remember(query)` with the most specific identifier in the task: a file path, function name, module, or commit hash. This is your first action, before any file_read, before any analysis. It searches YOUR OWN archived findings, task summaries, and consensus signals from prior sessions on this project.
 
-CALL when:
-- The task names a file/module/function you may have analyzed before. Search for the file name to surface prior findings.
-- You're about to write a finding that feels novel — search to confirm you're not re-discovering something already concluded.
-- The user asks "have we hit this before?" or references prior work.
+Skipping this step means you re-discover bugs you already filed, contradict your own prior verdict, or miss context that would change a finding's severity. Past-you already did the work — use it.
 
-DO NOT call when:
-- The task is purely about new code with no historical context (greenfield).
-- You've already called it once this turn — one pass per task is enough.
-- The query would be too vague to return useful results ("review", "fix bug").
+## Mandatory triggers — call gossip_remember NOW if any apply
 
-## Anti-pattern
+- The task names a specific file, function, class, or module → query that name
+- The task references a commit hash, PR number, or finding ID → query it
+- You recognize the area of the code from prior work → query the module name
+- You are about to emit a finding that feels familiar → query its key term BEFORE writing it
 
-Calling gossip_remember on every task as a reflex. The cost is real (~1s per call, plus context tokens for the result). Only call when you have a concrete reason to believe past context exists.
+## Skip only when ALL of these hold
 
-## Output handling
+- The task is greenfield (code that does not yet exist)
+- No file/function/module is named in the prompt
+- You have already called gossip_remember once this turn
 
-If the search returns relevant findings, cite them in your output as "per gossip_remember finding <finding_id>" so peers can trace your reasoning. If it returns nothing relevant, do NOT mention the search in your output — silent failures shouldn't pollute findings.
+One call per task is the floor, not the ceiling — call again if a new identifier surfaces mid-review.
+
+## How to query
+
+- USE concrete identifiers: `gossip_remember("collect.ts runOneRelayCrossReview")`, `gossip_remember("performance-reader getCountersSince")`
+- DO NOT use vague terms: `gossip_remember("review")`, `gossip_remember("bug")` — these waste the call
+- One query, two-to-five words, focused on a name you can grep
+
+## How to use the result
+
+If the search returns relevant findings, cite them inline: `per gossip_remember finding <finding_id>`. Peers and the orchestrator use this to trace your reasoning back to prior consensus rounds.
+
+If the search returns nothing relevant, stay silent — do not announce "I checked memory and found nothing." Silent failures must not pollute findings.
