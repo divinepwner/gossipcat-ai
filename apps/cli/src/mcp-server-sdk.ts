@@ -375,7 +375,7 @@ async function doBoot() {
         instructions = rf(instrPath, 'utf-8');
       }
       const modelTier = ac.model.includes('opus') ? 'opus' : ac.model.includes('haiku') ? 'haiku' : 'sonnet';
-      ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions, description: ac.role || ac.preset || '' });
+      ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions, description: ac.role || ac.preset || '', skills: ac.skills || [] });
       process.stderr.write(`[gossipcat] 🤖 ${ac.id}: native agent (${modelTier})\n`);
       continue;
     }
@@ -413,7 +413,7 @@ async function doBoot() {
       agentConfigs.push(ac);
       // Map model tier for Agent tool dispatch
       const modelTier = sa.model.includes('opus') ? 'opus' : sa.model.includes('haiku') ? 'haiku' : 'sonnet';
-      ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions: sa.instructions, description: sa.description });
+      ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions: sa.instructions, description: sa.description, skills: ac.skills || [] });
       process.stderr.write(`[gossipcat] 🤖 Registered native agent: ${sa.id} (${modelTier})\n`);
     }
   }
@@ -672,7 +672,7 @@ async function doSyncWorkers() {
           instructions = rf(instrPath, 'utf-8');
         }
         const modelTier = ac.model.includes('opus') ? 'opus' : ac.model.includes('haiku') ? 'haiku' : 'sonnet';
-        ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions, description: ac.role || ac.preset || '' });
+        ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions, description: ac.role || ac.preset || '', skills: ac.skills || [] });
       }
     }
 
@@ -687,7 +687,7 @@ async function doSyncWorkers() {
         ctx.mainAgent.registerAgent(ac);
         // [H2 fix] Populate nativeAgentConfigs for hot-reloaded subagents
         const modelTier = sa.model.includes('opus') ? 'opus' : sa.model.includes('haiku') ? 'haiku' : 'sonnet';
-        ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions: sa.instructions, description: sa.description });
+        ctx.nativeAgentConfigs.set(ac.id, { model: modelTier, instructions: sa.instructions, description: sa.description, skills: ac.skills || [] });
       }
     }
 

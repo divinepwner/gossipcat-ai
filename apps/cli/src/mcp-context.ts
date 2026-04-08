@@ -58,7 +58,7 @@ export interface McpContext {
   skillEngine: any;
   nativeTaskMap: Map<string, NativeTaskInfo>;
   nativeResultMap: Map<string, NativeResultInfo>;
-  nativeAgentConfigs: Map<string, { model: string; instructions: string; description: string }>;
+  nativeAgentConfigs: Map<string, { model: string; instructions: string; description: string; skills: string[] }>;
   pendingConsensusRounds: Map<string, PendingConsensusRound>;
   nativeUtilityConfig: { model: string } | null;
   mainProvider: string;

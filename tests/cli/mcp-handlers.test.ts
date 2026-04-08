@@ -280,6 +280,7 @@ describe('handleDispatchSingle', () => {
       model: 'claude-opus-4-5',
       instructions: 'You are a reviewer.',
       description: 'Native reviewer',
+      skills: [],
     });
     const result = await handleDispatchSingle('native-claude', 'Audit memory system');
     const text = result.content[0].text;
@@ -391,6 +392,7 @@ describe('handleCollect', () => {
       model: 'claude-opus-4-5',
       instructions: '',
       description: '',
+      skills: [],
     });
 
     const result = await handleCollect(['native-t1'], 5000, false);
@@ -699,11 +701,13 @@ describe('handleDispatchConsensus — lens generation timeout', () => {
       model: 'claude-opus-4-5',
       instructions: 'You are a reviewer.',
       description: 'Reviewer',
+      skills: [],
     });
     ctx.nativeAgentConfigs.set('agent-2', {
       model: 'claude-opus-4-5',
       instructions: 'You are an auditor.',
       description: 'Auditor',
+      skills: [],
     });
 
     const result = await handleDispatchConsensus([
@@ -739,6 +743,7 @@ describe('handleDispatchConsensus — lens generation timeout', () => {
       model: 'claude-opus-4-5',
       instructions: 'Reviewer',
       description: 'Reviewer',
+      skills: [],
     });
 
     const result = await handleDispatchConsensus([
@@ -1021,5 +1026,124 @@ describe('gossip_run auto-path — NullProvider + claude-code host delegation', 
     const msg = buildDelegationMessage(agents, 'Review auth.ts');
     expect(msg).toContain('gemini-reviewer');
     expect(msg).toContain('Review auth.ts');
+  });
+});
+
+// ── handleDispatchSingle — native skill injection ─────────────────────────────
+//
+// Verifies that Step 1-2 of the native skill injection unification actually
+// wire loadSkills() into the dispatched agent prompt. Prior to these tests,
+// the existing suite only exercised the no-op path (skills:[] + null index),
+// so a regression in dispatch.ts's skill wiring could ship unnoticed.
+
+describe('handleDispatchSingle — native skill injection', () => {
+  let skillDir: string;
+  let previousCwd: string;
+
+  function makeSkillIndex(enabled: string[]) {
+    return {
+      getAgentSlots: (_agentId: string) => enabled.map((_, i) => ({ slot: i })),
+      getEnabledSkills: (_agentId: string) => enabled,
+      getSkillMode: (_agentId: string, _skill: string) => 'permanent' as const,
+    };
+  }
+
+  beforeEach(() => {
+    previousCwd = process.cwd();
+    skillDir = makeTmpDir('skills');
+    // loadSkills resolves via projectRoot = process.cwd(), so chdir into the
+    // tmp workspace and seed .gossip/skills/ with the test skill files.
+    mkdirSync(join(skillDir, '.gossip', 'skills'), { recursive: true });
+    process.chdir(skillDir);
+    resetCtx();
+  });
+
+  afterEach(() => {
+    restoreCtx();
+    process.chdir(previousCwd);
+    rmSync(skillDir, { recursive: true, force: true });
+  });
+
+  it('injects skill content into native agent prompt when skills are enabled', async () => {
+    writeFileSync(
+      join(skillDir, '.gossip', 'skills', 'memory-retrieval.md'),
+      '---\nname: memory-retrieval\nmode: permanent\n---\nRecall past findings before making new claims.\n',
+    );
+    ctx.mainAgent = makeMainAgent({
+      getSkillIndex: jest.fn().mockReturnValue(makeSkillIndex(['memory-retrieval'])),
+    });
+    ctx.nativeAgentConfigs.set('native-claude', {
+      model: 'claude-opus-4-5',
+      instructions: 'You are a reviewer.',
+      description: 'Native reviewer',
+      skills: ['memory-retrieval'],
+    });
+
+    const result = await handleDispatchSingle('native-claude', 'Audit the memory system');
+    const text = result.content[0].text;
+    expect(text).toContain('--- SKILLS ---');
+    expect(text).toContain('memory-retrieval');
+    expect(text).toContain('Recall past findings');
+  });
+
+  it('omits the SKILLS block when no skills are bound', async () => {
+    ctx.mainAgent = makeMainAgent({
+      getSkillIndex: jest.fn().mockReturnValue(null),
+    });
+    ctx.nativeAgentConfigs.set('native-claude', {
+      model: 'claude-opus-4-5',
+      instructions: 'You are a reviewer.',
+      description: 'Native reviewer',
+      skills: [],
+    });
+
+    const result = await handleDispatchSingle('native-claude', 'Audit memory');
+    expect(result.content[0].text).not.toContain('--- SKILLS ---');
+  });
+
+  it('places SKILLS block before CONSENSUS OUTPUT FORMAT in consensus dispatch', async () => {
+    writeFileSync(
+      join(skillDir, '.gossip', 'skills', 'memory-retrieval.md'),
+      '---\nname: memory-retrieval\nmode: permanent\n---\nRecall past findings.\n',
+    );
+    ctx.mainAgent = makeMainAgent({
+      getSkillIndex: jest.fn().mockReturnValue(makeSkillIndex(['memory-retrieval'])),
+      generateLensesForAgents: jest.fn().mockResolvedValue(new Map()),
+    });
+    ctx.nativeAgentConfigs.set('native-claude', {
+      model: 'claude-opus-4-5',
+      instructions: 'You are a reviewer.',
+      description: 'Native reviewer',
+      skills: ['memory-retrieval'],
+    });
+
+    const result = await handleDispatchConsensus([
+      { agent_id: 'native-claude', task: 'Audit memory' },
+    ]);
+    const text = result.content[0].text;
+    const skillsIdx = text.indexOf('--- SKILLS ---');
+    const consensusIdx = text.indexOf('--- CONSENSUS OUTPUT FORMAT ---');
+    expect(skillsIdx).toBeGreaterThan(-1);
+    expect(consensusIdx).toBeGreaterThan(-1);
+    expect(skillsIdx).toBeLessThan(consensusIdx);
+  });
+
+  it('truncates the agent prompt when skill content pushes it past the 30k budget', async () => {
+    // Write a skill file larger than MAX_AGENT_PROMPT_CHARS (30_000) so the
+    // assembled agentPrompt is guaranteed to trip the truncation guard.
+    const huge = '---\nname: memory-retrieval\nmode: permanent\n---\n' + 'x'.repeat(35_000);
+    writeFileSync(join(skillDir, '.gossip', 'skills', 'memory-retrieval.md'), huge);
+    ctx.mainAgent = makeMainAgent({
+      getSkillIndex: jest.fn().mockReturnValue(makeSkillIndex(['memory-retrieval'])),
+    });
+    ctx.nativeAgentConfigs.set('native-claude', {
+      model: 'claude-opus-4-5',
+      instructions: 'You are a reviewer.',
+      description: 'Native reviewer',
+      skills: ['memory-retrieval'],
+    });
+
+    const result = await handleDispatchSingle('native-claude', 'Audit memory');
+    expect(result.content[0].text).toContain('[Context truncated to fit budget]');
   });
 });

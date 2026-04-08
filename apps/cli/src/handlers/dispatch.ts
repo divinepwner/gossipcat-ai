@@ -5,7 +5,7 @@
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { CONSENSUS_OUTPUT_FORMAT } from '@gossip/orchestrator';
+import { CONSENSUS_OUTPUT_FORMAT, loadSkills } from '@gossip/orchestrator';
 import { ctx, NATIVE_TASK_TTL_MS } from '../mcp-context';
 import { evictStaleNativeTasks, persistNativeTaskMap, spawnTimeoutWatcher } from './native-tasks';
 import { persistRelayTasks } from './relay-tasks';
@@ -161,11 +161,24 @@ export async function handleDispatchSingle(
       chainContext = ctx.mainAgent.getChainContext(plan_id, step);
     }
 
+    const skillResult = loadSkills(
+      agent_id,
+      nativeConfig.skills,
+      process.cwd(),
+      ctx.mainAgent.getSkillIndex() ?? undefined,
+      task,
+    );
+
     let agentPrompt = [
       nativeConfig.instructions || '',
+      skillResult.content,
       chainContext ? `\n${chainContext}\n` : '',
       `\n---\n\nTask: ${task}`,
     ].filter(Boolean).join('').trim();
+    const MAX_AGENT_PROMPT_CHARS = 30_000;
+    if (agentPrompt.length > MAX_AGENT_PROMPT_CHARS) {
+      agentPrompt = agentPrompt.slice(0, MAX_AGENT_PROMPT_CHARS) + '\n\n[Context truncated to fit budget]';
+    }
     if (sanitizeResult.sanitized) agentPrompt = prependScopeNote(agentPrompt);
 
     // Record dispatch metadata for the post-task audit
@@ -323,9 +336,23 @@ export async function handleDispatchParallel(
       ctx.mainAgent.scopeTracker.register(def.scope, taskId);
     }
 
-    let agentPrompt = nativeConfig.instructions
-      ? `${nativeConfig.instructions}\n\n---\n\nTask: ${def.task}`
-      : def.task;
+    const skillResultP = loadSkills(
+      def.agent_id,
+      nativeConfig.skills,
+      process.cwd(),
+      ctx.mainAgent.getSkillIndex() ?? undefined,
+      def.task,
+    );
+
+    let agentPrompt = [
+      nativeConfig.instructions || '',
+      skillResultP.content,
+      `\n---\n\nTask: ${def.task}`,
+    ].filter(Boolean).join('').trim();
+    const MAX_AGENT_PROMPT_CHARS = 30_000;
+    if (agentPrompt.length > MAX_AGENT_PROMPT_CHARS) {
+      agentPrompt = agentPrompt.slice(0, MAX_AGENT_PROMPT_CHARS) + '\n\n[Context truncated to fit budget]';
+    }
     if ((def as any)._sandboxSanitized) agentPrompt = prependScopeNote(agentPrompt);
 
     recordDispatchMetadata(process.cwd(), {
@@ -475,7 +502,20 @@ export async function handleDispatchConsensus(
     const lensSection = rawLens
       ? `\n\n--- LENS ---\n${rawLens.replace(/---\s*(END )?LENS\s*---/gi, '')}\n--- END LENS ---`
       : '';
-    const agentPrompt = (nativeConfig.instructions || '') + consensusInstruction + lensSection + `\n\n---\n\nTask: ${def.task}`;
+
+    const skillResultC = loadSkills(
+      def.agent_id,
+      nativeConfig.skills,
+      process.cwd(),
+      ctx.mainAgent.getSkillIndex() ?? undefined,
+      def.task,
+    );
+
+    let agentPrompt = (nativeConfig.instructions || '') + skillResultC.content + consensusInstruction + lensSection + `\n\n---\n\nTask: ${def.task}`;
+    const MAX_AGENT_PROMPT_CHARS = 30_000;
+    if (agentPrompt.length > MAX_AGENT_PROMPT_CHARS) {
+      agentPrompt = agentPrompt.slice(0, MAX_AGENT_PROMPT_CHARS) + '\n\n[Context truncated to fit budget]';
+    }
     lines.push(`  ${taskId} → ${def.agent_id} (native — dispatch via Agent tool)`);
     nativeInstructions.push(
       `Agent(model: "${nativeConfig.model}", prompt: ${JSON.stringify(agentPrompt)}, run_in_background: true)` +
