@@ -356,6 +356,22 @@ async function doBoot() {
   // same backend instance.
   const memorySearcher = new m.MemorySearcher(process.cwd());
 
+  // Build an identity registry from agentConfigs so the self_identity tool
+  // can return runtime/provider/model for the calling agent. Native subagents
+  // (Claude Code Agent()) don't go through ToolServer, so this registry only
+  // serves relay workers — but we record both runtimes here for symmetry with
+  // the dispatch-time prompt injection.
+  const identityRegistry = new Map<string, { agent_id: string; runtime: 'native' | 'relay'; provider: string; model: string }>();
+  for (const a of agentConfigs as Array<{ id: string; provider: string; model: string; native?: boolean }>) {
+    identityRegistry.set(a.id, {
+      agent_id: a.id,
+      runtime: a.native ? 'native' : 'relay',
+      provider: a.provider,
+      model: a.model,
+    });
+  }
+  const agentLookup = (id: string) => identityRegistry.get(id);
+
   ctx.toolServer = new m.ToolServer({
     relayUrl: ctx.relay.url,
     projectRoot: process.cwd(),
@@ -363,6 +379,7 @@ async function doBoot() {
     apiKey: relayApiKey,
     allowedCallers: agentConfigs.map(a => a.id),
     memorySearcher,
+    agentLookup,
   });
   await ctx.toolServer.start();
 
@@ -391,7 +408,13 @@ async function doBoot() {
     const { existsSync, readFileSync } = require('fs');
     const { join } = require('path');
     const instructionsPath = join(process.cwd(), '.gossip', 'agents', ac.id, 'instructions.md');
-    const instructions = existsSync(instructionsPath) ? readFileSync(instructionsPath, 'utf-8') : undefined;
+    const baseInstructions = existsSync(instructionsPath) ? readFileSync(instructionsPath, 'utf-8') : '';
+    // Prepend identity block so the agent knows its own agentId/runtime/model
+    // without needing to call self_identity. self_identity remains available
+    // for re-checks after context summarization.
+    const identity = identityRegistry.get(ac.id);
+    const identityBlock = identity ? m.formatIdentityBlock(identity) + '\n' : '';
+    const instructions = (identityBlock + baseInstructions).trim() || undefined;
     const enableWebSearch = ac.preset === 'researcher' || (ac.skills ?? []).includes('research');
     const worker = new m.WorkerAgent(ac.id, llm, ctx.relay.url, m.ALL_TOOLS, instructions, enableWebSearch, relayApiKey);
     // Wire meta signal emission for ATI profiling

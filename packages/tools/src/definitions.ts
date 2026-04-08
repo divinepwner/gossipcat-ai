@@ -175,6 +175,18 @@ export const VERIFY_TOOLS: ToolDefinition[] = [
   },
 ];
 
+export const IDENTITY_TOOLS: ToolDefinition[] = [
+  {
+    name: 'self_identity',
+    description: 'Return your own identity: agent_id, runtime (native or relay), provider, and model. Use when you need to know who you are — for example, to pick the right tool variant (gossip_remember vs memory_query) or to cite your own past findings. Identity is also injected into your system prompt at dispatch time, so you usually do not need to call this.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+];
+
 export const MEMORY_TOOLS: ToolDefinition[] = [
   {
     name: 'memory_query',
@@ -190,4 +202,4 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
   },
 ];
 
-export const ALL_TOOLS: ToolDefinition[] = [...FILE_TOOLS, ...SHELL_TOOLS, ...GIT_TOOLS, ...SKILL_TOOLS, ...VERIFY_TOOLS, ...MEMORY_TOOLS];
+export const ALL_TOOLS: ToolDefinition[] = [...FILE_TOOLS, ...SHELL_TOOLS, ...GIT_TOOLS, ...SKILL_TOOLS, ...VERIFY_TOOLS, ...MEMORY_TOOLS, ...IDENTITY_TOOLS];

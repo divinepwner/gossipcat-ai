@@ -6,7 +6,18 @@ import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { CONSENSUS_OUTPUT_FORMAT, loadSkills } from '@gossip/orchestrator';
+import { formatIdentityBlock } from '@gossip/tools';
 import { ctx, NATIVE_TASK_TTL_MS } from '../mcp-context';
+
+/** Build the identity block for a native subagent dispatch. */
+function buildNativeIdentity(agentId: string, model: string): string {
+  return formatIdentityBlock({
+    agent_id: agentId,
+    runtime: 'native',
+    provider: 'anthropic',
+    model,
+  });
+}
 import { evictStaleNativeTasks, persistNativeTaskMap, spawnTimeoutWatcher } from './native-tasks';
 import { persistRelayTasks } from './relay-tasks';
 import {
@@ -171,7 +182,9 @@ export async function handleDispatchSingle(
       task,
     );
 
+    const identityBlock = buildNativeIdentity(agent_id, nativeConfig.model);
     let agentPrompt = [
+      identityBlock,
       nativeConfig.instructions || '',
       skillResult.content,
       chainContext ? `\n${chainContext}\n` : '',
@@ -348,7 +361,9 @@ export async function handleDispatchParallel(
       def.task,
     );
 
+    const parallelIdentityBlock = buildNativeIdentity(def.agent_id, nativeConfig.model);
     let agentPrompt = [
+      parallelIdentityBlock,
       nativeConfig.instructions || '',
       skillResult.content,
       `\n---\n\nTask: ${def.task}`,
@@ -527,7 +542,9 @@ export async function handleDispatchConsensus(
     const MAX_AGENT_PROMPT_CHARS = 30_000;
     const suffix = consensusInstruction + lensSection + `\n\n---\n\nTask: ${def.task}`;
     const prefixBudget = Math.max(0, MAX_AGENT_PROMPT_CHARS - suffix.length);
+    const consensusIdentityBlock = buildNativeIdentity(def.agent_id, nativeConfig.model);
     let prefix = [
+      consensusIdentityBlock,
       nativeConfig.instructions || '',
       skillResultC.content,
     ].filter(Boolean).join('').trim();

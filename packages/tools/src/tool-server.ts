@@ -26,6 +26,26 @@ export interface MemorySearcherLike {
   }>;
 }
 
+/** Identity record returned by self_identity and injected into prompts at dispatch. */
+export interface AgentIdentity {
+  agent_id: string;
+  runtime: 'native' | 'relay';
+  provider: string;
+  model: string;
+}
+
+/** Lookup callback wired by the MCP boot path; tool-server uses it for self_identity. */
+export type AgentLookup = (agentId: string) => AgentIdentity | undefined;
+
+/**
+ * Render an AgentIdentity as a markdown ## Identity block. Used by both the
+ * native dispatch path (dispatch.ts) and the relay worker bootstrap so every
+ * agent sees the same shape at the top of its system prompt.
+ */
+export function formatIdentityBlock(identity: AgentIdentity): string {
+  return `## Identity\nagent_id: ${identity.agent_id}\nruntime: ${identity.runtime}\nprovider: ${identity.provider}\nmodel: ${identity.model}\n`;
+}
+
 export interface ToolServerConfig {
   relayUrl: string;
   projectRoot: string;
@@ -34,6 +54,7 @@ export interface ToolServerConfig {
   apiKey?: string;            // Relay auth key — must match the relay's configured key
   perfWriter?: { appendSignal(signal: unknown): void };
   memorySearcher?: MemorySearcherLike;  // Injected from MCP boot path for memory_query
+  agentLookup?: AgentLookup;             // Injected from MCP boot path for self_identity
 }
 
 function truncateAtLine(text: string, maxLength: number): string {
@@ -58,6 +79,7 @@ export class ToolServer {
   private static readonly MAX_WRITTEN_FILES_PER_AGENT = 1024;
   private perfWriter?: { appendSignal(signal: unknown): void };
   private memorySearcher?: MemorySearcherLike;
+  private agentLookup?: AgentLookup;
 
   constructor(config: ToolServerConfig) {
     this.allowedCallers = config.allowedCallers ? new Set(config.allowedCallers) : null;
@@ -68,6 +90,7 @@ export class ToolServer {
     this.skillTools = new SkillTools(config.projectRoot);
     this.perfWriter = config.perfWriter;
     this.memorySearcher = config.memorySearcher;
+    this.agentLookup = config.agentLookup;
     this.agent = new GossipAgent({
       agentId: config.agentId || 'tool-server',
       relayUrl: config.relayUrl,
@@ -342,6 +365,8 @@ export class ToolServer {
         return this.handleRunTypecheck(callerId);
       case 'memory_query':
         return this.handleMemoryQuery(args as { query: string; max_results?: number | string }, callerId);
+      case 'self_identity':
+        return this.handleSelfIdentity(callerId);
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -385,6 +410,26 @@ export class ToolServer {
       lines.push('');
     }
     return lines.join('\n');
+  }
+
+  /**
+   * self_identity — return the calling agent's runtime identity. Always
+   * resolves the callerId from envelope.sid (never trusts a body field), so
+   * agents cannot impersonate each other to read foreign identity. Falls back
+   * to a minimal record when no agentLookup is wired.
+   */
+  private async handleSelfIdentity(callerId?: string): Promise<string> {
+    if (!callerId) {
+      return JSON.stringify({ error: 'self_identity requires a caller identity (envelope.sid)' });
+    }
+    if (!this.agentLookup) {
+      return JSON.stringify({ agent_id: callerId, runtime: 'relay', provider: 'unknown', model: 'unknown', note: 'tool-server has no agentLookup injected' });
+    }
+    const identity = this.agentLookup(callerId);
+    if (!identity) {
+      return JSON.stringify({ agent_id: callerId, runtime: 'relay', provider: 'unknown', model: 'unknown', note: 'no registry entry' });
+    }
+    return JSON.stringify(identity);
   }
 
   private async handleVerifyWrite(callerId: string, testFile?: string): Promise<string> {

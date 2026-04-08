@@ -6,12 +6,12 @@ description: Call gossip_remember BEFORE reviewing — recall prior findings on 
 
 # STEP 0 — DO THIS BEFORE READING ANY CODE
 
-Call your memory-recall tool with the most specific identifier in the task: a file path, function name, module, or commit hash. The tool name depends on your runtime:
+Call your memory-recall tool with the most specific identifier in the task: a file path, function name, module, or commit hash. The tool name depends on your runtime, which is in the `## Identity` block at the top of your system prompt:
 
-- **Native subagents (Claude Code Agent())**: call `gossip_remember(agent_id, query)` (fully qualified `mcp__gossipcat__gossip_remember`)
-- **Relay workers (gemini-*, sonnet-*, openclaw-*)**: call `memory_query(query)` — your own agent identity is inferred from the relay envelope, you do not pass agent_id
+- **`runtime: native`** → call `gossip_remember(agent_id, query)` (fully qualified `mcp__gossipcat__gossip_remember`). Pass your own `agent_id` from the Identity block.
+- **`runtime: relay`** → call `memory_query(query)`. Your identity is inferred from the relay envelope; do NOT pass agent_id.
 
-Both tools hit the same backend and return the same markdown shape. This is your first action, before any file_read, before any analysis. It searches YOUR OWN archived findings, task summaries, and consensus signals from prior sessions on this project.
+If the Identity block is missing or you need to re-check after a context summary, call `self_identity()` to get a JSON record of your agent_id, runtime, provider, and model. Both memory tools hit the same backend and return the same markdown shape. This is your first action, before any file_read, before any analysis. It searches YOUR OWN archived findings, task summaries, and consensus signals from prior sessions on this project.
 
 Skipping this step means you re-discover bugs you already filed, contradict your own prior verdict, or miss context that would change a finding's severity. Past-you already did the work — use it.
 
