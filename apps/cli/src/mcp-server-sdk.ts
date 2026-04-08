@@ -2906,7 +2906,10 @@ server.tool(
     const { promisify } = await import('node:util');
     const execFile = promisify(execFileCb);
 
-    // 1. Dedup check — search open issues for the first 50 chars of description
+    // 1. Dedup check — search open issues for the first 50 chars of description.
+    // On any failure other than successful "no matches", ABORT rather than silently
+    // bypassing dedup: a transient gh auth/network error must not let duplicate
+    // issues slip through.
     try {
       const searchResult = await execFile('gh', [
         'issue', 'list',
@@ -2916,7 +2919,11 @@ server.tool(
         '--json', 'number,title,url',
         '--limit', '5',
       ]);
-      const issues: Array<{ number: number; title: string; url: string }> = JSON.parse(searchResult.stdout);
+      const stdout = searchResult.stdout.trim();
+      if (!stdout) {
+        return { content: [{ type: 'text' as const, text: 'Dedup check returned empty stdout from gh — aborting to avoid filing a duplicate. Re-run once gh is healthy.' }] };
+      }
+      const issues: Array<{ number: number; title: string; url: string }> = JSON.parse(stdout);
       if (issues.length > 0) {
         const match = issues[0];
         return { content: [{ type: 'text' as const, text: `Deduped from: ${match.title}\n${match.url}` }] };
@@ -2925,7 +2932,9 @@ server.tool(
       if (err.code === 'ENOENT') {
         return { content: [{ type: 'text' as const, text: 'gh CLI not installed or not authenticated — install gh and run `gh auth login`' }] };
       }
-      // Non-zero exit from gh during search — fall through and try to create anyway
+      // Any other failure (auth expired, network error, non-JSON stdout): abort.
+      // Do NOT fall through to create — that would bypass the dedup contract.
+      return { content: [{ type: 'text' as const, text: `Dedup check failed (${err.message ?? 'unknown error'}). Not filing to avoid duplicates. Run \`gh auth status\` and retry.` }] };
     }
 
     // 2. Gather context (each wrapped in try/catch, swallow errors)
@@ -2943,15 +2952,11 @@ server.tool(
       gitHead = result.stdout.trim();
     } catch { /* swallow */ }
 
-    let recentLog = '';
-    try {
-      const { readFileSync } = await import('fs');
-      const { join } = await import('path');
-      const raw = readFileSync(join(process.cwd(), '.gossip', 'mcp.log'), 'utf-8');
-      recentLog = raw.split('\n').slice(-30).join('\n');
-    } catch { /* swallow */ }
-
     // 3. Build issue body
+    // NOTE: .gossip/mcp.log content is intentionally NOT embedded — it can contain
+    // tool arguments, relay tokens, or worker stdout with sensitive strings, and
+    // the issue body is public. If a reporter wants log excerpts, they should
+    // quote the specific lines in the description field (which they wrote themselves).
     const body = `## Description
 ${description}
 
@@ -2959,11 +2964,6 @@ ${description}
 - gossipcat version: ${version}
 - git HEAD: ${gitHead}
 - task_id: ${task_id ?? 'n/a'}
-
-## Recent log (last 30 lines of .gossip/mcp.log)
-\`\`\`
-${recentLog}
-\`\`\`
 
 ---
 Filed via gossip_bug_feedback`;
