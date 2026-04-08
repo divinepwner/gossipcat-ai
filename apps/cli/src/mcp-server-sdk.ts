@@ -2777,6 +2777,7 @@ server.tool(
       { name: 'gossip_tools', desc: 'List available tools (this command).' },
       { name: 'gossip_progress', desc: 'Show active task progress and consensus phase. No params.' },
       { name: 'gossip_format', desc: 'Return the CONSENSUS_OUTPUT_FORMAT block to paste into ad-hoc Agent() prompts so native subagents emit parseable <agent_finding> tags.' },
+      { name: 'gossip_bug_feedback', desc: 'File a GitHub issue on the gossipcat repo from an in-session bug report. Dedupes against open issues.' },
     ];
     const list = tools.map(t => `- ${t.name}: ${t.desc}`).join('\n');
     return { content: [{ type: 'text' as const, text: `Gossipcat Tools (${tools.length}):\n\n${list}` }] };
@@ -2889,6 +2890,104 @@ server.tool(
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
     };
+  },
+);
+
+// ── Tool: gossip_bug_feedback — file a GitHub issue from an in-session bug report ───
+server.tool(
+  'gossip_bug_feedback',
+  'File a GitHub issue on the gossipcat repo from an in-session bug report. Dedupes against open issues. Requires authenticated gh CLI.',
+  {
+    description: z.string().min(1).describe('Bug description — what went wrong, what you expected, what happened instead'),
+    task_id: z.string().optional().describe('Optional task ID to attach for context'),
+  },
+  async ({ description, task_id }) => {
+    const { execFile: execFileCb } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const execFile = promisify(execFileCb);
+
+    // 1. Dedup check — search open issues for the first 50 chars of description
+    try {
+      const searchResult = await execFile('gh', [
+        'issue', 'list',
+        '--repo', 'ataberk-xyz/gossipcat',
+        '--state', 'open',
+        '--search', description.slice(0, 50),
+        '--json', 'number,title,url',
+        '--limit', '5',
+      ]);
+      const issues: Array<{ number: number; title: string; url: string }> = JSON.parse(searchResult.stdout);
+      if (issues.length > 0) {
+        const match = issues[0];
+        return { content: [{ type: 'text' as const, text: `Deduped from: ${match.title}\n${match.url}` }] };
+      }
+    } catch (err: any) {
+      if (err.code === 'ENOENT') {
+        return { content: [{ type: 'text' as const, text: 'gh CLI not installed or not authenticated — install gh and run `gh auth login`' }] };
+      }
+      // Non-zero exit from gh during search — fall through and try to create anyway
+    }
+
+    // 2. Gather context (each wrapped in try/catch, swallow errors)
+    let version = 'unknown';
+    try {
+      const { readFileSync } = await import('fs');
+      const { join } = await import('path');
+      const pkgRaw = readFileSync(join(process.cwd(), 'package.json'), 'utf-8');
+      version = JSON.parse(pkgRaw).version ?? 'unknown';
+    } catch { /* swallow */ }
+
+    let gitHead = 'unknown';
+    try {
+      const result = await execFile('git', ['rev-parse', '--short', 'HEAD']);
+      gitHead = result.stdout.trim();
+    } catch { /* swallow */ }
+
+    let recentLog = '';
+    try {
+      const { readFileSync } = await import('fs');
+      const { join } = await import('path');
+      const raw = readFileSync(join(process.cwd(), '.gossip', 'mcp.log'), 'utf-8');
+      recentLog = raw.split('\n').slice(-30).join('\n');
+    } catch { /* swallow */ }
+
+    // 3. Build issue body
+    const body = `## Description
+${description}
+
+## Context
+- gossipcat version: ${version}
+- git HEAD: ${gitHead}
+- task_id: ${task_id ?? 'n/a'}
+
+## Recent log (last 30 lines of .gossip/mcp.log)
+\`\`\`
+${recentLog}
+\`\`\`
+
+---
+Filed via gossip_bug_feedback`;
+
+    // 4. Build title
+    const title = '[bug] ' + description.replace(/\s+/g, ' ').slice(0, 70);
+
+    // 5. Create the issue
+    try {
+      const createResult = await execFile('gh', [
+        'issue', 'create',
+        '--repo', 'ataberk-xyz/gossipcat',
+        '--title', title,
+        '--body', body,
+      ]);
+      const lines = createResult.stdout.split('\n').filter(l => l.trim());
+      const url = lines[lines.length - 1] ?? createResult.stdout.trim();
+      return { content: [{ type: 'text' as const, text: `Created: ${url}` }] };
+    } catch (err: any) {
+      if (err.code === 'ENOENT') {
+        return { content: [{ type: 'text' as const, text: 'gh CLI not installed or not authenticated — install gh and run `gh auth login`' }] };
+      }
+      return { content: [{ type: 'text' as const, text: `Failed to create issue: ${err.message}\n${err.stderr ?? ''}` }] };
+    }
   },
 );
 

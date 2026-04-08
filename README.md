@@ -458,6 +458,7 @@ These tools are called by the internal LLM (the orchestrator — Claude Code wit
 | `gossip_progress` | Check in-progress task status |
 | `gossip_tools` | List all available tools |
 | `gossip_update` | Check for or apply gossipcat updates from npm |
+| `gossip_bug_feedback` | File a GitHub issue on the gossipcat repo from an in-session bug report |
 
 <br/>
 
