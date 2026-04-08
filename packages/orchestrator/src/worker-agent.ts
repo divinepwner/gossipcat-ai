@@ -111,6 +111,20 @@ export class WorkerAgent {
   private instructions: string;
   private gossipQueue: string[] = [];
   private static readonly MAX_GOSSIP_QUEUE = 20;
+
+  /**
+   * Per-task call budgets for introspection tools that have no business
+   * being called repeatedly. memory_query is a one-shot recall (the
+   * memory-retrieval skill says "one call per task is the floor"),
+   * self_identity is a fact lookup. Without a cap, an agent that gets
+   * confused can spin a turn loop calling these and burn the entire
+   * MAX_TOOL_TURNS budget on noise. Reset at the top of executeTask.
+   */
+  private toolCallBudget: Map<string, number> = new Map();
+  private static readonly TOOL_CALL_BUDGETS: Record<string, number> = {
+    memory_query: 5,
+    self_identity: 3,
+  };
   private pendingToolCalls: Map<string, {
     resolve: (result: string) => void;
     reject: (err: Error) => void;
@@ -194,6 +208,7 @@ export class WorkerAgent {
 
     yield logAndYield(`executeTask started — task: "${task.slice(0, 100)}..." webSearch=${this.webSearchEnabled} tools=${this.tools.length}`);
     this.gossipQueue = []; // clear gossip from previous task
+    this.toolCallBudget = new Map(); // reset per-tool call budgets per task
     const startTime = Date.now();
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
@@ -384,6 +399,16 @@ export class WorkerAgent {
 
   /** Send RPC_REQUEST to tool-server via relay */
   private async callTool(name: string, args: Record<string, unknown>): Promise<string> {
+    // Per-task rate limit for introspection tools — see toolCallBudget doc.
+    const cap = WorkerAgent.TOOL_CALL_BUDGETS[name];
+    if (cap !== undefined) {
+      const used = this.toolCallBudget.get(name) ?? 0;
+      if (used >= cap) {
+        return `Error: ${name} per-task budget exhausted (${cap} calls). The result of your previous ${name} call is in conversation history — re-read it instead of calling again.`;
+      }
+      this.toolCallBudget.set(name, used + 1);
+    }
+
     const requestId = randomUUID();
 
     const resultPromise = new Promise<string>((resolve, reject) => {

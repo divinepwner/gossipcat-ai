@@ -88,7 +88,21 @@ export function resolveVerdict(
   const elapsedMs = nowMs - boundAtMs;
   const timedOut = elapsedMs >= TIMEOUT_MS;
 
-  // Pending: not enough evidence yet
+  // Pending: not enough evidence yet.
+  //
+  // Per consensus 9369ebfc-a3654b51 f5, the `pending` return covers two
+  // distinct sub-cases that callers may want to distinguish at the dashboard
+  // layer (without growing the verdict enum here):
+  //   (a) postTotal === 0 — zero history. Skill was bound but has not fired
+  //       on any dispatch yet. Common for newly-bound skills before the
+  //       first relevant task arrives.
+  //   (b) 0 < postTotal < MIN_EVIDENCE — some history, but below the
+  //       statistical gate (MIN_EVIDENCE = 120). Skill is active but
+  //       hasn't accumulated enough signals for the z-test to fire.
+  //
+  // Both surface as `pending` because the action is the same: wait. The
+  // distinction is informational only — dashboards can compute it from
+  // `delta.correct + delta.hallucinated` if needed.
   if (postTotal < MIN_EVIDENCE) {
     if (timedOut) {
       // If the skill was previously inconclusive, it had activity at some point —
@@ -129,7 +143,18 @@ export function resolveVerdict(
     };
   }
 
-  // Inconclusive: write a second snapshot, increment strikes
+  // Inconclusive: write a second snapshot, increment strikes.
+  //
+  // Per consensus 9369ebfc-a3654b51 f4: at typical signal volumes
+  // (10-20 category signals per consensus round, ~1 round/day), reaching
+  // strikes >= 3 requires ~360 fresh category signals across three
+  // independent MIN_EVIDENCE windows (~6-12 months for narrow categories)
+  // because inconclusive_at rotates the anchor on every strike. In practice
+  // the 90-day timeout fires `insufficient_evidence` long before strikes
+  // accumulate, so flagged_for_manual_review is rarely reached. This is a
+  // known structural property, not a bug — flagging requires strong evidence
+  // by design. If we want manual review at lower volumes, the right lever is
+  // lowering MIN_EVIDENCE per category, not removing strike rotation.
   const strikes = (snapshot.inconclusive_strikes ?? 0) + 1;
   if (strikes >= 3) {
     return {

@@ -119,7 +119,14 @@ export class PerformanceReader {
 
   /**
    * Returns count of (correct, hallucinated) signals for an agent in a given
-   * category, where signal timestamp > sinceMs.
+   * category, where signal timestamp >= sinceMs.
+   *
+   * Uses readSignalsRaw() (no 30d expiry) on purpose: effectiveness checks
+   * are a *strategic* long-term metric — has this skill been useful over its
+   * entire lifetime? — while dispatch weight (getScores → readSignals) is a
+   * *tactical* short-term metric. Different windows by design. Per consensus
+   * 9369ebfc-a3654b51 finding 1, this asymmetry is intentional and should
+   * not be unified. See readSignalsRaw doc.
    */
   getCountersSince(agentId: string, category: string, sinceMs: number): CategoryCounters {
     const allSignals = this.readSignalsRaw();
@@ -147,6 +154,12 @@ export class PerformanceReader {
     return counters;
   }
 
+  /**
+   * Reads all consensus signals without applying the 30-day expiry that
+   * readSignals() uses. Intentionally distinct from readSignals: effectiveness
+   * scoring needs lifetime history, dispatch weight needs the recent window.
+   * Don't unify these — see getCountersSince doc and consensus 9369ebfc-a3654b51 f1.
+   */
   private readSignalsRaw(): ConsensusSignal[] {
     if (!existsSync(this.filePath)) return [];
     try {
