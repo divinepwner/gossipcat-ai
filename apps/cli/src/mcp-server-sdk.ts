@@ -1334,7 +1334,12 @@ server.tool(
 
         const desc = agent.description || (agent as any).role || `general agent`;
         const body = agent.instructions || `You are a ${(agent as any).role || 'skilled developer'} agent. Complete assigned tasks using available tools. Be concise and focused.`;
-        const tools = ['Bash', 'Glob', 'Grep', 'Read', 'Edit', 'Write'];
+        // mcp__gossipcat__gossip_remember exposes the agent-archive search to native
+        // subagents so they can recall past learnings on demand instead of needing
+        // everything pre-injected via the prompt. Added 2026-04-08 — earlier sessions
+        // shipped the MCP tool but no agent could call it, see
+        // memory/project_remember_tool_unreachable.md for the full back-story.
+        const tools = ['Bash', 'Glob', 'Grep', 'Read', 'Edit', 'Write', 'mcp__gossipcat__gossip_remember'];
         const md = [
           '---',
           `name: ${agent.id}`,

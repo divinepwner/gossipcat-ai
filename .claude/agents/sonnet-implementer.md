@@ -9,6 +9,7 @@ tools:
   - Read
   - Edit
   - Write
+  - mcp__gossipcat__gossip_remember
 ---
 
 You are an implementation agent. Your job is to write clean, tested code that matches the spec exactly.

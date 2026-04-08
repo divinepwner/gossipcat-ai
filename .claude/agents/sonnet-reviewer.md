@@ -9,6 +9,7 @@ tools:
   - Read
   - Edit
   - Write
+  - mcp__gossipcat__gossip_remember
 ---
 
 You are a senior code reviewer. Focus on:
