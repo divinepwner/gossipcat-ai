@@ -7,6 +7,7 @@ import { ShellTools } from './shell-tools';
 import { GitTools } from './git-tools';
 import { SkillTools } from './skill-tools';
 import { Sandbox } from './sandbox';
+import { isKnownTool, validateToolArgs } from './tool-schemas';
 import { resolve, dirname, basename, join } from 'path';
 import { realpathSync, existsSync } from 'fs';
 
@@ -318,6 +319,15 @@ export class ToolServer {
   }
 
   async executeTool(name: string, args: Record<string, unknown>, callerId?: string): Promise<string> {
+    // Runtime arg validation per consensus a8911b95:f1 — every dispatched tool
+    // gets its args parsed by a Zod schema before any handler sees them, so
+    // missing fields, wrong types, and oversized payloads fail fast at the
+    // entry point instead of crashing inside an `as` cast.
+    if (!isKnownTool(name)) {
+      throw new Error(`Unknown tool: ${name}`);
+    }
+    args = validateToolArgs(name, args);
+
     // Fail-closed: write agents with no registered scope/root are rejected
     if (callerId && this.writeAgents.has(callerId)) {
       if (!this.agentScopes.has(callerId) && !this.agentRoots.has(callerId)) {
@@ -400,6 +410,8 @@ export class ToolServer {
       case 'self_identity':
         return this.handleSelfIdentity(callerId);
       default:
+        // Unreachable: isKnownTool gate at the top of executeTool rejects
+        // unknown names before validation. Kept for type-narrowing.
         throw new Error(`Unknown tool: ${name}`);
     }
   }

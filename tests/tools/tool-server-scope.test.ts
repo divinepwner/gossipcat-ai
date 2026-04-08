@@ -199,6 +199,44 @@ describe('ToolServer scope enforcement', () => {
     });
   });
 
+  describe('runtime arg validation', () => {
+    it('rejects unknown tool name', async () => {
+      await expect(
+        server.executeTool('not_a_tool', { x: 1 })
+      ).rejects.toThrow(/Unknown tool/);
+    });
+
+    it('rejects file_write missing required `content` field', async () => {
+      await expect(
+        server.executeTool('file_write', { path: 'foo.ts' })
+      ).rejects.toThrow(/Invalid args for tool "file_write".*content/);
+    });
+
+    it('rejects file_read with non-string path', async () => {
+      await expect(
+        server.executeTool('file_read', { path: 123 })
+      ).rejects.toThrow(/Invalid args for tool "file_read"/);
+    });
+
+    it('rejects file_write with empty path', async () => {
+      await expect(
+        server.executeTool('file_write', { path: '', content: 'x' })
+      ).rejects.toThrow(/Invalid args for tool "file_write".*path/);
+    });
+
+    it('rejects shell_exec args array of non-strings', async () => {
+      await expect(
+        server.executeTool('shell_exec', { command: 'ls', args: [1, 2, 3] })
+      ).rejects.toThrow(/Invalid args for tool "shell_exec"/);
+    });
+
+    it('rejects unknown extra field via .strict()', async () => {
+      await expect(
+        server.executeTool('file_read', { path: 'foo.ts', evil: 'extra' })
+      ).rejects.toThrow(/Invalid args for tool "file_read"/);
+    });
+  });
+
   describe('release', () => {
     it('released agents bypass enforcement', async () => {
       server.assignScope('agent-1', 'packages/relay/');
