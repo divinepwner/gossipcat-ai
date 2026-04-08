@@ -27,6 +27,27 @@ to see what was dispatched and track task IDs for progress checks.
 results. UNVERIFIED means the cross-reviewer couldn't check — you can and must. Do not
 show raw consensus results with unexamined UNVERIFIED findings.
 
+**Before acting on any backlog item from memory:** Your FIRST action is a gossipcat
+research dispatch, not manual Read/Grep. Backlog memories decay fast — an item described
+as "not shipped" may already be ~90% built by prior sessions. Dispatch first:
+
+```
+gossip_run(agent_id: "auto", task: "Audit <backlog item>: what's already in the code,
+  what's actually missing, what the smallest useful fix would be")
+```
+
+Only after the dispatch report is back, decide whether to edit code, file a new bug, or
+mark the memory SHIPPED. This is especially critical when the memory file shows a
+`stale memory` warning from the auto-memory system.
+
+**Exceptions:** trivially small fixes already located in the current conversation (under
+10 lines, exact file:line already known) and items fresh from the current session.
+
+**Why this rule exists:** in session 2026-04-08, the Gemini quota watcher backlog item
+was audited manually and took ~10 Grep/Read calls to discover that 90% of the
+infrastructure was already shipped in prior sessions. A 30-second research dispatch
+would have produced the same answer. See `feedback_dispatch_before_backlog_audit.md`.
+
 **Resolving findings in the dashboard:** When you record ANY signal — not just
 UNVERIFIED resolutions — you MUST include `finding_id`. The format is
 `<consensus_id>:<finding_id>` (e.g., `b81956b2-e0fa4ea4:sonnet-reviewer:f1`).
