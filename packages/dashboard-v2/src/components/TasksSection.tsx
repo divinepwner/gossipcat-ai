@@ -1,5 +1,6 @@
 import type { TasksData } from '@/lib/types';
 import { timeAgo } from '@/lib/utils';
+import { EmptyState } from './EmptyState';
 
 const PAGE_SIZE = 8;
 
@@ -26,17 +27,20 @@ export function TasksSection({ tasks }: TasksSectionProps) {
     <section className="flex h-full flex-col">
       <div className="mb-3 flex items-center justify-between">
         <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-foreground">
-          Tasks <span className="text-primary">{tasks.total}</span>
+          Tasks <span className="text-foreground">{tasks.total}</span>
         </h2>
         {hasMore && (
-          <a href="/dashboard/tasks" className="font-mono text-xs text-muted-foreground transition hover:text-primary">
+          <a href="/dashboard/tasks" className="font-mono text-xs text-muted-foreground transition hover:text-foreground">
             view all
           </a>
         )}
       </div>
       <div className="flex-1 rounded-md border border-border/40 bg-card/80">
         {visible.length === 0 ? (
-          <div className="py-6 text-center text-xs text-muted-foreground">No tasks yet.</div>
+          <EmptyState
+            title="No tasks yet"
+            hint="Dispatch with gossip_run to populate this view."
+          />
         ) : (
           visible.map((task, i) => (
             <div

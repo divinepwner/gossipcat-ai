@@ -55,16 +55,22 @@ export function ActiveTasksBanner({ onCountChange }: { onCountChange?: (n: numbe
   if (live.length === 0) return null;
 
   return (
-    <div className="rounded-lg border border-unverified/20 bg-unverified/5 px-4 py-2.5">
-      {/* Header */}
+    <div className="rounded-lg border border-border bg-card/60 px-4 py-2.5">
+      {/* Header — uses the same confirmed-green LIVE vocabulary as SystemPulse
+          and TopBar. The previous unverified-yellow treatment collided with
+          actual "unverified finding" counts on the same page, causing users
+          to conflate running-task status with review-state. */}
       <div className="mb-2 flex items-center gap-2">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-unverified" />
-        <span className="font-mono text-xs font-bold text-unverified">
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-confirmed shadow-[0_0_6px_rgba(52,211,153,0.5)]" />
+        <span className="font-mono text-xs font-bold uppercase tracking-widest text-foreground">
+          Live
+        </span>
+        <span className="font-mono text-[11px] text-muted-foreground">
           {live.length} active
         </span>
         {staleCount > 0 && (
           <span className="font-mono text-[10px] text-muted-foreground/50">
-            + {staleCount} stale
+            · {staleCount} stale
           </span>
         )}
       </div>
@@ -79,7 +85,7 @@ export function ActiveTasksBanner({ onCountChange }: { onCountChange?: (n: numbe
             <span className="min-w-0 truncate text-[11px] text-muted-foreground">
               {t.task}
             </span>
-            <span className="font-mono text-[11px] text-unverified whitespace-nowrap">
+            <span className="font-mono text-[11px] text-muted-foreground whitespace-nowrap tabular-nums">
               {elapsed(t.startedAt)}
             </span>
           </div>

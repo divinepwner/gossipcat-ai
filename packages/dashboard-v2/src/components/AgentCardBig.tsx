@@ -1,6 +1,6 @@
 import type { AgentData } from '@/lib/types';
 import { NeuralAvatar } from './NeuralAvatar';
-import { agentColor, timeAgo } from '@/lib/utils';
+import { timeAgo } from '@/lib/utils';
 
 interface AgentCardBigProps {
   agent: AgentData;
@@ -24,7 +24,6 @@ function accTier(a: number): 'good' | 'mid' | 'low' {
 
 export function AgentCardBig({ agent }: AgentCardBigProps) {
   const s = agent.scores;
-  const color = agentColor(agent.id);
   const lastTime = agent.lastTask?.timestamp ? timeAgo(agent.lastTask.timestamp) : '';
 
   const wt = weightTier(s.dispatchWeight);
@@ -40,28 +39,23 @@ export function AgentCardBig({ agent }: AgentCardBigProps) {
   return (
     <a
       href={`/dashboard/agent/${encodeURIComponent(agent.id)}`}
-      className="group relative block rounded-xl border border-border bg-gradient-to-br from-card to-card/50 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_2px_8px_rgba(0,0,0,0.35)] transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:from-card/90 hover:to-card/40 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_10px_28px_rgba(0,0,0,0.55),0_0_0_1px_rgba(117,221,221,0.14)]"
+      className="group relative block rounded-xl border border-border bg-card p-4 transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:bg-card/90"
     >
-      {/* Top inner highlight line */}
-      <span className="pointer-events-none absolute inset-x-0 top-0 h-px rounded-t-xl bg-gradient-to-r from-transparent via-white/12 to-transparent" />
+      {/* Flatten pass: the card used to layer gradient + inset highlight line
+          + outer shadow + hover ring + per-agent avatar halo blur, which felt
+          skeuomorphic and fought the metric bars for attention. Single card
+          background + subtle hover lift reads cleaner in the 2x2 hero grid. */}
       <div className="mb-3.5 flex items-center gap-3">
-        {/* Avatar with halo glow */}
         <div className="relative shrink-0">
-          <div
-            className="absolute -inset-2 rounded-full opacity-[0.18] blur-xl transition group-hover:opacity-30"
-            style={{ background: color }}
+          <NeuralAvatar
+            agentId={agent.id}
+            size={60}
+            animate={agent.online}
+            signals={s.signals}
+            accuracy={s.accuracy}
+            uniqueness={s.uniqueness}
+            impact={s.impactScore}
           />
-          <div className="relative">
-            <NeuralAvatar
-              agentId={agent.id}
-              size={60}
-              animate={agent.online}
-              signals={s.signals}
-              accuracy={s.accuracy}
-              uniqueness={s.uniqueness}
-              impact={s.impactScore}
-            />
-          </div>
         </div>
 
         {/* Name + meta — full remaining width */}
@@ -90,8 +84,8 @@ export function AgentCardBig({ agent }: AgentCardBigProps) {
         </div>
       </div>
 
-      {/* Metric bars panel — inset/recessed */}
-      <div className="space-y-2 rounded-lg border border-border/40 bg-background/50 px-3.5 py-3 shadow-[inset_0_1px_3px_rgba(0,0,0,0.35)]">
+      {/* Metric bars — neutral inset panel without the extra shadow layer */}
+      <div className="space-y-2 rounded-lg border border-border/30 bg-background/40 px-3.5 py-3">
         <BarRow
           label="accuracy"
           value={s.accuracy}

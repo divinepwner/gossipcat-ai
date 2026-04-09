@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { MemoryFile } from '@/lib/types';
+import { EmptyState } from './EmptyState';
 
 interface RecentMemoriesProps {
   memories: MemoryFile[];
@@ -64,10 +65,15 @@ export function RecentMemories({ memories }: RecentMemoriesProps) {
   return (
     <section className="flex h-full flex-col">
       <h2 className="mb-3 font-mono text-xs font-bold uppercase tracking-widest text-foreground">
-        Recent Memories <span className="text-primary">{unique.length}</span>
+        Recent Memories <span className="text-foreground">{unique.length}</span>
       </h2>
       {display.length === 0 ? (
-        <div className="flex-1 py-6 text-center text-sm text-muted-foreground">No memories yet.</div>
+        <div className="flex-1">
+          <EmptyState
+            title="No memories yet"
+            hint="Memories populate after gossip_session_save() or consensus rounds."
+          />
+        </div>
       ) : (
         <div className="flex-1 rounded-md border border-border/40 bg-card/80">
           {display.map((mem, i) => {

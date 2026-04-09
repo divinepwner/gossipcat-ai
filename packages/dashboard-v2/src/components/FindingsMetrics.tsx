@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import type { ConsensusData, ConsensusReportsData, ConsensusReportFinding, ConsensusReport } from '@/lib/types';
 import { api } from '@/lib/api';
 import { timeAgo, cleanFindingTags, agentInitials, agentColor } from '@/lib/utils';
+import { EmptyState } from './EmptyState';
 
 interface FindingsMetricsProps {
   consensus: ConsensusData;
@@ -387,7 +388,10 @@ export function FindingsMetrics({ consensus, reports, showAll = false, hideHeade
           )}
         </div>
       ) : runs.length === 0 ? (
-        <div className="py-8 text-center text-sm text-muted-foreground">No consensus runs yet.</div>
+        <EmptyState
+          title="No consensus runs yet"
+          hint="Dispatch a consensus round with gossip_dispatch to populate this view."
+        />
       ) : (
         <div className="space-y-2">
           {runs.map((run, i) => {
