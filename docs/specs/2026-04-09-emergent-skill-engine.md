@@ -156,16 +156,19 @@ Approvals are not persisted as signals. The bind itself is the record of approva
 |---|---|
 | `packages/orchestrator/src/skill-profiler.ts` (reads `agent-performance.jsonl` only — skips `consensus-reports/*.json` per opus, severity-gated cluster_density per sonnet) | ~250 |
 | Reserved-names validator at proposal-assembly time (drops rejected proposals before stdout/persist; emits `proposal_rejected` signal with category but not name) | ~20 |
-| Interactive validation step (top-N **per invocation**, not per agent; surfaces structured questions) | ~80 |
+| Interactive validation step (top-N **per invocation**, not per agent; `interactive: false` flag for non-interactive mode per persona tunables) | ~90 |
 | New `.gossip/proposal-feedback.jsonl` + `ProposalFeedbackReader` (separate from `PerformanceReader`) | ~60 |
 | `ProposalSignal` types — rename / reject / defer / rejection_retracted only. **No `proposal_approved`.** | ~25 |
-| Handler additions: `gossip_skills(action: "profile" \| "review-all-proposals" \| "archive-proposals" \| "retract-rejection")` | ~50 |
+| Handler additions in `apps/cli/src/mcp-server-sdk.ts:2295` (not a dedicated file — the `gossip_skills` tool lives inline alongside existing `list`/`bind`/`unbind`/`build`/`develop` actions): `profile`, `review-all-proposals`, `archive-proposals`, `retract-rejection` | ~50 |
+| `persona_tunables` config plumbing (reader + default values + type definition) | ~40 |
 | `.gossip/proposals/` and `.gossip/proposal-feedback.jsonl` added to `.gitignore` | ~2 |
-| **Total PR A** | **~487** |
+| **Total PR A** | **~537** |
 
-**Outputs:** `SkillProposal[]` JSON to stdout AND `.gossip/proposals/<session-id>.json`. 30-day retention on proposal files, pruneable via `gossip_skills(action: "archive-proposals")`.
+**Outputs:** `SkillProposal[]` JSON to stdout AND `.gossip/proposals/<session-id>.json`. Mode-aware retention — `permanent` proposals default to 365 days (kernel cycles), `contextual`/`calibration` default to 30 days. All tunable via `persona_tunables.proposal_retention_days`. Pruneable via `gossip_skills(action: "archive-proposals")`.
 
 **No auto-binding anywhere in PR A.** Proposals are advisory. Acceptance is human-gated via the interactive validation step or via a future PR.
+
+**⚠ PR A → PR B dependency (load-bearing).** PR A's interactive validation surfaces concrete skill names like `layerzero-oft-semantics` for approval. But `skill-engine.ts:217` still uses `normalizeSkillName(category)` as the filename until PR B refactors it — a user who approves `layerzero-oft-semantics` in PR A cannot actually bind it until PR B lands. PR A is advisory-only by design, but this must be signaled in the interactive prompt (e.g. "approved, will bind after PR B ships"). PR B should land within days of PR A, not weeks, to prevent proposal-approval drift.
 
 ### PR B — multi-skill filename refactor
 
