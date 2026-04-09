@@ -1,3 +1,5 @@
+import { EmptyState } from './EmptyState';
+
 interface CategoryStrengthsProps {
   /** Raw severity-weighted accumulator from performance-reader. Unbounded — used as sort fallback only. */
   strengths: Record<string, number>;
@@ -25,9 +27,11 @@ export function CategoryStrengths({ strengths, accuracy }: CategoryStrengthsProp
 
   if (entries.length === 0) {
     return (
-      <div className="py-4 text-center text-xs text-muted-foreground">
-        No category data yet.
-      </div>
+      <EmptyState
+        title="No category data yet"
+        hint="Category signals accrue after the first consensus round."
+        compact
+      />
     );
   }
 

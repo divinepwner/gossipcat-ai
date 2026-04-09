@@ -4,7 +4,7 @@ import { NeuralAvatar } from './NeuralAvatar';
 import { CategoryStrengths } from './CategoryStrengths';
 import { SignalTimeline } from './SignalTimeline';
 import { TaskRow } from './TaskRow';
-import { agentColor, timeAgo, cleanFindingTags } from '@/lib/utils';
+import { timeAgo, cleanFindingTags } from '@/lib/utils';
 import type { AgentData, TasksData, ConsensusData, MemoryData, MemoryFile } from '@/lib/types';
 
 interface AgentPageProps {
@@ -36,7 +36,6 @@ export function AgentPage({ agentId, agents, tasks, consensus }: AgentPageProps)
   }
 
   const s = agent.scores;
-  const color = agentColor(agent.id);
   const agentTasks = tasks?.items.filter(t => t.agentId === agentId) || [];
   const agentRuns = consensus?.runs.filter(r => r.agents.includes(agentId)) || [];
 
@@ -92,22 +91,20 @@ export function AgentPage({ agentId, agents, tasks, consensus }: AgentPageProps)
         </div>
       )}
 
-      {/* Header — v3 card style */}
-      <div className="relative mb-6 rounded-xl border border-border bg-gradient-to-br from-card to-card/50 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_2px_8px_rgba(0,0,0,0.35)]">
-        <span className="pointer-events-none absolute inset-x-0 top-0 h-px rounded-t-xl bg-gradient-to-r from-transparent via-white/12 to-transparent" />
+      {/* Header — flattened: dropped the gradient layer, inset highlight line,
+          and per-agent halo glow. The glow was hex-derived so the header tone
+          changed per agent in a way that was decorative, not informational. */}
+      <div className="relative mb-6 rounded-xl border border-border bg-card p-5">
         <div className="flex items-center gap-6">
           <div className="relative shrink-0">
-            <div className="absolute -inset-3 rounded-full opacity-[0.18] blur-xl" style={{ background: color }} />
-            <div className="relative">
-              <NeuralAvatar
-                agentId={agent.id}
-                size={120}
-                signals={s.signals}
-                accuracy={s.accuracy}
-                uniqueness={s.uniqueness}
-                impact={s.impactScore}
-              />
-            </div>
+            <NeuralAvatar
+              agentId={agent.id}
+              size={120}
+              signals={s.signals}
+              accuracy={s.accuracy}
+              uniqueness={s.uniqueness}
+              impact={s.impactScore}
+            />
           </div>
           <div className="min-w-0 flex-1">
             <h1 className="truncate font-mono text-2xl font-bold text-foreground">{agent.id}</h1>

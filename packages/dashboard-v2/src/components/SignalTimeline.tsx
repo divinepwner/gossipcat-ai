@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { timeAgo } from '@/lib/utils';
+import { EmptyState } from './EmptyState';
 
 interface SignalEntry {
   signal: string;
@@ -51,8 +52,12 @@ export function SignalTimeline({ agentId }: { agentId: string }) {
 
   if (signals.length === 0) {
     return (
-      <div className="rounded-md border border-border/40 bg-card/80 px-4 py-3 text-center text-xs text-muted-foreground">
-        No signal history yet.
+      <div className="rounded-md border border-border/40 bg-card/80 px-4 py-3">
+        <EmptyState
+          title="No signal history yet"
+          hint="Signals are recorded during consensus rounds."
+          compact
+        />
       </div>
     );
   }
@@ -60,15 +65,35 @@ export function SignalTimeline({ agentId }: { agentId: string }) {
   // Reverse so oldest is left, newest is right
   const ordered = [...signals].reverse();
 
+  // Summary counts row — lets users see the distribution without hovering
+  // every 1.5px bar. Counts are grouped by resolution bucket so the row
+  // mirrors the legend at the bottom.
+  const counts = {
+    confirmed: 0,
+    disputed: 0,
+    unique: 0,
+    unverified: 0,
+  };
+  for (const s of signals) {
+    if (s.signal === 'agreement' || s.signal === 'consensus_verified') counts.confirmed++;
+    else if (s.signal === 'disagreement' || s.signal === 'hallucination_caught') counts.disputed++;
+    else if (s.signal === 'unique_confirmed' || s.signal === 'unique_unconfirmed' || s.signal === 'new_finding') counts.unique++;
+    else if (s.signal === 'unverified') counts.unverified++;
+  }
+
   return (
     <div className="rounded-md border border-border/40 bg-card/80 px-4 py-3">
       <div className="mb-2 flex items-center justify-between">
         <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
           Signal Timeline
         </span>
-        <span className="font-mono text-[10px] text-muted-foreground/50">
-          {total} total
-        </span>
+        <div className="flex items-center gap-3 font-mono text-[10px]">
+          <span className="text-confirmed">{counts.confirmed} confirmed</span>
+          {counts.disputed > 0 && <span className="text-disputed">{counts.disputed} disputed</span>}
+          {counts.unique > 0 && <span className="text-unique">{counts.unique} unique</span>}
+          {counts.unverified > 0 && <span className="text-unverified">{counts.unverified} unverified</span>}
+          <span className="text-muted-foreground/50">· {total} total</span>
+        </div>
       </div>
       <div className="flex items-center gap-0.5">
         {ordered.map((s, i) => (
