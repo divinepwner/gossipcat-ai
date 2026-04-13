@@ -333,9 +333,10 @@ export function FindingsMetrics({ consensus, reports, showAll = false, hideHeade
             ].filter(s => s.count > 0);
 
             // Agents for this report — derive from confirmed/unique/disputed findings
-            const agentIds = [...new Set(
+            const allAgentIds = [...new Set(
               allFindings.map(f => f.originalAgentId).filter(Boolean)
-            )].slice(0, 5);
+            )];
+            const agentIds = allAgentIds.slice(0, 5);
 
             return (
               <div key={report.id}>
@@ -357,6 +358,7 @@ export function FindingsMetrics({ consensus, reports, showAll = false, hideHeade
               >
                 <button
                   className="flex w-full items-start gap-3 px-3 py-2.5 text-left"
+                  aria-expanded={isExpanded}
                   onClick={() => { const opening = !isExpanded; setExpandedId(opening ? report.id : null); if (opening) { setFilter('all'); setSevFilter('all'); } }}
                 >
                   <div className="flex-1 min-w-0">
@@ -379,9 +381,9 @@ export function FindingsMetrics({ consensus, reports, showAll = false, hideHeade
                               {agentInitials(id)}
                             </span>
                           ))}
-                          {allFindings.length > 0 && [...new Set(allFindings.map(f => f.originalAgentId).filter(Boolean))].length > 5 && (
+                          {allAgentIds.length > 5 && (
                             <span className="font-mono text-[9px] text-muted-foreground/40">
-                              +{[...new Set(allFindings.map(f => f.originalAgentId).filter(Boolean))].length - 5}
+                              +{allAgentIds.length - 5}
                             </span>
                           )}
                         </div>
@@ -565,6 +567,7 @@ export function FindingsMetrics({ consensus, reports, showAll = false, hideHeade
               <div key={run.taskId + i} className={`rounded-md border bg-card transition ${isOpen ? 'border-primary/25' : 'border-border'}`}>
                 {/* Header — clickable */}
                 <button
+                  aria-expanded={isOpen}
                   onClick={() => { const opening = !isOpen; setExpandedId(opening ? run.taskId : null); if (opening) { setFilter('all'); setSevFilter('all'); } }}
                   className="flex w-full items-center p-3 text-left transition hover:bg-accent/50"
                 >

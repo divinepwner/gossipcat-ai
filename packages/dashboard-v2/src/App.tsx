@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useRoute } from '@/lib/router';
 import { AuthGate } from '@/components/AuthGate';
 import { TopBar } from '@/components/TopBar';
@@ -28,13 +28,16 @@ function TeamPage({ agents, tasks }: { agents: AgentData[]; tasks: import('@/lib
   const [query, setQuery] = useState('');
 
   // Build a map from agentId → most recent task item
-  const lastTaskByAgent = new Map<string, import('@/lib/types').TaskItem>();
-  if (tasks) {
-    for (const t of tasks.items) {
-      const existing = lastTaskByAgent.get(t.agentId);
-      if (!existing || t.timestamp > existing.timestamp) lastTaskByAgent.set(t.agentId, t);
+  const lastTaskByAgent = useMemo(() => {
+    const m = new Map<string, import('@/lib/types').TaskItem>();
+    if (tasks) {
+      for (const t of tasks.items) {
+        const existing = m.get(t.agentId);
+        if (!existing || t.timestamp > existing.timestamp) m.set(t.agentId, t);
+      }
     }
-  }
+    return m;
+  }, [tasks]);
 
   const circuitOpen = agents.filter((a) => a.scores.circuitOpen).length;
   const healthy = agents.filter((a) => a.scores.accuracy >= 0.5).length;
