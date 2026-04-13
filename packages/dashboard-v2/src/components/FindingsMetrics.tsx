@@ -37,6 +37,14 @@ const FILTER_CHIPS: { key: FilterType; label: string; cls: string; activeCls: st
   { key: 'insight', label: 'Insight', cls: 'text-zinc-500 border-zinc-500/20 hover:border-zinc-500/40', activeCls: 'text-zinc-400 bg-zinc-500/10 border-zinc-500/40' },
 ];
 
+const SEV_FILTER_CHIPS: { key: 'all' | 'critical' | 'high' | 'medium' | 'low'; label: string; cls: string; activeCls: string }[] = [
+  { key: 'all', label: 'All', cls: 'text-muted-foreground border-border/40 hover:border-border/60', activeCls: 'text-foreground bg-muted border-border' },
+  { key: 'critical', label: 'Critical', cls: 'text-red-400/50 border-red-400/20 hover:border-red-400/40', activeCls: 'text-red-400 bg-red-400/10 border-red-400/40' },
+  { key: 'high', label: 'High', cls: 'text-orange-400/50 border-orange-400/20 hover:border-orange-400/40', activeCls: 'text-orange-400 bg-orange-400/10 border-orange-400/40' },
+  { key: 'medium', label: 'Medium', cls: 'text-yellow-400/50 border-yellow-400/20 hover:border-yellow-400/40', activeCls: 'text-yellow-400 bg-yellow-400/10 border-yellow-400/40' },
+  { key: 'low', label: 'Low', cls: 'text-muted-foreground/50 border-border/40 hover:border-border/60', activeCls: 'text-muted-foreground bg-muted/50 border-border' },
+];
+
 const SEVERITY_CLS: Record<string, string> = {
   critical: 'text-red-400 bg-red-500/10',
   high: 'text-orange-400 bg-orange-500/10',
@@ -46,7 +54,13 @@ const SEVERITY_CLS: Record<string, string> = {
 
 const CITE_STYLES = '[&_.cite-file]:rounded [&_.cite-file]:bg-blue-500/10 [&_.cite-file]:px-1 [&_.cite-file]:font-mono [&_.cite-file]:text-blue-400 [&_.cite-fn]:rounded [&_.cite-fn]:bg-purple-500/10 [&_.cite-fn]:px-1 [&_.cite-fn]:font-mono [&_.cite-fn]:text-purple-400 [&_.inline-code]:rounded [&_.inline-code]:bg-muted [&_.inline-code]:px-1 [&_.inline-code]:py-0.5 [&_.inline-code]:font-mono [&_.inline-code]:text-[11px] [&_.inline-code]:text-foreground/80 [&_.inline-code-block]:my-1.5 [&_.inline-code-block]:block [&_.inline-code-block]:rounded [&_.inline-code-block]:bg-muted/70 [&_.inline-code-block]:p-2 [&_.inline-code-block]:font-mono [&_.inline-code-block]:text-[11px] [&_.inline-code-block]:text-foreground/70 [&_.inline-code-block]:overflow-x-auto';
 
-function ReportFinding({ f }: { f: ConsensusReportFinding }) {
+interface FindingReviewInfo {
+  reviewers: string[];
+  assigned: number;
+  targetK: number;
+}
+
+function ReportFinding({ f, reviewInfo }: { f: ConsensusReportFinding; reviewInfo?: FindingReviewInfo }) {
   const tagCls = f.tag === 'confirmed' ? 'text-confirmed bg-confirmed/10 border-confirmed/20'
     : f.tag === 'disputed' ? 'text-disputed bg-disputed/10 border-disputed/20'
     : f.tag === 'unverified' ? 'text-unverified bg-unverified/10 border-unverified/20'
@@ -64,24 +78,24 @@ function ReportFinding({ f }: { f: ConsensusReportFinding }) {
   const identifier = citeMatch ? citeMatch[1] : null;
 
   return (
-    <div className="rounded-md border border-border/30 bg-card/30 px-3 py-2.5">
+    <div className="rounded-md border border-border/40 hover:border-border/60 transition-colors bg-card/30 px-4 py-3.5">
       {/* Row 1: Tags + Identifier + Agent */}
       <div className="flex items-center gap-2 mb-1.5">
-        <span className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] font-bold ${tagCls}`}>
+        <span className={`shrink-0 rounded border px-2 py-1 font-mono text-[10px] font-bold ${tagCls}`}>
           {f.tag.toUpperCase()}
         </span>
         {f.severity && (
-          <span className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[9px] font-bold ${sevCls}`}>
+          <span className={`shrink-0 rounded border px-2 py-1 font-mono text-[10px] font-bold ${sevCls}`}>
             {f.severity.toUpperCase()}
           </span>
         )}
         {typeLabel && (
-          <span className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[9px] font-bold ${typeCls}`}>
+          <span className={`shrink-0 rounded border px-2 py-1 font-mono text-[10px] font-bold ${typeCls}`}>
             {typeLabel}
           </span>
         )}
         {identifier && (
-          <span className="rounded bg-blue-500/10 px-1.5 py-0.5 font-mono text-[9px] text-blue-400">
+          <span className="bg-blue-500/10 px-2 py-1 font-mono text-[10px] text-blue-400 border border-blue-500/15 rounded">
             {identifier}
           </span>
         )}
@@ -120,8 +134,31 @@ function ReportFinding({ f }: { f: ConsensusReportFinding }) {
         </div>
       )}
       {/* Finding text */}
-      <div className={`text-xs leading-relaxed text-muted-foreground ${CITE_STYLES}`}
+      <div className={`font-inter text-xs leading-relaxed text-muted-foreground ${CITE_STYLES}`}
         dangerouslySetInnerHTML={{ __html: cleanFindingTags(f.finding) }} />
+      {/* Cross-review coverage badge row */}
+      {reviewInfo && (
+        <div className="mt-1.5 flex items-center gap-1.5">
+          {reviewInfo.reviewers.map(rid => (
+            <span
+              key={rid}
+              title={rid}
+              className="inline-flex h-4 w-4 items-center justify-center rounded-full font-mono text-[7px] font-bold text-background opacity-70"
+              style={{ backgroundColor: agentColor(rid) }}
+            >
+              {agentInitials(rid)}
+            </span>
+          ))}
+          <span className={`rounded px-1.5 py-0.5 font-mono text-[9px] font-bold ${
+            reviewInfo.assigned >= reviewInfo.targetK
+              ? 'text-confirmed/70 bg-confirmed/5'
+              : 'text-unverified/70 bg-unverified/5'
+          }`}>
+            {reviewInfo.assigned >= reviewInfo.targetK ? '\u2713' : '\u26A0'}{' '}
+            {reviewInfo.assigned}/{reviewInfo.targetK}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -131,6 +168,7 @@ export function FindingsMetrics({ consensus, reports, showAll = false, hideHeade
   const hasMore = !showAll && consensus.runs.length > MAX_RUNS;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>('all');
+  const [sevFilter, setSevFilter] = useState<'all' | 'critical' | 'high' | 'medium' | 'low'>('all');
 
   const [reportPage, setReportPage] = useState(1);
   const [loadedReports, setLoadedReports] = useState<ConsensusReport[]>([]);
@@ -227,6 +265,35 @@ export function FindingsMetrics({ consensus, reports, showAll = false, hideHeade
             const currentBucket = showAll ? dateBucket(report.timestamp) : null;
             const prevBucket = showAll && prev ? dateBucket(prev.timestamp) : null;
             const showBucketHeader = showAll && currentBucket !== prevBucket;
+            // Build cross-review lookup: findingId → FindingReviewInfo
+            const reviewLookup: Record<string, FindingReviewInfo> = {};
+            if (report.crossReviewAssignments || report.crossReviewCoverage) {
+              // Invert assignments: reviewerAgentId → findingId[] into findingId → reviewerAgentId[]
+              const findingReviewers: Record<string, string[]> = {};
+              if (report.crossReviewAssignments) {
+                for (const [reviewerId, findingIds] of Object.entries(report.crossReviewAssignments)) {
+                  for (const fid of findingIds) {
+                    (findingReviewers[fid] ??= []).push(reviewerId);
+                  }
+                }
+              }
+              // Build from coverage array
+              if (report.crossReviewCoverage) {
+                for (const cov of report.crossReviewCoverage) {
+                  reviewLookup[cov.findingId] = {
+                    reviewers: findingReviewers[cov.findingId] || [],
+                    assigned: cov.assigned,
+                    targetK: cov.targetK,
+                  };
+                }
+              } else {
+                // Fallback: only assignments, no coverage — synthesize from reviewer count
+                for (const [fid, reviewers] of Object.entries(findingReviewers)) {
+                  reviewLookup[fid] = { reviewers, assigned: reviewers.length, targetK: reviewers.length };
+                }
+              }
+            }
+
             const allFindings = [
               ...report.confirmed,
               ...report.disputed,
@@ -234,9 +301,10 @@ export function FindingsMetrics({ consensus, reports, showAll = false, hideHeade
               ...report.unique,
               ...(report.insights || []),
             ];
-            const filteredFindings = filter === 'all' ? allFindings
+            const typeFiltered = filter === 'all' ? allFindings
               : filter === 'insight' ? allFindings.filter(f => f.findingType === 'insight' || f.findingType === 'suggestion')
               : allFindings.filter(f => f.tag === filter);
+            const filteredFindings = sevFilter === 'all' ? typeFiltered : typeFiltered.filter(f => f.severity === sevFilter);
             const isExpanded = expandedId === report.id;
 
             const total = allFindings.length || 1;
@@ -289,7 +357,7 @@ export function FindingsMetrics({ consensus, reports, showAll = false, hideHeade
               >
                 <button
                   className="flex w-full items-start gap-3 px-3 py-2.5 text-left"
-                  onClick={() => setExpandedId(isExpanded ? null : report.id)}
+                  onClick={() => { const opening = !isExpanded; setExpandedId(opening ? report.id : null); if (opening) { setFilter('all'); setSevFilter('all'); } }}
                 >
                   <div className="flex-1 min-w-0">
                     {/* Row 1: count + agents + time */}
@@ -341,6 +409,14 @@ export function FindingsMetrics({ consensus, reports, showAll = false, hideHeade
                         </span>
                       ))}
                     </div>
+                    {report.topic && (
+                      <div className="mt-1.5 flex items-start gap-2">
+                        <span className="shrink-0 rounded border border-border/30 bg-muted/30 px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-muted-foreground/50">Topic</span>
+                        <span className="font-inter text-[11px] leading-relaxed text-muted-foreground/70">
+                          {report.topic}
+                        </span>
+                      </div>
+                    )}
                   </div>
                   {/* Chevron */}
                   <span className={`mt-1 shrink-0 font-mono text-[10px] text-muted-foreground/40 transition-transform duration-150 ${isExpanded ? 'rotate-90 text-primary/60' : 'group-hover:text-muted-foreground/60'}`}>
@@ -350,19 +426,89 @@ export function FindingsMetrics({ consensus, reports, showAll = false, hideHeade
 
                 {isExpanded && (
                   <div className="border-t border-border/20 px-4 pb-4 pt-3">
-                    <div className="mb-2 flex gap-2">
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className="font-mono text-[10px] text-muted-foreground/50">Type:</span>
                       {FILTER_CHIPS.map(tab => (
                         <button key={tab.key} onClick={() => setFilter(tab.key)}
-                          className={`rounded-full border px-2.5 py-1 font-mono text-[10px] font-medium transition ${filter === tab.key ? tab.activeCls : tab.cls}`}>
+                          className={`rounded-md border px-3 py-1.5 font-mono text-[10px] font-medium transition ${filter === tab.key ? tab.activeCls : tab.cls}`}>
                           {tab.label}
                         </button>
                       ))}
                     </div>
-                    <div className="space-y-2">
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className="font-mono text-[10px] text-muted-foreground/50">Severity:</span>
+                      {SEV_FILTER_CHIPS.map(chip => (
+                        <button key={chip.key} onClick={() => setSevFilter(chip.key)}
+                          className={`rounded-md border px-3 py-1.5 font-mono text-[10px] font-medium transition ${sevFilter === chip.key ? chip.activeCls : chip.cls}`}>
+                          {chip.label}
+                        </button>
+                      ))}
+                    </div>
+                    {(report.crossReviewAssignments || report.crossReviewCoverage) && (() => {
+                      // Invert assignments: reviewerId → findingIds
+                      const assignments = report.crossReviewAssignments || {};
+                      const reviewerEntries = Object.entries(assignments);
+                      // Count under-reviewed findings from coverage data
+                      const coverage = report.crossReviewCoverage || [];
+                      const totalCovered = coverage.length;
+                      const underReviewed = coverage.filter(c => c.assigned < c.targetK);
+                      return (
+                        <details className="mb-3 rounded-md border border-border/30 bg-card/30">
+                          <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-widest text-muted-foreground select-none">
+                            Cross-Review Assignments
+                            {report.partialReview && (
+                              <span className="rounded border border-unverified/15 bg-unverified/5 px-1.5 py-0.5 font-mono text-[9px] font-bold normal-case tracking-normal text-unverified">
+                                partial
+                              </span>
+                            )}
+                            <span className="ml-auto font-mono text-[9px] font-normal normal-case tracking-normal text-muted-foreground/50">
+                              {reviewerEntries.length} reviewers · {totalCovered} findings
+                            </span>
+                          </summary>
+                          <div className="border-t border-border/20 px-3 pb-3 pt-2 space-y-2">
+                            {reviewerEntries.map(([reviewerId, findingIds]) => (
+                              <div key={reviewerId} className="flex items-center gap-2">
+                                <span
+                                  title={reviewerId}
+                                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-mono text-[8px] font-bold text-background"
+                                  style={{ backgroundColor: agentColor(reviewerId) }}
+                                >
+                                  {agentInitials(reviewerId)}
+                                </span>
+                                <span className="font-mono text-[10px] text-muted-foreground">{reviewerId}</span>
+                                <span className="font-mono text-[10px] text-muted-foreground/40">({findingIds.length})</span>
+                                <div className="flex flex-wrap gap-1 ml-1">
+                                  {findingIds.map(fid => (
+                                    <span key={fid} className="rounded bg-muted/50 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground">
+                                      {fid.length > 12 ? fid.slice(0, 12) + '…' : fid}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                            {/* Coverage summary */}
+                            {totalCovered > 0 && (
+                              <div className="mt-1 pt-1.5 border-t border-border/15">
+                                {underReviewed.length > 0 ? (
+                                  <span className="rounded border border-unverified/15 bg-unverified/5 px-2 py-1 font-mono text-[10px] font-semibold text-unverified">
+                                    ⚠ {underReviewed.length} of {totalCovered} findings under-reviewed
+                                  </span>
+                                ) : (
+                                  <span className="font-mono text-[10px] font-semibold text-confirmed/60">
+                                    ✓ All {totalCovered} findings fully covered
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      );
+                    })()}
+                    <div className="space-y-3">
                       {filteredFindings.length === 0 ? (
                         <div className="py-4 text-center text-xs text-muted-foreground">No findings match this filter.</div>
                       ) : (
-                        filteredFindings.map((f, j) => <ReportFinding key={j} f={f} />)
+                        filteredFindings.map((f, j) => <ReportFinding key={j} f={f} reviewInfo={f.id ? reviewLookup[f.id] : undefined} />)
                       )}
                     </div>
                   </div>
@@ -419,7 +565,7 @@ export function FindingsMetrics({ consensus, reports, showAll = false, hideHeade
               <div key={run.taskId + i} className={`rounded-md border bg-card transition ${isOpen ? 'border-primary/25' : 'border-border'}`}>
                 {/* Header — clickable */}
                 <button
-                  onClick={() => setExpandedId(isOpen ? null : run.taskId)}
+                  onClick={() => { const opening = !isOpen; setExpandedId(opening ? run.taskId : null); if (opening) { setFilter('all'); setSevFilter('all'); } }}
                   className="flex w-full items-center p-3 text-left transition hover:bg-accent/50"
                 >
                   <span className={`mr-3 font-mono text-xs text-muted-foreground transition ${isOpen ? 'text-primary' : ''}`}>

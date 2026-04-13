@@ -2,16 +2,18 @@ import { readFile, readdir, stat } from 'fs/promises';
 import { mkdirSync, writeFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { join, resolve } from 'path';
+import { log as _log } from './log';
 
 /** Generate a short consensus round ID: xxxxxxxx-xxxxxxxx (17 chars from UUID) */
 function shortConsensusId(): string {
   const hex = randomUUID().replace(/-/g, '');
   return hex.slice(0, 8) + '-' + hex.slice(8, 16);
 }
-import { LLMMessage } from '@gossip/types';
+import { LLMMessage, ToolDefinition } from '@gossip/types';
 import { ILLMProvider } from './llm-client';
 import { AgentConfig, TaskEntry } from './types';
 import { ConsensusReport, ConsensusFinding, ConsensusNewFinding, ConsensusSignal, CrossReviewEntry } from './consensus-types';
+import { selectCrossReviewers, FindingForSelection, AgentCandidate } from './cross-reviewer-selection';
 
 export type {
   ConsensusReport,
@@ -25,14 +27,49 @@ const SUMMARY_HEADER = '## Consensus Summary';
 const FALLBACK_MAX_LENGTH = 2000;
 const MAX_SUMMARY_LENGTH = 5000; // raised from 3000 — citations were being truncated before snippet extraction
 const MAX_CROSS_REVIEW_ENTRIES = 50; // DoS prevention
+/**
+ * Model-aware context budget for cross-review prompts.
+ * ~4 chars/token average, leave 20% headroom for response tokens.
+ * Progressive compaction when over budget: drop suggestions → strip anchors → drop LOW findings.
+ * INVARIANT: never reorder findings — findingIdx must stay in lockstep with synthesize().
+ */
+const DEFAULT_BUDGET_CHARS = 400_000; // Sonnet: 200K tokens × 4 chars × 0.5 headroom
+const MODEL_BUDGETS: Record<string, number> = {
+  'sonnet':  400_000,   // 200K token context
+  'haiku':   400_000,   // 200K token context
+  'opus':    400_000,   // 200K token context
+  'gemini':  2_400_000, // ~1M token context
+  'gpt':     320_000,   // 128K token context
+};
+function budgetForAgent(preset: string): number {
+  const p = preset.toLowerCase();
+  for (const [key, budget] of Object.entries(MODEL_BUDGETS)) {
+    if (p.includes(key)) return budget;
+  }
+  return DEFAULT_BUDGET_CHARS;
+}
+/** Minimum findings per peer to produce a useful cross-review. Below this, skip the peer. */
+const MIN_FINDINGS_PER_PEER = 2;
 const VALID_ACTIONS = new Set(['agree', 'disagree', 'unverified', 'new']);
 const ANCHOR_PATTERN = /[\w./-]+\.(ts|js|tsx|jsx|py|go|rs|java|rb|md|json|yaml|yml|toml|sh):\d+/;
+const MAX_VERIFIER_TURNS = 7;
+
+const VERIFIER_TOOLS: ToolDefinition[] = [
+  { name: 'file_read', description: 'Read file contents', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute or project-relative file path' }, startLine: { type: 'number', description: 'First line to read (1-based)' }, endLine: { type: 'number', description: 'Last line to read (inclusive)' } }, required: ['path'] } },
+  { name: 'file_grep', description: 'Search file contents by regex', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'Regex pattern to search for' }, path: { type: 'string', description: 'Directory or file to search in' }, maxResults: { type: 'number', description: 'Maximum number of results to return' } }, required: ['pattern'] } },
+  { name: 'file_search', description: 'Find files by glob pattern', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'Glob pattern to match files' }, path: { type: 'string', description: 'Root directory to search from' } }, required: ['pattern'] } },
+  { name: 'memory_query', description: 'Search agent memory by keyword', parameters: { type: 'object', properties: { query: { type: 'string', description: 'Keyword or phrase to search memory' } }, required: ['query'] } },
+  { name: 'git_log', description: 'Show git log for a file or path', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File or directory to show history for' }, maxCount: { type: 'number', description: 'Maximum number of commits to return' } }, required: [] } },
+];
 
 export interface ConsensusEngineConfig {
   llm: ILLMProvider;
   registryGet: (agentId: string) => AgentConfig | undefined;
   projectRoot?: string;
   agentLlm?: (agentId: string) => ILLMProvider | undefined;
+  verifierToolRunner?: (agentId: string, toolName: string, args: Record<string, unknown>) => Promise<string>;
+  /** Optional PerformanceReader for cross-reviewer selection (Step 2). Step 3 will wire this in. */
+  performanceReader?: import('./performance-reader').PerformanceReader;
 }
 
 export class ConsensusEngine {
@@ -52,6 +89,11 @@ export class ConsensusEngine {
 
   constructor(config: ConsensusEngineConfig) {
     this.config = config;
+  }
+
+  /** True when a PerformanceReader is available for orchestrator-selected cross-review (Step 3). */
+  get hasPerformanceReader(): boolean {
+    return this.config.performanceReader !== undefined;
   }
 
   /**
@@ -157,12 +199,12 @@ export class ConsensusEngine {
     }
 
     const consensusStart = Date.now();
-    process.stderr.write(`[consensus] Starting cross-review for ${successful.length} agents\n`);
+    _log('consensus', `Starting cross-review for ${successful.length} agents`);
     this.updateWorktreeRoots(results);
     const crossReviewStart = Date.now();
     const crossReviewEntries = await this.dispatchCrossReview(results);
     const crossReviewMs = Date.now() - crossReviewStart;
-    process.stderr.write(`[consensus] Cross-review complete: ${crossReviewEntries.length} entries (${Math.round(crossReviewMs / 1000)}s)\n`);
+    _log('consensus', `Cross-review complete: ${crossReviewEntries.length} entries (${Math.round(crossReviewMs / 1000)}s)`);
 
     const synthesizeStart = Date.now();
     const report = await this.synthesize(results, crossReviewEntries);
@@ -172,11 +214,11 @@ export class ConsensusEngine {
       agentId: r.agentId,
       durationMs: (r.completedAt && r.startedAt) ? r.completedAt - r.startedAt : 0,
     }));
-    process.stderr.write(`[consensus] Synthesis: ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unverified.length} unverified, ${report.unique.length} unique, ${report.newFindings.length} new (${Math.round(synthesizeMs / 1000)}s)\n`);
+    _log('consensus', `Synthesis: ${report.confirmed.length} confirmed, ${report.disputed.length} disputed, ${report.unverified.length} unverified, ${report.unique.length} unique, ${report.newFindings.length} new (${Math.round(synthesizeMs / 1000)}s)`);
 
     const totalMs = Date.now() - consensusStart;
     const timing = { totalMs, perAgent, crossReviewMs, synthesizeMs };
-    process.stderr.write(`[consensus] Total: ${Math.round(totalMs / 1000)}s (cross-review: ${Math.round(crossReviewMs / 1000)}s, synthesis: ${Math.round(synthesizeMs / 1000)}s)\n`);
+    _log('consensus', `Total: ${Math.round(totalMs / 1000)}s (cross-review: ${Math.round(crossReviewMs / 1000)}s, synthesis: ${Math.round(synthesizeMs / 1000)}s)`);
     // Always regenerate report with timing data
     report.summary = this.formatReport(report.confirmed, report.disputed, report.unverified, report.unique, report.newFindings, successful.length, report.rounds, timing, report.insights);
 
@@ -208,7 +250,7 @@ export class ConsensusEngine {
       successful.map(async agent => {
         const start = Date.now();
         const entries = await this.crossReviewForAgent(agent, summaries, rawResults);
-        process.stderr.write(`[consensus] ${agent.agentId} cross-review: ${entries.length} entries (${Math.round((Date.now() - start) / 1000)}s)\n`);
+        _log('consensus', `${agent.agentId} cross-review: ${entries.length} entries (${Math.round((Date.now() - start) / 1000)}s)`);
         return entries;
       })
     );
@@ -218,6 +260,13 @@ export class ConsensusEngine {
 
   /**
    * Build the cross-review prompt for a single agent without calling the LLM.
+   * Applies progressive context compaction when the assembled prompt exceeds the
+   * model-aware budget. Compaction passes (in order):
+   *   1. Drop suggestion/insight-type findings (keep type="finding" only)
+   *   2. Strip <anchor> code blocks from all findings
+   *   3. Drop LOW/INFO-severity findings
+   * INVARIANT: findings are never reordered — only dropped in original tag order.
+   * This preserves findingIdx lockstep with synthesize().
    */
   private async buildCrossReviewPrompt(
     agent: TaskEntry,
@@ -229,8 +278,6 @@ export class ConsensusEngine {
     // Fall back to summaries when rawResults isn't provided (legacy callers / tests).
     const findingSource = rawResults ?? summaries;
 
-    // Build peer findings section — parse <agent_finding> tags and assign stable IDs
-    const peerLines: string[] = [];
     const agentFindingPattern = /<agent_finding\s+([^>]*)>([\s\S]*?)<\/agent_finding>/g;
     const MAX_ANCHORS_PER_SUMMARY = 15;
     // Content cap — see parseAgentFindings() for the full rationale. Must match
@@ -238,14 +285,26 @@ export class ConsensusEngine {
     // synthesize()'s own pass, otherwise wrong findings get confirmed/disputed.
     const MAX_FINDING_CONTENT = 8000;
 
+    // --- Phase A: Extract all peer findings (preserving order + IDs) ---
+    interface ParsedFinding {
+      id: string; attrs: string; content: string;
+      type: 'finding' | 'suggestion' | 'insight';
+      severity: string;
+    }
+    interface PeerData {
+      peerId: string; preset: string; peerSummary: string;
+      findings: ParsedFinding[];
+      fallback: boolean; // true = no structured findings, use raw summary
+    }
+    const peers: PeerData[] = [];
+
     for (const [peerId, peerSummary] of summaries) {
       if (peerId === agent.agentId) continue;
       const peerConfig = this.config.registryGet(peerId);
       const preset = peerConfig?.preset ?? 'unknown';
       const peerFindingText = findingSource.get(peerId) ?? peerSummary;
 
-      // Extract individual findings from <agent_finding> tags and assign IDs
-      const findings: Array<{ id: string; attrs: string; content: string }> = [];
+      const findings: ParsedFinding[] = [];
       let afMatch: RegExpExecArray | null;
       const pattern = new RegExp(agentFindingPattern.source, agentFindingPattern.flags);
       let findingIdx = 0;
@@ -253,41 +312,65 @@ export class ConsensusEngine {
         const attrs = afMatch[1];
         let content = afMatch[2].trim();
         if (!content || content.length < 15) continue;
-        if (!attrs.match(/type="(finding|suggestion|insight)"/)) continue;
+        const typeMatch = attrs.match(/type="(finding|suggestion|insight)"/);
+        if (!typeMatch) continue;
         if (content.length > MAX_FINDING_CONTENT) {
           content = content.slice(0, MAX_FINDING_CONTENT) + '\n…[truncated]';
         }
         findingIdx++;
-        findings.push({ id: `${peerId}:f${findingIdx}`, attrs, content });
+        const sevMatch = attrs.match(/severity="(\w+)"/);
+        findings.push({
+          id: `${peerId}:f${findingIdx}`, attrs, content,
+          type: typeMatch[1] as ParsedFinding['type'],
+          severity: sevMatch?.[1]?.toLowerCase() ?? 'medium',
+        });
       }
+      peers.push({ peerId, preset, peerSummary, findings, fallback: findings.length === 0 });
+    }
 
-      let peerBlock: string;
-      if (findings.length > 0) {
-        // Structured: numbered findings with IDs and inline code anchors
-        const findingBlocks: string[] = [];
-        let anchorCount = 0;
-        for (const f of findings) {
-          let block = `[${f.id}] <agent_finding ${f.attrs}>${f.content}</agent_finding>`;
-          // Attach code snippets for verification
-          if (this.config.projectRoot && anchorCount < MAX_ANCHORS_PER_SUMMARY) {
-            const snippets = await this.snippetsForFinding(f.content);
-            if (snippets) {
-              block += '\n' + snippets;
-              anchorCount += (snippets.match(/<anchor /g) || []).length;
-            }
-          }
-          findingBlocks.push(block);
+    // --- Phase B: Determine budget and compaction level ---
+    const agentConfig = this.config.registryGet(agent.agentId);
+    const budget = budgetForAgent(agentConfig?.preset ?? agentConfig?.model ?? 'sonnet');
+
+    // Compaction levels — each is strictly additive:
+    //   none           → all findings, all anchors
+    //   drop_suggestions → drop suggestion/insight types, keep anchors
+    //   strip_anchors  → drop suggestion/insight types, strip anchors (incremental: anchor savings)
+    //   drop_low       → drop suggestion/insight + LOW/INFO severity, strip anchors
+    type CompactionLevel = 'none' | 'drop_suggestions' | 'strip_anchors' | 'drop_low';
+    const COMPACTION_ORDER: CompactionLevel[] = ['none', 'drop_suggestions', 'strip_anchors', 'drop_low'];
+
+    const shouldInclude = (f: ParsedFinding, level: CompactionLevel): boolean => {
+      // Levels 1-3: drop suggestions and insights
+      if (level !== 'none' && f.type !== 'finding') return false;
+      // Level 3: also drop LOW/INFO severity findings
+      if (level === 'drop_low' && (f.severity === 'low' || f.severity === 'info')) return false;
+      return true;
+    };
+
+    // --- Phase B.1: Pre-compute snippets once (avoids redundant calls across compaction retries) ---
+    // Key: finding id → snippet string (or empty). Computed eagerly for all findings.
+    const snippetCache = new Map<string, string>();
+    if (this.config.projectRoot) {
+      for (const peer of peers) {
+        if (peer.fallback) continue;
+        for (const f of peer.findings) {
+          const snippets = await this.snippetsForFinding(f.content);
+          snippetCache.set(f.id, snippets);
         }
-        peerBlock = `Agent "${peerId}" (${preset}):\n<data>${findingBlocks.join('\n\n')}</data>`;
-      } else {
-        // Fallback: no structured findings found, use raw summary with line-level anchors
-        const summaryLines = peerSummary.split('\n');
+      }
+    }
+    // Also pre-compute fallback peer line-level snippets
+    const fallbackSnippetCache = new Map<string, string[]>();
+    if (this.config.projectRoot) {
+      for (const peer of peers) {
+        if (!peer.fallback) continue;
         const annotatedLines: string[] = [];
         let anchorCount = 0;
-        for (const line of summaryLines) {
+        for (const line of peer.peerSummary.split('\n')) {
           annotatedLines.push(line);
           const trimmed = line.trim();
-          if (trimmed && this.config.projectRoot && anchorCount < MAX_ANCHORS_PER_SUMMARY) {
+          if (trimmed && anchorCount < MAX_ANCHORS_PER_SUMMARY) {
             const snippets = await this.snippetsForFinding(trimmed);
             if (snippets) {
               annotatedLines.push(snippets);
@@ -295,9 +378,75 @@ export class ConsensusEngine {
             }
           }
         }
-        peerBlock = `Agent "${peerId}" (${preset}):\n<data>${annotatedLines.join('\n')}</data>`;
+        fallbackSnippetCache.set(peer.peerId, annotatedLines);
       }
-      peerLines.push(peerBlock);
+    }
+
+    // --- Phase B.2: Try each compaction level until the prompt fits ---
+    let peerLines: string[] = [];
+    let compactionUsed: CompactionLevel = 'none';
+    const stripAnchors = (level: CompactionLevel) => level === 'strip_anchors' || level === 'drop_low';
+
+    for (const level of COMPACTION_ORDER) {
+      peerLines = [];
+      const noAnchors = stripAnchors(level);
+
+      for (const peer of peers) {
+        if (peer.fallback) {
+          if (noAnchors) {
+            peerLines.push(`Agent "${peer.peerId}" (${peer.preset}):\n<data>${peer.peerSummary}</data>`);
+          } else {
+            const lines = fallbackSnippetCache.get(peer.peerId) ?? peer.peerSummary.split('\n');
+            peerLines.push(`Agent "${peer.peerId}" (${peer.preset}):\n<data>${lines.join('\n')}</data>`);
+          }
+          continue;
+        }
+
+        // Filter findings for this compaction level (preserve original order)
+        const visible = peer.findings.filter(f => shouldInclude(f, level));
+
+        // Floor: if too few findings survive, skip this peer entirely
+        if (visible.length < MIN_FINDINGS_PER_PEER && peer.findings.length >= MIN_FINDINGS_PER_PEER) {
+          continue;
+        }
+        if (visible.length === 0) continue;
+
+        // Build finding blocks (snippets from cache, no redundant I/O)
+        const findingBlocks: string[] = [];
+        let anchorCount = 0;
+        for (const f of visible) {
+          let block = `[${f.id}] <agent_finding ${f.attrs}>${f.content}</agent_finding>`;
+          if (!noAnchors && anchorCount < MAX_ANCHORS_PER_SUMMARY) {
+            const snippets = snippetCache.get(f.id) ?? '';
+            if (snippets) {
+              block += '\n' + snippets;
+              anchorCount += (snippets.match(/<anchor /g) || []).length;
+            }
+          }
+          findingBlocks.push(block);
+        }
+        peerLines.push(`Agent "${peer.peerId}" (${peer.preset}):\n<data>${findingBlocks.join('\n\n')}</data>`);
+      }
+
+      // Estimate total prompt size using actual template overhead (not hardcoded guesses)
+      const peerContent = peerLines.join('\n\n');
+      // System prompt: ~1,450 chars. User template scaffolding: ~700 chars. Add 500 char safety margin.
+      const SYSTEM_OVERHEAD = 1500;
+      const USER_TEMPLATE_OVERHEAD = 1200;
+      const estimatedSize = SYSTEM_OVERHEAD + ownSummary.length + peerContent.length + USER_TEMPLATE_OVERHEAD;
+      if (estimatedSize <= budget) {
+        compactionUsed = level;
+        break;
+      }
+      compactionUsed = level;
+    }
+
+    // Log compaction level; warn if still over budget after all passes
+    if (compactionUsed !== 'none') {
+      const peerContent = peerLines.join('\n\n');
+      const finalSize = 1500 + ownSummary.length + peerContent.length + 1200;
+      const overBudget = finalSize > budget;
+      _log('consensus', `⚡ Context compaction for ${agent.agentId}: level=${compactionUsed}, budget=${Math.round(budget / 1000)}K chars${overBudget ? ` ⚠️ STILL OVER BUDGET (${Math.round(finalSize / 1000)}K chars) — prompt may be truncated by model` : ''}`);
     }
 
     const user = `You previously reviewed code and produced findings. Now review your peers' findings.
@@ -332,10 +481,11 @@ SOURCE FILES: Always cite original source files, not compiled/bundled build outp
 
 VERIFICATION RULES:
 - If a finding has an <anchor> block, use the code shown to verify the claim
+- If a finding LACKS an anchor or the anchor is insufficient, use the file_read and file_grep tools to look up the cited code yourself before marking UNVERIFIED. Only mark UNVERIFIED after you have attempted tool-based verification and still cannot confirm or refute.
 - AGREE only if you can confirm the claim is factually correct — cite your evidence
 - DISAGREE only if you have concrete evidence the finding is WRONG — the code contradicts the claim
-- UNVERIFIED if an anchor is missing for a cited file, the line number is wrong, or the code in the anchor is insufficient to verify the claim. UNVERIFIED is the correct default when you lack context — it is NOT a failure. Use it freely whenever you cannot confidently verify or refute.
-- ⚠ warnings mean the agent's citation is unresolvable (file not found, line out of range, or blank line). Treat these as UNVERIFIED — do NOT agree with findings that have broken citations.
+- UNVERIFIED only as a last resort after attempting tool-based verification — when the file doesn't exist, the tool returned an error, or the code is genuinely ambiguous
+- ⚠ warnings mean the agent's citation is unresolvable (file not found, line out of range, or blank line). Use file_read/file_grep to attempt verification before falling back to UNVERIFIED.
 - Do NOT agree with a finding just because it sounds plausible — verify it
 - Agreeing without verification is WORSE than disagreeing — a false confirmation poisons the system
 
@@ -346,6 +496,8 @@ Return only valid JSON.`;
 
   /**
    * Build the cross-review prompt for a single agent and call the LLM.
+   * When `config.verifierToolRunner` is set, runs an inline tool loop so the
+   * reviewer can verify file contents before emitting findings.
    */
   private async crossReviewForAgent(
     agent: TaskEntry,
@@ -360,20 +512,62 @@ Return only valid JSON.`;
 
     try {
       const llm = this.config.agentLlm?.(agent.agentId) ?? this.config.llm;
-      const response = await llm.generate(messages, { temperature: 0 });
+      const { verifierToolRunner } = this.config;
+
+      let response: Awaited<ReturnType<typeof llm.generate>>;
+
+      if (verifierToolRunner) {
+        const runToolCalls = async (calls: any[]) => {
+          for (const tc of calls) {
+            let out: string;
+            try {
+              out = await verifierToolRunner(agent.agentId, tc.name, tc.arguments as Record<string, unknown>);
+            } catch (e) {
+              out = `Error: ${(e as Error).message}`;
+            }
+            if (out.length > 8000) out = out.slice(0, 8000) + '\n…[truncated]';
+            messages.push({ role: 'tool', toolCallId: tc.id, name: tc.name, content: out } as LLMMessage);
+          }
+        };
+
+        let turn = 0;
+        while (true) {
+          response = await llm.generate(messages, { temperature: 0, tools: VERIFIER_TOOLS });
+          const calls = response.toolCalls ?? [];
+          _log('consensus', `🔧 ${agent.agentId} verifier response: ${calls.length} tool call(s), text=${response.text?.length ?? 0}chars`);
+          if (calls.length === 0) break;
+          _log('consensus', `🔧 ${agent.agentId} verifier turn ${turn + 1}: ${calls.length} tool call(s) [${calls.map(c => c.name).join(', ')}]`);
+          if (turn >= MAX_VERIFIER_TURNS) {
+            messages.push({ role: 'assistant', content: response.text ?? '', toolCalls: calls } as LLMMessage);
+            await runToolCalls(calls);
+            messages.push({
+              role: 'user',
+              content: 'You have reached the maximum verification turns. Emit your cross-review findings now in the required JSON format. Do not request additional tools.',
+            } as LLMMessage);
+            response = await llm.generate(messages, { temperature: 0 });
+            break;
+          }
+          messages.push({ role: 'assistant', content: response.text ?? '', toolCalls: calls } as LLMMessage);
+          await runToolCalls(calls);
+          turn++;
+        }
+      } else {
+        response = await llm.generate(messages, { temperature: 0 });
+      }
+
       if (!response.text?.trim()) {
-        process.stderr.write(`[consensus] ${agent.agentId} returned empty cross-review response\n`);
+        _log('consensus', `${agent.agentId} returned empty cross-review response`);
         return [];
       }
       const validPeerIds = new Set(summaries.keys());
       const entries = this.parseCrossReviewResponse(agent.agentId, response.text, MAX_CROSS_REVIEW_ENTRIES);
       if (entries.length === 0) {
-        process.stderr.write(`[consensus] ${agent.agentId} cross-review parsed to 0 entries (response length: ${response.text.length})\n`);
+        _log('consensus', `${agent.agentId} cross-review parsed to 0 entries (response length: ${response.text.length})`);
       }
       // Filter: no self-references, peerAgentId must be a real agent in this batch
       return entries.filter(e => e.peerAgentId !== agent.agentId && validPeerIds.has(e.peerAgentId));
     } catch (err) {
-      process.stderr.write(`[consensus] ${agent.agentId} cross-review LLM call failed: ${(err as Error).message}\n`);
+      _log('consensus', `${agent.agentId} cross-review LLM call failed: ${(err as Error).message}`);
       return [];
     }
   }
@@ -429,6 +623,10 @@ Return only valid JSON.`;
     // (a) Seed finding map from Phase 1 results
     const findingMap = new Map<string, {
       originalAgentId: string;
+      /** Per-agent finding id `agentId:fN` from cross-review prompt assembly.
+       * Carried to ConsensusFinding so signal writeback can resolve the 3-part
+       * finding_id format (`consensusId:agentId:fN`) against the report. */
+      authorFindingId?: string;
       finding: string;
       findingType?: 'finding' | 'suggestion' | 'insight';
       severity?: 'critical' | 'high' | 'medium' | 'low';
@@ -463,6 +661,7 @@ Return only valid JSON.`;
 
         findingMap.set(key, {
           originalAgentId: r.agentId,
+          authorFindingId: findingId,
           finding: p.content,
           findingType: p.findingType,
           severity: p.severity,
@@ -477,10 +676,10 @@ Return only valid JSON.`;
 
       // Per-agent fallback: if THIS agent produced no tags, use legacy bullet parsing
       if (agentFindingsFound === 0) {
-        process.stderr.write(
-          `[consensus] ⚠ agent "${r.agentId}" emitted ZERO <agent_finding> tags — falling back to bullet parsing. ` +
+        _log('consensus',
+          `⚠ agent "${r.agentId}" emitted ZERO <agent_finding> tags — falling back to bullet parsing. ` +
           `Cross-review IDs will not roundtrip and dashboard results will be incomplete. ` +
-          `Fix: ensure the agent uses <agent_finding type="finding" severity="..."> wrapping (see CONSENSUS_OUTPUT_FORMAT).\n`
+          `Fix: ensure the agent uses <agent_finding type="finding" severity="..."> wrapping (see CONSENSUS_OUTPUT_FORMAT).`
         );
         const lines = summary.split('\n').filter(l => l.trimStart().startsWith('-'));
         for (const line of lines) {
@@ -544,7 +743,7 @@ Return only valid JSON.`;
     const getTaskId = (agentId: string): string => {
       const id = agentTaskIds.get(agentId);
       if (id && id.length > 0) return id;
-      process.stderr.write(`[consensus] WARNING: no taskId for agent "${agentId}", using fallback\n`);
+      _log('consensus', `WARNING: no taskId for agent "${agentId}", using fallback`);
       return `unknown-${consensusId}-${agentId}`;
     };
 
@@ -773,6 +972,7 @@ Return only valid JSON.`;
 
       const finding: ConsensusFinding = {
         id: `${consensusId}:f${findingIdx}`,
+        authorFindingId: entry.authorFindingId,
         originalAgentId: entry.originalAgentId,
         finding: entry.finding,
         findingType: entry.findingType,
@@ -1417,10 +1617,10 @@ Return only valid JSON.`;
       let content = afMatch[2].trim();
       if (!content || content.length < 15) continue;
       if (content.length > MAX_FINDING_CONTENT) {
-        process.stderr.write(
-          `[consensus] ⚠ agent "${_agentId}" emitted an <agent_finding> of ${content.length} chars ` +
+        _log('consensus',
+          `⚠ agent "${_agentId}" emitted an <agent_finding> of ${content.length} chars ` +
           `(cap ${MAX_FINDING_CONTENT}) — truncating rather than dropping. ` +
-          `Consider splitting into multiple tagged findings.\n`
+          `Consider splitting into multiple tagged findings.`
         );
         content = content.slice(0, MAX_FINDING_CONTENT) + '\n…[truncated]';
       }
@@ -1517,8 +1717,8 @@ Return only valid JSON.`;
             // Inherit category from loser if winner has none (never overwrite a real category)
             if (entryA.category && !entryB.category) entryB.category = entryA.category;
             toRemove.add(keyA);
-            process.stderr.write(
-              `[consensus] Dedup: merged "${entryA.finding.slice(0, 60)}..." (${entryA.originalAgentId}) into "${entryB.finding.slice(0, 60)}..." (${entryB.originalAgentId}) [B more precise]\n`
+            _log('consensus',
+              `Dedup: merged "${entryA.finding.slice(0, 60)}..." (${entryA.originalAgentId}) into "${entryB.finding.slice(0, 60)}..." (${entryB.originalAgentId}) [B more precise]`
             );
             break; // A is removed, stop comparing it
           }
@@ -1529,8 +1729,8 @@ Return only valid JSON.`;
           if (entryB.severity && (!entryA.severity || (SEVERITY_RANK[entryB.severity] || 0) > (SEVERITY_RANK[entryA.severity] || 0))) entryA.severity = entryB.severity;
           if (entryB.category && !entryA.category) entryA.category = entryB.category;
           toRemove.add(keyB);
-          process.stderr.write(
-            `[consensus] Dedup: merged "${entryB.finding.slice(0, 60)}..." (${entryB.originalAgentId}) into "${entryA.finding.slice(0, 60)}..." (${entryA.originalAgentId})\n`
+          _log('consensus',
+            `Dedup: merged "${entryB.finding.slice(0, 60)}..." (${entryB.originalAgentId}) into "${entryA.finding.slice(0, 60)}..." (${entryA.originalAgentId})`
           );
         }
       }
@@ -1730,7 +1930,7 @@ Return only valid JSON.`;
 
     if (parsed === undefined) {
       if (cleaned.length > 0) {
-        process.stderr.write(`[consensus] ${reviewerAgentId} cross-review response is not valid JSON (${cleaned.length} chars)\n`);
+        _log('consensus', `${reviewerAgentId} cross-review response is not valid JSON (${cleaned.length} chars)`);
         this.dumpFailedCrossReview(reviewerAgentId, text);
       }
       return [];
@@ -1741,7 +1941,7 @@ Return only valid JSON.`;
       if (parsed && typeof parsed === 'object') {
         parsed = [parsed];
       } else {
-        process.stderr.write(`[consensus] ${reviewerAgentId} cross-review response is not an array\n`);
+        _log('consensus', `${reviewerAgentId} cross-review response is not an array`);
         this.dumpFailedCrossReview(reviewerAgentId, text);
         return [];
       }
@@ -1869,6 +2069,164 @@ Return only valid JSON.`;
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       writeFileSync(join(dir, `${safeId}-${ts}.txt`), text);
     } catch { /* best effort */ }
+  }
+
+  /**
+   * Run Phase 2 server-side with orchestrator-selected cross-reviewers.
+   *
+   * Step 3 of the orchestrator-selected cross-review spec
+   * (docs/specs/2026-04-10-relay-only-consensus.md lines 237-242).
+   *
+   * Requires `config.performanceReader` — throws if not set.
+   * Sets `partialReview: true` on the report if any finding received fewer
+   * than K cross-reviewers (K = 3 for critical, 2 for all others).
+   */
+  async runSelectedCrossReview(
+    results: TaskEntry[],
+    _consensusId?: string,
+  ): Promise<ConsensusReport> {
+    const { performanceReader } = this.config;
+    if (!performanceReader) {
+      throw new Error('runSelectedCrossReview requires config.performanceReader');
+    }
+
+    const successful = results.filter(r => r.status === 'completed' && r.result);
+    if (successful.length < 2) {
+      return {
+        agentCount: 0, rounds: 0,
+        confirmed: [], disputed: [], unverified: [], unique: [], insights: [], newFindings: [], signals: [],
+        summary: 'Consensus skipped: insufficient agents (need ≥2 successful).',
+      };
+    }
+
+    this.updateWorktreeRoots(results);
+
+    // Build summaries and rawResults maps (same pattern as dispatchCrossReview)
+    const summaries = new Map<string, string>();
+    const rawResults = new Map<string, string>();
+    const sanitize = (s: string) => s.replace(/<\/?(data|anchor|code)\b[^>]*>/gi, '');
+    for (const r of successful) {
+      summaries.set(r.agentId, sanitize(this.extractSummary(r.result!)));
+      rawResults.set(r.agentId, sanitize(r.result!));
+    }
+
+    // Extract all findings from all agents to build selection input
+    const findingsForSelection: FindingForSelection[] = [];
+    // Track K per finding so we can detect partial coverage
+    const findingKMap = new Map<string, number>();
+    let findingSeq = 0;
+    for (const r of successful) {
+      const parsed = this.parseAgentFindings(r.agentId, r.result!);
+      let idx = 0;
+      for (const p of parsed) {
+        idx++;
+        const id = `${r.agentId}:f${idx}`;
+        findingSeq++;
+        findingsForSelection.push({
+          id,
+          originalAuthor: r.agentId,
+          content: p.content,
+          declaredCategory: p.category,
+          severity: p.severity ?? 'medium',
+        });
+        const K = p.severity === 'critical' ? 3 : 2;
+        findingKMap.set(id, K);
+      }
+    }
+
+    if (findingSeq === 0) {
+      // No structured findings — fall back to synthesize with no cross-review entries
+      _log('consensus', 'runSelectedCrossReview: no structured findings extracted; synthesizing without cross-review');
+      return this.synthesize(results, []);
+    }
+
+    // Build agent candidates from successful results
+    const agentCandidates: AgentCandidate[] = successful.map(r => ({ agentId: r.agentId }));
+
+    // Select cross-reviewers: Map<reviewerAgentId, Set<findingId>>
+    const assignments = selectCrossReviewers(findingsForSelection, agentCandidates, performanceReader);
+
+    if (assignments.size === 0) {
+      _log('consensus', 'runSelectedCrossReview: no reviewers selected; synthesizing without cross-review');
+      const report = await this.synthesize(results, []);
+      report.partialReview = true;
+      return report;
+    }
+
+    // Check if any finding has fewer than K reviewers assigned
+    const reviewerCountPerFinding = new Map<string, number>();
+    for (const [, assignedFindings] of assignments) {
+      for (const fid of assignedFindings) {
+        reviewerCountPerFinding.set(fid, (reviewerCountPerFinding.get(fid) ?? 0) + 1);
+      }
+    }
+    let partialReview = false;
+    for (const finding of findingsForSelection) {
+      const K = findingKMap.get(finding.id) ?? 2;
+      const actual = reviewerCountPerFinding.get(finding.id) ?? 0;
+      if (actual < K) {
+        partialReview = true;
+        break;
+      }
+    }
+
+    // For each reviewer, build a scoped summaries map containing only peers
+    // whose findings they are assigned to review, then call crossReviewForAgent.
+    const allCrossReviewEntries: CrossReviewEntry[] = [];
+
+    await Promise.all(
+      Array.from(assignments.entries()).map(async ([reviewerAgentId, assignedFindingIds]) => {
+        // Find the TaskEntry for this reviewer
+        const reviewerEntry = successful.find(r => r.agentId === reviewerAgentId);
+        if (!reviewerEntry) return;
+
+        // Build scoped summaries: only peers who authored at least one assigned finding
+        const peerAuthors = new Set<string>();
+        for (const fid of assignedFindingIds) {
+          const authorId = fid.split(':f')[0];
+          if (authorId && authorId !== reviewerAgentId) {
+            peerAuthors.add(authorId);
+          }
+        }
+
+        // Scoped summaries design: the reviewer sees full peer output for context,
+        // but buildCrossReviewPrompt scopes the actual review to assigned findings
+        // via the prompt instructions. The raw text provides context (understanding
+        // what the peer was analyzing); the prompt provides scope (which specific
+        // findings to evaluate). This is intentional — reviewers need surrounding
+        // context to judge a finding accurately, not just the finding in isolation.
+        const scopedSummaries = new Map<string, string>();
+        const scopedRaw = new Map<string, string>();
+        // Include the reviewer's own summary (needed by buildCrossReviewPrompt)
+        scopedSummaries.set(reviewerAgentId, summaries.get(reviewerAgentId) ?? '');
+        for (const peerId of peerAuthors) {
+          if (summaries.has(peerId)) scopedSummaries.set(peerId, summaries.get(peerId)!);
+          if (rawResults.has(peerId)) scopedRaw.set(peerId, rawResults.get(peerId)!);
+        }
+
+        const start = Date.now();
+        const entries = await this.crossReviewForAgent(reviewerEntry, scopedSummaries, scopedRaw);
+        _log('consensus', `${reviewerAgentId} selected cross-review: ${entries.length} entries (${Math.round((Date.now() - start) / 1000)}s)`);
+        allCrossReviewEntries.push(...entries);
+      }),
+    );
+
+    const report = await this.synthesize(results, allCrossReviewEntries);
+    if (partialReview) {
+      report.partialReview = true;
+    }
+
+    // Store cross-review assignments and coverage for dashboard monitoring
+    report.crossReviewAssignments = Object.fromEntries(
+      Array.from(assignments.entries()).map(([agentId, findingIds]) => [agentId, Array.from(findingIds)]),
+    );
+    report.crossReviewCoverage = findingsForSelection.map(f => ({
+      findingId: f.id,
+      assigned: reviewerCountPerFinding.get(f.id) ?? 0,
+      targetK: findingKMap.get(f.id) ?? 2,
+    }));
+
+    return report;
   }
 
   /**

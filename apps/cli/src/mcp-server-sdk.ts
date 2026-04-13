@@ -1893,7 +1893,8 @@ server.tool(
   'gossip_signals',
   'Record or retract consensus performance signals. Use action "record" (default) to record signals after cross-referencing agent findings — call IMMEDIATELY when you verify. Use action "retract" to undo a previously recorded signal.',
   {
-    action: z.enum(['record', 'retract']).default('record').describe('Action: "record" to add signals, "retract" to undo a previous signal'),
+    action: z.enum(['record', 'retract', 'bulk_from_consensus']).default('record').describe('Action: "record" to add signals, "retract" to undo a previous signal, "bulk_from_consensus" to auto-record signals for all findings in a consensus report'),
+    consensus_id: z.string().optional().describe('Consensus report ID (8-8 hex format, e.g. "5e8a7194-73e240da"). Required for action: "bulk_from_consensus".'),
     // record params
     task_id: z.string().optional().describe('Task ID to link signals to. For record: optional (synthetic ID if omitted). For retract: required.'),
     task_start_time: z.string().optional().describe('ISO-8601 timestamp of the underlying task/consensus round. Used as the per-batch fallback timestamp so bulk-recording from a backlog preserves true chronology. Falls back to wall-clock if omitted.'),
@@ -1913,7 +1914,7 @@ server.tool(
     agent_id: z.string().optional().describe('Agent whose signal to retract (required for action: "retract")'),
     reason: z.string().optional().describe('Why this signal is being retracted (required for action: "retract")'),
   },
-  async ({ action, task_id, task_start_time, signals, agent_id, reason }) => {
+  async ({ action, task_id, task_start_time, signals, agent_id, reason, consensus_id }) => {
     await boot();
 
     if (action === 'retract') {
@@ -1941,6 +1942,71 @@ server.tool(
         return { content: [{ type: 'text' as const, text: `Retracted signal for ${agent_id} on task ${task_id}.\nReason: ${reason}\n\nThe original signal remains in the audit log but will be excluded from scoring.` }] };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: `Failed to retract: ${(err as Error).message}` }] };
+      }
+    }
+
+    if (action === 'bulk_from_consensus') {
+      if (!consensus_id || consensus_id.trim().length === 0) {
+        return { content: [{ type: 'text' as const, text: 'Error: consensus_id is required for bulk_from_consensus.' }] };
+      }
+      try {
+        const { readFileSync } = await import('fs');
+        const { join } = await import('path');
+        const reportPath = join(process.cwd(), '.gossip', 'consensus-reports', `${consensus_id}.json`);
+        let report: any;
+        try {
+          report = JSON.parse(readFileSync(reportPath, 'utf-8'));
+        } catch {
+          return { content: [{ type: 'text' as const, text: `Error: consensus report not found: ${consensus_id}` }] };
+        }
+
+        // Load existing finding IDs for dedup
+        const existingFindingIds = new Set<string>();
+        try {
+          const perfPath = join(process.cwd(), '.gossip', 'agent-performance.jsonl');
+          const lines = readFileSync(perfPath, 'utf-8').split('\n').filter(Boolean);
+          for (const line of lines) {
+            try { const rec = JSON.parse(line); if (rec.findingId) existingFindingIds.add(rec.findingId); } catch { /* skip */ }
+          }
+        } catch { /* file may not exist yet */ }
+
+        const { PerformanceWriter } = await import('@gossip/orchestrator');
+        const writer = new PerformanceWriter(process.cwd());
+        const batchTs = report.timestamp || new Date().toISOString();
+        const batchTaskId = task_id || `bulk-${consensus_id}`;
+
+        type PS = import('@gossip/orchestrator').PerformanceSignal;
+        const toRecord: PS[] = [];
+        const dupes: string[] = [];
+        let agreementCount = 0, disagreementCount = 0, uniqueCount = 0;
+
+        const addSignal = (signalType: string, f: any) => {
+          const fid = f.id as string | undefined;
+          if (fid && existingFindingIds.has(fid)) { dupes.push(fid); return; }
+          toRecord.push({
+            type: 'consensus',
+            signal: signalType as any,
+            agentId: f.originalAgentId,
+            taskId: batchTaskId,
+            findingId: fid,
+            severity: f.severity,
+            evidence: (f.finding || '').slice(0, 2000),
+            timestamp: batchTs,
+          } as Extract<PS, { type: 'consensus' }>);
+        };
+
+        for (const f of report.confirmed ?? []) { addSignal('agreement', f); agreementCount++; }
+        for (const f of report.disputed ?? []) { addSignal('disagreement', f); disagreementCount++; }
+        for (const f of report.unique ?? []) { addSignal('unique_unconfirmed', f); uniqueCount++; }
+
+        if (toRecord.length > 0) writer.appendSignals(toRecord);
+
+        const skipped = dupes.length;
+        let receipt = `Recorded ${agreementCount} agreement, ${disagreementCount} disagreement, ${uniqueCount} unique signals from ${consensus_id}. ${skipped} duplicate(s) skipped.`;
+        if (dupes.length > 0) receipt += `\nSkipped finding_ids: ${dupes.join(', ')}`;
+        return { content: [{ type: 'text' as const, text: receipt }] };
+      } catch (err) {
+        return { content: [{ type: 'text' as const, text: `bulk_from_consensus failed: ${(err as Error).message}` }] };
       }
     }
 
@@ -2045,13 +2111,37 @@ server.tool(
         };
       });
 
-      writer.appendSignals(formatted);
+      // Dedup gate: reject signals whose finding_id already exists in the performance file.
+      // Prevents duplicate scoring when a future session re-verifies stale UNVERIFIED findings.
+      const existingFindingIds = new Set<string>();
+      try {
+        const { readFileSync } = await import('fs');
+        const perfPath = require('path').join(process.cwd(), '.gossip', 'agent-performance.jsonl');
+        const lines = readFileSync(perfPath, 'utf-8').split('\n').filter(Boolean);
+        for (const line of lines) {
+          try {
+            const rec = JSON.parse(line);
+            if (rec.findingId) existingFindingIds.add(rec.findingId);
+          } catch { /* skip malformed lines */ }
+        }
+      } catch { /* file may not exist yet */ }
+
+      const dupes: string[] = [];
+      const deduped = formatted.filter(s => {
+        if (s.type === 'consensus' && s.findingId && existingFindingIds.has(s.findingId)) {
+          dupes.push(`${s.findingId} (${s.agentId}/${s.signal})`);
+          return false;
+        }
+        return true;
+      });
+
+      if (deduped.length > 0) writer.appendSignals(deduped);
 
       // Auto-convert hallucination signals into skill gap suggestions.
       // Reuses the category derived above (formatted[i].category) so the suggestion
       // pipeline and the signal pipeline always agree on which category fired.
       type ConsensusPS = Extract<PS, { type: 'consensus' }>;
-      const hallucinationSignals = formatted.filter(
+      const hallucinationSignals = deduped.filter(
         (s): s is ConsensusPS => s.type === 'consensus' && s.signal === 'hallucination_caught',
       );
       if (hallucinationSignals.length > 0) {
@@ -2073,7 +2163,7 @@ server.tool(
       }
 
       // Detect severity miscalibration: auto-record when orchestrator overrides agent's severity
-      for (const s of formatted) {
+      for (const s of deduped) {
         if (s.type !== 'consensus') continue;
         if (!s.severity || !s.findingId) continue;
         const originalSeverity = lookupFindingSeverity(s.findingId, process.cwd());
@@ -2171,11 +2261,25 @@ server.tool(
 
                 if (idsForThisReport.size === 0) continue;
 
+                // Match signal finding_id against BOTH formats:
+                //   (a) the report-global id: `consensusId:fGlobalN` (f.id)
+                //   (b) the author-scoped id: `consensusId:agentId:fPerAgentN`
+                //       synthesized from f.authorFindingId + reportId
+                const matchesFinding = (f: any): boolean => {
+                  if (!f) return false;
+                  if (f.id && (idsForThisReport.has(f.id) || unscopedIds.has(f.id))) return true;
+                  if (f.authorFindingId) {
+                    const scoped = `${reportId}:${f.authorFindingId}`;
+                    if (idsForThisReport.has(scoped) || unscopedIds.has(scoped)) return true;
+                  }
+                  return false;
+                };
+
                 let changed = false;
                 if (report.unverified) {
                   const remaining: any[] = [];
                   for (const f of report.unverified) {
-                    if (f.id && (idsForThisReport.has(f.id) || unscopedIds.has(f.id))) {
+                    if (matchesFinding(f)) {
                       f.tag = 'confirmed';
                       // Record orchestrator verification — the orchestrator manually confirmed this
                       f.confirmedBy = f.confirmedBy || [];
@@ -2214,19 +2318,22 @@ server.tool(
         'impl_peer_approved',
       ]);
       const byAgent = new Map<string, { pos: number; neg: number }>();
-      for (const s of signals) {
-        const entry = byAgent.get(s.agent_id) || { pos: 0, neg: 0 };
+      for (const s of deduped) {
+        const entry = byAgent.get(s.agentId) || { pos: 0, neg: 0 };
         if (POSITIVE_SIGNALS.has(s.signal)) entry.pos++;
         else entry.neg++;
-        byAgent.set(s.agent_id, entry);
+        byAgent.set(s.agentId, entry);
       }
 
       const summary = Array.from(byAgent.entries())
         .map(([id, { pos, neg }]) => `  ${id}: +${pos} / -${neg}`)
         .join('\n');
 
-      const taskIdList = formatted.map(f => `  ${f.agentId}: ${f.taskId}`).join('\n');
-      let baseReceipt = `Recorded ${signals.length} consensus signals:\n${summary}\n\nTask IDs (for retraction):\n${taskIdList}\n\nThese will influence future agent selection via dispatch weighting.`;
+      const taskIdList = deduped.map(f => `  ${f.agentId}: ${f.taskId}`).join('\n');
+      let baseReceipt = `Recorded ${deduped.length} consensus signals:\n${summary}\n\nTask IDs (for retraction):\n${taskIdList}\n\nThese will influence future agent selection via dispatch weighting.`;
+      if (dupes.length > 0) {
+        baseReceipt += `\n\n⚠️ ${dupes.length} duplicate signal(s) skipped (finding_id already recorded):\n  ${dupes.join('\n  ')}`;
+      }
 
       // Post-write check: nudge orchestrator toward skill development when this batch
       // moved an agent into a weak state. Best-effort, never blocks the receipt.
@@ -2234,7 +2341,7 @@ server.tool(
         const { PerformanceReader, SkillGapTracker } = await import('@gossip/orchestrator');
         const reader = new PerformanceReader(process.cwd());
         const scores = reader.getScores();
-        const batchAgentIds = Array.from(new Set(formatted.map(f => f.agentId)));
+        const batchAgentIds = Array.from(new Set(deduped.map(f => f.agentId)));
         const triggers: string[] = [];
 
         for (const agentId of batchAgentIds) {

@@ -5,7 +5,8 @@
 import { ctx } from '../mcp-context';
 import { startConsensusTimeout, persistPendingConsensus } from './relay-cross-review';
 import { persistRelayTasks } from './relay-tasks';
-import { FILE_TOOLS, FileTools, Sandbox } from '@gossip/tools';
+import { FILE_TOOLS, FileTools, GitTools, Sandbox } from '@gossip/tools';
+import { MemorySearcher } from '@gossip/orchestrator';
 
 export async function handleCollect(
   task_ids: string[],
@@ -226,13 +227,90 @@ export async function handleCollect(
       if (!mainLlm) {
         return { content: [{ type: 'text' as const, text: 'Error: No LLM configured for consensus. Check gossip_setup.' }] };
       }
+
+      // Hoisted so verifierToolRunner callback can close over it when building the engine config.
+      const verifierFs = new FileTools(new Sandbox(process.cwd()));
+      const verifierGit = new GitTools(process.cwd());
+      const verifierMemory = new MemorySearcher(process.cwd());
+
+      // Resolve short file paths (e.g. "cross-reviewer-selection.ts") to full project-relative
+      // paths. LLMs often cite just the filename without the directory prefix.
+      const resolveToolPath = async (filePath: string): Promise<string> => {
+        if (!filePath) return filePath;
+        // Try as-is first — if Sandbox validates it, the file exists
+        try { new Sandbox(process.cwd()).validatePath(filePath); return filePath; } catch { /* not found */ }
+        // Search via file_search for the bare filename
+        const fileName = filePath.split('/').pop() ?? filePath;
+        try {
+          const searchResult = await verifierFs.fileSearch({ pattern: fileName });
+          const firstMatch = searchResult.split('\n')[0]?.trim();
+          if (firstMatch && firstMatch !== 'No files found') return firstMatch;
+        } catch { /* search failed */ }
+        return filePath; // return original, let fileRead produce a clear error
+      };
+      const { PerformanceReader } = await import('@gossip/orchestrator');
+      const performanceReader = new PerformanceReader(process.cwd());
+
       const engine = new ConsensusEngine({
         llm: mainLlm,
         registryGet: (id: string) => ctx.mainAgent.getAgentConfig(id),
         projectRoot: process.cwd(),
         agentLlm: (id: string) => agentLlmCache.get(id),
+        performanceReader,
+        verifierToolRunner: async (agentId: string, toolName: string, args: Record<string, unknown>): Promise<string> => {
+          const toolStart = Date.now();
+          try {
+            let result: string;
+            switch (toolName) {
+              case 'file_read': {
+                const resolvedPath = await resolveToolPath((args as any).path);
+                result = await verifierFs.fileRead({ ...args, path: resolvedPath } as any);
+                break;
+              }
+              case 'file_grep': {
+                const grepPath = (args as any).path ? await resolveToolPath((args as any).path) : undefined;
+                result = await verifierFs.fileGrep({ ...args, ...(grepPath ? { path: grepPath } : {}) } as any);
+                break;
+              }
+              case 'file_search': result = await verifierFs.fileSearch(args as any); break;
+              case 'memory_query': {
+                const results = verifierMemory.search(agentId, (args as any).query ?? '', 5);
+                result = results.length ? results.map(r => `[${r.source}] ${r.name}: ${r.snippets.join(' | ')}`).join('\n---\n') : 'No memory results found.';
+                break;
+              }
+              case 'git_log': result = await verifierGit.gitLog(args as any); break;
+              default: result = `Unknown tool: ${toolName}`;
+            }
+            const argSummary = toolName === 'file_read' ? (args as any).path
+              : toolName === 'file_grep' ? `"${(args as any).pattern}" in ${(args as any).path ?? '.'}`
+              : toolName === 'file_search' ? (args as any).pattern
+              : toolName === 'memory_query' ? `"${(args as any).query}"`
+              : '';
+            const now = new Date(); const stamp = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}.${String(now.getMilliseconds()).padStart(3,'0')}`;
+            process.stderr.write(`${stamp} 🤝 [consensus] 🔧 ${agentId} tool_call: ${toolName}(${argSummary}) → ${result.length}B (${Date.now() - toolStart}ms)\n`);
+            return result;
+          } catch (e) {
+            const now = new Date(); const stamp = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}.${String(now.getMilliseconds()).padStart(3,'0')}`;
+            process.stderr.write(`${stamp} 🤝 [consensus] 🔧 ${agentId} tool_call: ${toolName}(${JSON.stringify(args).slice(0, 200)}) → ERROR: ${(e as Error).message} (${Date.now() - toolStart}ms)\n`);
+            return `Tool error: ${(e as Error).message}`;
+          }
+        },
       });
 
+      // Server-side Phase 2: engine selects cross-reviewers and runs internally
+      if (engine.hasPerformanceReader) {
+        try {
+          consensusReport = await engine.runSelectedCrossReview(
+            allResults.filter((r: any) => r.status === 'completed'),
+          );
+          // Success — skip legacy relay + native dispatch paths
+        } catch (err) {
+          process.stderr.write(`[consensus] Server-side Phase 2 failed: ${(err as Error).message} — falling back\n`);
+          consensusReport = null; // fall through to legacy path
+        }
+      }
+
+      if (!consensusReport) {
       // Phase 2a: Generate cross-review prompts for all agents
       const { prompts, consensusId } = await engine.generateCrossReviewPrompts(allResults, nativeAgentIds);
 
@@ -260,8 +338,7 @@ export async function handleCollect(
       // file_grep through a small inline tool loop so reviewers can verify
       // identifiers and snippets against the actual repo.
       const verifierTools = FILE_TOOLS.filter(t => t.name === 'file_read' || t.name === 'file_grep');
-      const verifierFs = new FileTools(new Sandbox(process.cwd()));
-      const MAX_VERIFIER_TURNS = 6;
+      const MAX_VERIFIER_TURNS = 7;
 
       const runOneRelayCrossReview = async (p: any, attempt: number): Promise<void> => {
         let llm = agentLlmCache.get(p.agentId);
@@ -435,6 +512,7 @@ export async function handleCollect(
 
         return { content: [{ type: 'text' as const, text: partialOutput }] };
       }
+      } // end if (!consensusReport) — legacy Phase 2 path
     }
   }
 
@@ -455,9 +533,11 @@ export async function handleCollect(
       mdr(reportsDir, { recursive: true });
       const reportId = consensusReport.signals?.[0]?.consensusId || Date.now().toString();
       const reportPath = jr(reportsDir, `${reportId}.json`);
+      const topic = allResults?.find((r: any) => r.task)?.task?.slice(0, 500) || '';
       wfr(reportPath, JSON.stringify({
         id: reportId,
         timestamp: new Date().toISOString(),
+        topic,
         agentCount: consensusReport.agentCount,
         rounds: consensusReport.rounds,
         confirmed: consensusReport.confirmed || [],

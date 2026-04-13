@@ -4,7 +4,7 @@ import { resolve as resolvePath, join } from 'path';
 import { AgentConfig, DispatchOptions, TaskEntry, TaskExecutionResult, PlanState, MIN_AGENTS_FOR_CONSENSUS } from './types';
 import { ILLMProvider } from './llm-client';
 import { loadSkills } from './skill-loader';
-import { assemblePrompt, extractSpecReferences, buildSpecReviewEnrichment } from './prompt-assembler';
+import { assemblePrompt, extractSpecReferences, buildSpecReviewEnrichment, parseSpecFrontMatter } from './prompt-assembler';
 import { AgentMemoryReader } from './agent-memory';
 import { MemoryWriter } from './memory-writer';
 import { discoverProjectStructure } from './project-structure';
@@ -13,6 +13,8 @@ import { TaskGraph } from './task-graph';
 import { SkillCatalog } from './skill-catalog';
 import { SkillGapTracker } from './skill-gap-tracker';
 import { GossipPublisher } from './gossip-publisher';
+import { PerformanceWriter } from './performance-writer';
+import { MetaSignal } from './consensus-types';
 import { ScopeTracker } from './scope-tracker';
 import { WorktreeManager } from './worktree-manager';
 import { TaskGraphSync } from './task-graph-sync';
@@ -28,7 +30,7 @@ import { TaskStreamEvent, TaskStreamEventType } from './task-stream';
 import { ConsensusCoordinator } from './consensus-coordinator';
 import { SessionContext } from './session-context';
 
-const log = (msg: string) => process.stderr.write(`[gossipcat] ${msg}\n`);
+import { gossipLog as log } from './log';
 
 export interface SkillGapSuggestionResult {
   agentId: string;
@@ -54,10 +56,22 @@ export interface DispatchPipelineConfig {
   keyProvider?: (provider: string) => Promise<string | null>;
 }
 
-type TrackedTask = TaskEntry & { 
+type TrackedTask = TaskEntry & {
     stream: AsyncGenerator<TaskStreamEvent, void, undefined>;
     finalResultPromise: Promise<TaskExecutionResult>;
 };
+
+/** Mechanical format compliance check — regex only, no LLM judgment */
+function detectFormatCompliance(result: string): {
+  findingCount: number;
+  citationCount: number;
+  formatCompliant: boolean;
+} {
+  const findingCount = (result.match(/<agent_finding[\s>]/g) ?? []).length;
+  const citationCount = (result.match(/\b[\w./-]+\.\w+:\d+\b/g) ?? []).length;
+  const formatCompliant = findingCount > 0 && citationCount >= findingCount;
+  return { findingCount, citationCount, formatCompliant };
+}
 
 export class DispatchPipeline {
   private readonly projectRoot: string;
@@ -182,7 +196,7 @@ export class DispatchPipeline {
     const skillResult = loadSkills(agentId, agentSkills, this.projectRoot, this.skillIndex ?? undefined, task);
     const skills = skillResult.content;
     if (skillResult.dropped.length > 0) {
-      process.stderr.write(`[gossipcat] Dropped ${skillResult.dropped.length} contextual skill(s) for ${agentId}: ${skillResult.dropped.join(', ')}\n`);
+      log(`Dropped ${skillResult.dropped.length} contextual skill(s) for ${agentId}: ${skillResult.dropped.join(', ')}`);
     }
     // Track contextual skill activations for lifecycle management
     if (this.skillCounters && this.skillIndex) {
@@ -194,8 +208,12 @@ export class DispatchPipeline {
       }
     }
 
-    // 2. Load memory
+    // 2. Load memory (agent knowledge files) + pre-fetch consensus findings
     const memory = this.memReader.loadMemory(agentId, task);
+    const consensusFindings = this.memReader.prefetchConsensusFindingsText(task);
+    if (consensusFindings.length > 0) {
+      log(`📋 pre-fetched ${consensusFindings.length} consensus findings for ${agentId}`);
+    }
 
     // 3. Check skill coverage
     const skillWarnings = this.catalog
@@ -239,7 +257,12 @@ export class DispatchPipeline {
         if (realSpecPath.startsWith(realRoot + '/')) {
           const specContent = readFileSync(realSpecPath, 'utf-8');
           const implFiles = extractSpecReferences(task, specContent);
-          const enrichment = buildSpecReviewEnrichment(implFiles);
+          // Parse YAML front-matter to extract the spec's lifecycle status
+          // (proposal | implemented | retired). The status is injected into
+          // the review enrichment so reviewers frame findings correctly — see
+          // project_task_framing_drift.md (2026-04-08).
+          const { status } = parseSpecFrontMatter(specContent);
+          const enrichment = buildSpecReviewEnrichment(implFiles, status);
           if (enrichment) specReviewContext = enrichment;
         }
       } catch {
@@ -259,6 +282,7 @@ export class DispatchPipeline {
       consensusSummary: options?.consensus,
       specReviewContext,
       projectStructure: this.getProjectStructure(),
+      consensusFindings: consensusFindings.length > 0 ? consensusFindings : undefined,
     });
 
     // 6. Record TaskGraph created
@@ -295,7 +319,7 @@ export class DispatchPipeline {
         entry.worktreeInfo = wtInfo;
         this.toolServer?.assignRoot(agentId, wtInfo.path);
       }
-      const stream = worker.executeTask(task, options?.lens, promptContent);
+      const stream = worker.executeTask(task, options?.lens, promptContent, taskId);
       entry.stream = stream;
       for await (const event of stream) {
         entry.lastEventAt = Date.now();
@@ -311,6 +335,7 @@ export class DispatchPipeline {
             entry.inputTokens = event.payload.inputTokens;
             entry.outputTokens = event.payload.outputTokens;
             entry.completedAt = Date.now();
+            entry.memoryQueryCalled = event.payload.memoryQueryCalled ?? false;
             if (entry.writeMode === 'scoped') this.scopeTracker.release(entry.id);
             // Visibility fix (Option A): emit log + persist task.completed so async dispatch results
             // are debuggable. Without this, the result lives only in this.tasks Map until gossip_collect
@@ -318,16 +343,30 @@ export class DispatchPipeline {
             // (mirroring native-tasks.ts:262) is the next-session implementation task.
             try {
               const elapsedMs = (entry.completedAt ?? Date.now()) - entry.startedAt;
-              process.stderr.write(`[gossipcat] ✅ relay ← ${entry.agentId} [${entry.id}] OK (${(elapsedMs / 1000).toFixed(1)}s, ${(event.payload.result || '').length} chars)\n`);
+              log(`✅ relay ← ${entry.agentId} [${entry.id}] OK (${(elapsedMs / 1000).toFixed(1)}s, ${(event.payload.result || '').length} chars)`);
               appendFileSync(join(this.projectRoot, '.gossip', 'task-graph.jsonl'), JSON.stringify({
                 type: 'task.completed',
                 taskId: entry.id,
                 agentId: entry.agentId,
                 durationMs: elapsedMs,
                 resultLength: (event.payload.result || '').length,
+                memoryQueryCalled: entry.memoryQueryCalled,
                 timestamp: new Date().toISOString(),
               }) + '\n');
             } catch { /* best-effort visibility — never crash dispatch on log/write failure */ }
+            // Emit meta signals for non-consensus dispatch telemetry
+            try {
+              const perfWriter = new PerformanceWriter(this.projectRoot);
+              const now = new Date().toISOString();
+              const durationMs = (entry.completedAt ?? Date.now()) - entry.startedAt;
+              const compliance = detectFormatCompliance(event.payload.result ?? '');
+              const metaSignals: MetaSignal[] = [
+                { type: 'meta', signal: 'task_completed', agentId: entry.agentId, taskId: entry.id, value: durationMs, timestamp: now },
+                { type: 'meta', signal: 'task_tool_turns', agentId: entry.agentId, taskId: entry.id, value: entry.toolCalls ?? 0, timestamp: now },
+                { type: 'meta', signal: 'format_compliance', agentId: entry.agentId, taskId: entry.id, value: compliance.formatCompliant ? 1 : 0, metadata: { findingCount: compliance.findingCount, citationCount: compliance.citationCount }, timestamp: now },
+              ];
+              perfWriter.appendSignals(metaSignals);
+            } catch { /* best-effort — never crash dispatch on signal write failure */ }
             return event.payload;
           case TaskStreamEventType.ERROR:
             entry.status = 'failed';
@@ -341,7 +380,7 @@ export class DispatchPipeline {
             // errors in async dispatch were the diagnostic blindness that ate ~45min of session 2026-04-07.
             try {
               const elapsedMs = (entry.completedAt ?? Date.now()) - entry.startedAt;
-              process.stderr.write(`[gossipcat] ❌ relay ← ${entry.agentId} [${entry.id}] FAILED (${(elapsedMs / 1000).toFixed(1)}s) — ${event.payload.error}\n`);
+              log(`❌ relay ← ${entry.agentId} [${entry.id}] FAILED (${(elapsedMs / 1000).toFixed(1)}s) — ${event.payload.error}`);
               appendFileSync(join(this.projectRoot, '.gossip', 'task-graph.jsonl'), JSON.stringify({
                 type: 'task.failed',
                 taskId: entry.id,
@@ -767,7 +806,7 @@ export class DispatchPipeline {
       if (!this.bootWarningShown) {
         const warning = this.overlapDetector.formatWarning(overlapResult);
         if (warning) {
-          process.stderr.write(`[gossipcat] ⚠️  Skill overlap detected:\n  ${warning}\n`);
+          log(`⚠️  Skill overlap detected:\n  ${warning}`);
         }
         this.bootWarningShown = true;
       }
@@ -824,7 +863,7 @@ export class DispatchPipeline {
                     remainingSiblings: remaining.map(ac => ({
                       agentId: ac.id, preset: ac.preset || 'custom', skills: ac.skills,
                     })),
-                  }).catch(err => process.stderr.write(`[gossipcat] Gossip: ${(err as Error).message}\n`));
+                  }).catch(err => log(`Gossip: ${(err as Error).message}`));
                 }
               }).catch(() => {});
             }
@@ -924,13 +963,14 @@ export class DispatchPipeline {
 
     // 2. Write agent memory (task log + knowledge extraction)
     try {
+      const agentScore = this.perfReader?.getAgentScore(t.agentId);
       await this.memWriter.writeTaskEntry(t.agentId, {
         taskId: t.id, task: t.task,
         skills: this.registryGet(t.agentId)?.skills || [],
         scores: {
           relevance: (t.result && t.result.length > 200) ? 4 : 3,
-          accuracy: 4,
-          uniqueness: 3,
+          accuracy: agentScore ? Math.max(1, Math.round(agentScore.accuracy * 5)) : 3,
+          uniqueness: agentScore ? Math.max(1, Math.round(agentScore.uniqueness * 5)) : 3,
         },
       });
       if (t.result) {

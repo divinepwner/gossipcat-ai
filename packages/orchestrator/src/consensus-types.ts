@@ -1,6 +1,11 @@
 /** A finding tagged by consensus phase */
 export interface ConsensusFinding {
   id: string;
+  /** The per-agent finding identifier `${originalAgentId}:f${perAgentIdx}` as
+   * assigned during cross-review prompt assembly. Enables dashboard/signal
+   * writeback to resolve the 3-part finding_id format
+   * `${consensusId}:${agentId}:fN` against this finding. */
+  authorFindingId?: string;
   originalAgentId: string;
   finding: string;
   findingType?: 'finding' | 'suggestion' | 'insight';
@@ -56,6 +61,21 @@ export interface ConsensusReport {
    * consensus instead of pretending the round was complete.
    */
   relayCrossReviewSkipped?: Array<{ agentId: string; reason: string }>;
+  /**
+   * True when at least one finding received fewer cross-reviewers than the
+   * target K (e.g. not enough eligible agents). Set by runSelectedCrossReview.
+   */
+  partialReview?: boolean;
+  /**
+   * Cross-review assignments: which reviewer was assigned which findings.
+   * Map serialized as Record<reviewerAgentId, findingId[]>.
+   */
+  crossReviewAssignments?: Record<string, string[]>;
+  /**
+   * Per-finding coverage: how many cross-reviewers were assigned vs target K.
+   * Enables dashboard to show under-reviewed findings.
+   */
+  crossReviewCoverage?: Array<{ findingId: string; assigned: number; targetK: number }>;
 }
 
 /** Return type for collect() */
@@ -118,10 +138,12 @@ export interface ImplSignal {
 /** Meta signal from worker-agent telemetry */
 export interface MetaSignal {
   type: 'meta';
-  signal: 'task_completed' | 'task_tool_turns';
+  signal: 'task_completed' | 'task_tool_turns' | 'format_compliance';
   agentId: string;
   taskId: string;
   value?: number;
+  /** Additional structured data for signals that carry more than a scalar value */
+  metadata?: Record<string, unknown>;
   timestamp: string;
 }
 

@@ -91,6 +91,7 @@ export interface ConsensusReportFinding {
 export interface ConsensusReport {
   id: string;
   timestamp: string;
+  topic?: string;
   agentCount: number;
   rounds: number;
   confirmed: ConsensusReportFinding[];
@@ -99,6 +100,9 @@ export interface ConsensusReport {
   unique: ConsensusReportFinding[];
   insights: ConsensusReportFinding[];
   newFindings: Array<{ agentId: string; finding: string; evidence: string; confidence: number }>;
+  crossReviewAssignments?: Record<string, string[]>;
+  crossReviewCoverage?: Array<{ findingId: string; assigned: number; targetK: number }>;
+  partialReview?: boolean;
 }
 
 export interface ConsensusReportsData {
