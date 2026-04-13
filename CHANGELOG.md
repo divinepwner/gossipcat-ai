@@ -4,6 +4,46 @@ All notable changes to gossipcat are documented here. The format is loosely base
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-04-13
+
+### Server-side cross-review with epsilon-greedy reviewer selection (#45)
+
+The consensus engine now handles Phase 2 cross-review internally. Previously the orchestrator had to manually dispatch cross-review agents one at a time (5-step protocol). Now `gossip_collect(consensus: true)` triggers server-side reviewer selection, cross-review with verifier tools (`file_read`, `file_grep`), and synthesis — all in one call (3-step protocol).
+
+**Cross-reviewer selection** (`selectCrossReviewers`) uses epsilon-greedy exploration with severity-scaled rates: critical findings get 4.5% exploration (rarely experimental reviewers), low-severity gets full starvation-based exploration. Scoring: `accuracy * 0.7 + categoryAccuracy * 0.3`. Fresh agent pools use Fisher-Yates shuffle (`crypto.randomBytes`) for uniform distribution.
+
+### Consensus-aware memory pre-fetch
+
+Agents skip `memory_query` 85% of the time despite having a permanent skill telling them to recall. The new `prefetchConsensusFindingsText` function reads `implementation-findings.jsonl` at dispatch time, keyword-scores each finding against the task text, and injects the top 3 peer-confirmed findings into the agent's prompt automatically. No LLM call, ~5ms latency, ~600 chars budget. Agents no longer need to call `memory_query` to see recent consensus findings on the files they're reviewing.
+
+Also added: `memoryQueryCalled` tracking on every task result for compliance auditing.
+
+### Real agent scores for memory importance
+
+Previously `writeTaskEntry` hardcoded `accuracy: 4, uniqueness: 3` for every task — making warmth-based compaction purely time-driven. Now uses actual `perfReader` scores: a sonnet-reviewer task (0.80 accuracy) gets importance 0.67, while an openclaw task (0.00 accuracy) gets 0.47. High-quality agents' memories survive compaction longer.
+
+### Bulk signal recording from consensus reports
+
+New action: `gossip_signals(action: "bulk_from_consensus", consensus_id: "xxx")`. Reads a consensus report and auto-records agreement/disagreement/unique signals for all findings, with dedup against existing `finding_id`s. Replaces manual one-by-one recording for 30+ finding rounds.
+
+### Dashboard improvements
+
+- Cross-review coverage badges per finding (reviewer initials, yellow warnings for under-reviewed)
+- Consensus topic subtitle + severity filter on Debates page
+- Design polish across all 5 pages (Home, Team, Debates, Tasks, Settings)
+- Font centralization: `--font-inter` Tailwind v4 utility replaces 7 inline styles
+- Bug fixes: filter state bleed, agentInitials trailing-dash, BarRow NaN guard
+- Performance: dedupe agent set computation, useMemo for lastTaskByAgent, aria-expanded
+
+### Other
+
+- Timestamped centralized logger (`log.ts`) with emoji categories
+- Bootstrap deferral fix (ToolSearch Step 0 + dispatch override rule)
+- Removed 6 stale `.js`/`.d.ts` artifacts shadowing `.ts` sources
+- Git project bridge spec (proposal, consensus-reviewed — deferred)
+- HANDBOOK updated: consensus protocol 3 steps, CI pipeline caveat removed
+- 2090+ lines of new tests across 5 test files
+
 ## [0.1.2] — 2026-04-09
 
 ### Native Claude Code as a first-class orchestrator (#12)
