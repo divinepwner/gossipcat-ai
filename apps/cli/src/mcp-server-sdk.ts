@@ -372,6 +372,14 @@ async function doBoot() {
   });
   await ctx.relay.start();
 
+  // PID diagnostic — logged once at relay init so we can correlate
+  // `.gossip/mcp.log` `RELAY DISCONNECTED` bursts with MCP-host respawns.
+  // If the PID changes between bursts the relay process is being killed
+  // (confirms PR 2 daemon detach is necessary); if it stays the same the
+  // relay is crashing internally or the WS layer is dropping all workers
+  // together. See docs/specs/2026-04-15-relay-lifecycle-stability.md.
+  process.stderr.write(`[relay] PID=${process.pid}\n`);
+
   // Persist the actual bound port for next boot's sticky lookup.
   if (typeof ctx.relay.port === 'number' && ctx.relay.port > 0) {
     writeStickyPort(RELAY_STICKY_FILE, ctx.relay.port);
@@ -384,10 +392,33 @@ async function doBoot() {
   try { writePid(pidFile, String(process.pid)); } catch { /* best-effort */ }
 
   // Clean up PID file on graceful exit so the next boot doesn't try to kill a dead process.
+  // Log shutdown reason before exit — pairs with the `[relay] PID=...` boot
+  // log so next-session analysis can tell whether the MCP host (SIGTERM on
+  // stdio close) or a user Ctrl-C (SIGINT) killed this process.
   const cleanupPid = () => { try { delPid(pidFile); } catch { /* ignore */ } };
   process.once('exit', cleanupPid);
-  process.once('SIGTERM', () => { cleanupPid(); process.exit(0); });
-  process.once('SIGINT',  () => { cleanupPid(); process.exit(0); });
+  // Shared guard across SIGTERM and SIGINT: a double-fire (e.g. parent sends
+  // SIGTERM then Ctrl-C escalates to SIGINT, or vice-versa) must NOT race two
+  // concurrent relay.stop() calls. The first signal wins; subsequent signals
+  // no-op. Also closes the prior gap where neither handler called stop(),
+  // leaking the WS server and heartbeat interval on shutdown.
+  let shuttingDown = false;
+  process.once('SIGTERM', async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    process.stderr.write(`[relay] shutdown reason=SIGTERM pid=${process.pid}\n`);
+    try { await ctx.relay.stop(); } catch { /* ignore */ }
+    cleanupPid();
+    process.exit(0);
+  });
+  process.once('SIGINT',  async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    process.stderr.write(`[relay] shutdown reason=SIGINT pid=${process.pid}\n`);
+    try { await ctx.relay.stop(); } catch { /* ignore */ }
+    cleanupPid();
+    process.exit(0);
+  });
 
   if (ctx.relay.dashboardUrl) {
     process.stderr.write(`[gossipcat] 🌐 Dashboard: ${ctx.relay.dashboardUrl} (key: ${ctx.relay.dashboardKey})\n`);

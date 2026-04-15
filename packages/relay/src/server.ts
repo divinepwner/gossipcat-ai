@@ -11,7 +11,7 @@ import { randomUUID, timingSafeEqual } from 'crypto';
 import { Codec } from '@gossip/types';
 import { ConnectionManager } from './connection-manager';
 import { MessageRouter } from './router';
-import { AgentConnection } from './agent-connection';
+import { AgentConnection, livenessMap } from './agent-connection';
 import { DashboardAuth } from './dashboard/auth';
 import { DashboardRouter } from './dashboard/routes';
 import { DashboardWs } from './dashboard/ws';
@@ -27,6 +27,13 @@ export interface RelayServerConfig {
   authTimeoutMs?: number;
   apiKey?: string;  // If set, clients must provide this exact key to authenticate
   dashboard?: DashboardConfig;  // If set, enables the dashboard UI
+  /**
+   * Heartbeat interval in milliseconds. Every tick, the server pings each
+   * client; clients that haven't responded to the previous ping are
+   * terminated. Default: 30_000 (30 s). Set to 0 to disable heartbeats
+   * (mostly useful for tests).
+   */
+  heartbeatIntervalMs?: number;
 }
 
 export class RelayServer {
@@ -44,15 +51,32 @@ export class RelayServer {
   private dashboardRouter: DashboardRouter | null = null;
   private dashboardWs: DashboardWs | null = null;
   private dashboardUpgrader: WebSocketServer | null = null; // single instance — avoids per-request leak
+  // Per-client heartbeat timers. A single global setInterval iterating
+  // wss.clients caused a thundering herd: every `heartbeatIntervalMs` all
+  // sockets got pinged at once, and a slow event-loop tick could delay every
+  // client's pong simultaneously, producing false-positive termination
+  // bursts. Per-client intervals with jittered first-tick delays spread the
+  // load and decouple liveness checks across connections.
+  private clientHeartbeats = new Map<WebSocket, ReturnType<typeof setInterval>>();
+  private heartbeatRunning: boolean = false;
+  private readonly heartbeatIntervalMs: number;
 
   constructor(private config: RelayServerConfig) {
     this.connectionManager = new ConnectionManager();
     this.router = new MessageRouter(this.connectionManager);
     this.authTimeoutMs = config.authTimeoutMs ?? 5000;
+    this.heartbeatIntervalMs = config.heartbeatIntervalMs ?? 30_000;
   }
 
   get port(): number { return this._port; }
   get url(): string { return `ws://localhost:${this._port}`; }
+  /**
+   * True while heartbeat scheduling is active (start was called with a
+   * positive interval and stop has not been called). Per-client timers are
+   * registered lazily on connection, so this flag — not a single
+   * global-interval handle — is the source of truth for "heartbeat on".
+   */
+  get isHeartbeatRunning(): boolean { return this.heartbeatRunning; }
 
   async start(): Promise<void> {
     return new Promise((resolve) => {
@@ -75,8 +99,9 @@ export class RelayServer {
         );
       }
 
-      this.wss = new WebSocketServer({ noServer: true, maxPayload: 1 * 1024 * 1024 });
+      this.wss = new WebSocketServer({ noServer: true, maxPayload: 1 * 1024 * 1024, clientTracking: true });
       this.wss.on('connection', this.handleConnection.bind(this));
+      this.startHeartbeat();
 
       this.httpServer.on('upgrade', (req, socket, head) => {
         const url = req.url ?? '';
@@ -113,6 +138,7 @@ export class RelayServer {
 
   async stop(): Promise<void> {
     this.router.stop();  // stop presence tracker interval
+    this.stopHeartbeat();
     // Close dashboard clients and upgrader
     if (this.dashboardWs) {
       this.dashboardWs.stopLogWatcher();
@@ -133,6 +159,113 @@ export class RelayServer {
         this.httpServer.close(() => resolve());
       });
     });
+  }
+
+  /**
+   * Arm heartbeat scheduling.
+   *
+   * Per-client model: a separate setInterval is registered for each
+   * authenticated client (see `scheduleClientHeartbeat`) with a jittered
+   * first-tick delay to spread pings across the interval window. Each tick
+   * for a given client:
+   *   - if `pendingPong === true` from the previous tick, the peer missed a
+   *     round-trip → terminate so the router unregisters.
+   *   - otherwise mark `pendingPong = true` and send a ws-level ping. The
+   *     `pong` handler in agent-connection.ts clears the flag on live reply.
+   *
+   * This detects half-open TCP connections (NAT silently dropping state,
+   * Wi-Fi roam, VM suspend) faster than the default ~2 min TCP keepalive.
+   * Non-agent sockets (dashboard WS) run on `dashboardUpgrader` and are
+   * unaffected. Rollback = flip `heartbeatRunning` to false and never call
+   * `scheduleClientHeartbeat`.
+   */
+  private startHeartbeat(): void {
+    if (this.heartbeatIntervalMs <= 0) return; // disabled (mostly for tests)
+    this.heartbeatRunning = true;
+  }
+
+  private stopHeartbeat(): void {
+    this.heartbeatRunning = false;
+    for (const [ws, timer] of this.clientHeartbeats) {
+      clearInterval(timer);
+      this.clientHeartbeats.delete(ws);
+    }
+  }
+
+  /**
+   * Register a per-client heartbeat timer with jittered first-tick delay.
+   *
+   * Jitter (random 0..heartbeatIntervalMs) breaks up the thundering herd
+   * from a single global interval: with ~N simultaneous connections, all
+   * pings would otherwise land in the same event-loop tick. Each client
+   * instead gets its own offset into the cycle.
+   *
+   * The timer is cleared in two places: `handleConnection`'s `cleanup`
+   * (on ws close/error) and `stopHeartbeat` (on server.stop).
+   */
+  private scheduleClientHeartbeat(ws: WebSocket): void {
+    if (!this.heartbeatRunning) return;
+    if (this.heartbeatIntervalMs <= 0) return;
+    if (this.clientHeartbeats.has(ws)) return;
+    const tick = () => {
+      // If the server stopped or the socket already closed, nothing to do.
+      if (!this.heartbeatRunning) return;
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const state = livenessMap.get(ws);
+      if (state && state.pendingPong) {
+        // Peer never answered the previous ping — treat as dead.
+        try {
+          ws.terminate();
+        } catch {
+          // Socket already dead; fall through to local cleanup.
+        }
+        livenessMap.delete(ws);
+        const t = this.clientHeartbeats.get(ws);
+        if (t) {
+          clearInterval(t);
+          this.clientHeartbeats.delete(ws);
+        }
+        return;
+      }
+      if (!state) {
+        livenessMap.set(ws, { pendingPong: true });
+      } else {
+        state.pendingPong = true;
+      }
+      try {
+        ws.ping();
+      } catch {
+        // Socket died between our readyState check and ping(). The prior
+        // implementation left a stale liveness entry here and claimed "next
+        // tick will clean it up" — but with per-client timers, if the ws
+        // closes its events may already have fired and no further tick will
+        // run. Clean up explicitly so the claim holds unconditionally.
+        livenessMap.delete(ws);
+        const t = this.clientHeartbeats.get(ws);
+        if (t) {
+          clearInterval(t);
+          this.clientHeartbeats.delete(ws);
+        }
+      }
+    };
+    // Jittered first delay in [0, heartbeatIntervalMs) so connections
+    // registered in the same instant don't all fire together.
+    const jitter = Math.floor(Math.random() * this.heartbeatIntervalMs);
+    const firstTick = setTimeout(() => {
+      if (!this.heartbeatRunning) return;
+      if (ws.readyState !== WebSocket.OPEN) return;
+      tick();
+      if (!this.heartbeatRunning) return;
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const interval = setInterval(tick, this.heartbeatIntervalMs);
+      interval.unref?.();
+      this.clientHeartbeats.set(ws, interval);
+    }, jitter);
+    firstTick.unref?.();
+    // Store the first-tick timer in the map so stopHeartbeat can cancel it
+    // even before the interval phase takes over. setTimeout and setInterval
+    // handles are interchangeable under clearInterval/clearTimeout in Node.
+    this.clientHeartbeats.set(ws, firstTick as unknown as ReturnType<typeof setInterval>);
   }
 
   private handleConnection(ws: WebSocket, req: IncomingMessage): void {
@@ -170,6 +303,14 @@ export class RelayServer {
       cleaned = true;
       decrementIp();
       clearTimeout(authTimer);
+      // Clear this client's per-client heartbeat timer so it doesn't fire
+      // against a closed socket.
+      const hbTimer = this.clientHeartbeats.get(ws);
+      if (hbTimer) {
+        clearInterval(hbTimer);
+        this.clientHeartbeats.delete(ws);
+      }
+      livenessMap.delete(ws);
       if (connection) {
         this.router.onAgentDisconnect(connection.sessionId);
         this.connectionManager.unregister(connection.sessionId);
@@ -227,6 +368,10 @@ export class RelayServer {
 
             authenticated = true;
             this.updateDashboardConnectionCount();
+            // Arm per-client heartbeat now that the agent is authenticated.
+            // Pre-auth sockets don't need liveness checks — the auth timer
+            // already bounds how long they can sit idle.
+            this.scheduleClientHeartbeat(ws);
             ws.send(JSON.stringify({ type: 'auth_ok', sessionId, agentId: authMsg.agentId }));
             return;
           }
