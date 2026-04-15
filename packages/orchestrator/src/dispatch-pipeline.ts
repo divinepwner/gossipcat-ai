@@ -30,6 +30,8 @@ import { TaskStreamEvent, TaskStreamEventType } from './task-stream';
 import { ConsensusCoordinator } from './consensus-coordinator';
 import { SessionContext } from './session-context';
 import { parseAgentFindingsStrict } from './parse-findings';
+import { extractCategories } from './category-extractor';
+import { inferTaskType } from './task-type-inference';
 
 import { gossipLog as log } from './log';
 
@@ -245,10 +247,21 @@ export class DispatchPipeline {
     const agentSkills = this.registryGet(agentId)?.skills || [];
 
     // 1. Load skills (index takes precedence when available, contextual filtered by task)
-    const skillResult = loadSkills(agentId, agentSkills, this.projectRoot, this.skillIndex ?? undefined, task);
+    //    Extract task categories (regex-driven, zero LLM cost) so contextual
+    //    skills get a fractional boost when their category matches the task's
+    //    inferred category set. See skill-loader.categoryBoost and consensus
+    //    f2ff0fac-fb384daa.
+    const taskCategories = extractCategories(task);
+    // Dispatch-side task type: prefer caller-provided, else infer from write
+    // mode + task verb. Passed through to loadSkills so skills declared with
+    // `task_type: implement|review|research` get filtered before the keyword
+    // gate. Skills without the axis (default 'any') still activate for all.
+    const dispatchTaskType = options?.taskType ?? inferTaskType(task, options?.writeMode);
+    const skillResult = loadSkills(agentId, agentSkills, this.projectRoot, this.skillIndex ?? undefined, task, taskCategories, dispatchTaskType);
     const skills = skillResult.content;
     if (skillResult.dropped.length > 0) {
-      log(`Dropped ${skillResult.dropped.length} contextual skill(s) for ${agentId}: ${skillResult.dropped.join(', ')}`);
+      const dropSummary = skillResult.dropped.map(d => `${d.skill} (${d.reason}${d.hits ? `, hits=${d.hits}` : ''})`).join(', ');
+      log(`Dropped ${skillResult.dropped.length} skill(s) for ${agentId}: ${dropSummary}`);
     }
     // Track contextual skill activations for lifecycle management
     if (this.skillCounters && this.skillIndex) {
@@ -1167,15 +1180,29 @@ export class DispatchPipeline {
     const agentScores = this.perfReader.getScores();
     if (agentScores.size < 2) return [];
 
-    // Collect ALL categories seen across agents
+    // Two metrics, two jobs:
+    //   - categoryStrengths: additive, volume-weighted — good signal for "does the
+    //     team as a whole have experience here?" → drives the peer-median benchmark.
+    //   - categoryAccuracy: correct / (correct + hallucinated) — UX-aligned label for
+    //     "is this specific agent right when they speak up?" → drives weakness flag.
+    // Using strengths for the weakness side would flag agents as weak purely for
+    // lacking volume, even when their few signals were correct. Accuracy is the
+    // honest weakness metric.
+    const WEAKNESS_ACCURACY_THRESHOLD = 0.3;
+    const PEER_STRENGTH_THRESHOLD = 0.6;
+    const MIN_CATEGORY_SIGNALS = 5;
+
+    // Collect ALL categories seen across agents (union of strengths + accuracy keys
+    // so we don't miss a category that exists in one map but not the other).
     const allCategories = new Set<string>();
     for (const [, score] of agentScores) {
-      for (const cat of Object.keys(score.categoryStrengths)) {
-        allCategories.add(cat);
-      }
+      for (const cat of Object.keys(score.categoryStrengths)) allCategories.add(cat);
+      for (const cat of Object.keys(score.categoryAccuracy ?? {})) allCategories.add(cat);
     }
 
-    // Compute medians — include ALL agents (use 0 neutral for missing categories)
+    // Compute peer medians on categoryStrengths — include ALL agents (use 0 neutral
+    // for missing categories). This asks "is the TEAM strong here?", a volume-aware
+    // question where strengths is the right input.
     const categoryMedians = new Map<string, number>();
     for (const cat of allCategories) {
       const values: number[] = [];
@@ -1191,9 +1218,20 @@ export class DispatchPipeline {
     const suggestions: SkillGapSuggestionResult[] = [];
     for (const [, score] of agentScores) {
       for (const [cat, median] of categoryMedians) {
-        if (median < 0.6) continue; // peers aren't strong enough to justify suggestion
-        const catScore = score.categoryStrengths[cat] ?? 0;
-        if (catScore < 0.3) {
+        if (median < PEER_STRENGTH_THRESHOLD) continue; // peers aren't strong enough
+        const accuracyMap = (score.categoryAccuracy ?? {}) as Record<string, number>;
+        // Two-factor gate: require BOTH enough signals AND low accuracy.
+        // Signal count source matches the trigger in mcp-server-sdk.ts so the
+        // dashboard trigger and dispatch-time suggestion fire under the same rule.
+        const correct = (score.categoryCorrect ?? {})[cat] ?? 0;
+        const hallucinated = (score.categoryHallucinated ?? {})[cat] ?? 0;
+        if (correct + hallucinated < MIN_CATEGORY_SIGNALS) continue;
+        // categoryAccuracy is only populated when the reader's own MIN_CATEGORY_N
+        // gate passes, so a missing entry means insufficient data — skip rather
+        // than defaulting to 0 and over-triggering.
+        if (!(cat in accuracyMap)) continue;
+        const catScore = accuracyMap[cat];
+        if (catScore < WEAKNESS_ACCURACY_THRESHOLD) {
           // Suppress if already suggested this session
           const key = `${score.agentId}::${cat}`;
           if (this.suggestedSkillGaps.has(key)) continue;
