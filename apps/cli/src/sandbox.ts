@@ -550,8 +550,8 @@ interface Layer3AuditOptions {
   /** Extra cwd the agent ran in. When set, files under it are excluded
    * from the audit (they are legitimate writes to the worktree). */
   worktreePath?: string;
-  /** Override the scan roots (tests). Defaults to $HOME + tmpdir() + /tmp +
-   * /private/tmp (dedup'd). */
+  /** Override the scan roots (tests). Defaults to `defaultScanRoots(writeMode,
+   * projectRoot)`. */
   scanRoots?: string[];
   /** Override `process.platform` (tests). */
   platform?: NodeJS.Platform;
@@ -559,6 +559,12 @@ interface Layer3AuditOptions {
   findBinary?: string;
   /** Swallow child_process errors — defaults to true. Tests can flip this. */
   logFailures?: boolean;
+  /** Dispatch write mode. Drives the default scan-root shape: scoped mode
+   * narrows to projectRoot only (Tool Server's shell_exec is read-only-git
+   * for scoped agents, so $HOME scan has zero true-positive capacity);
+   * worktree/sequential/undefined keep the broad scan (relay shell_exec
+   * can escape). */
+  writeMode?: DispatchWriteMode;
 }
 
 /** Canonicalize a path for comparison — resolve symlinks when the file exists
@@ -576,9 +582,31 @@ function canonicalize(p: string): string {
   }
 }
 
-/** Compute the default scan roots. Exposed for tests. */
-export function defaultScanRoots(): string[] {
+/** Compute the default scan roots. Exposed for tests.
+ *
+ * Mode-aware shape:
+ *   - scoped:    projectRoot only. Tool Server's shell_exec is read-only-git
+ *                for scoped agents; they cannot write outside scope via any
+ *                primitive. Scanning $HOME has zero true-positive capacity
+ *                (live-fire 2026-04-16: 1064 violations per dispatch were
+ *                100% orchestrator/OS noise).
+ *   - worktree / sequential / undefined: broad scan ($HOME + tmpdir + /tmp
+ *                + /private/tmp). Relay shell_exec can escape $HOME and
+ *                tmpdir, so bypasses under these roots ARE reachable.
+ */
+export function defaultScanRoots(
+  writeMode: DispatchWriteMode,
+  projectRoot: string,
+): string[] {
   const out = new Set<string>();
+  if (writeMode === 'scoped') {
+    // Scoped agents cannot write outside scope via any Tool Server primitive
+    // (shell_exec is read-only-git for scoped mode). Scanning $HOME has zero
+    // true-positive capacity.
+    try { out.add(canonicalize(projectRoot)); } catch { /* ignore */ }
+    return Array.from(out);
+  }
+  // Worktree / sequential: broad scan — relay shell_exec can escape $HOME/tmpdir.
   try { out.add(canonicalize(homedir())); } catch { /* ignore */ }
   try { out.add(canonicalize(tmpdir())); } catch { /* ignore */ }
   // macOS's shell-level TMPDIR often points into /var/folders/..., but
@@ -619,21 +647,76 @@ export function buildAuditExclusions(
   const root = canonicalize(projectRoot);
   for (const v of expandTmpVariants(`${root}/.gossip`)) excl.add(v);
   for (const v of expandTmpVariants(`${root}/.claude`)) excl.add(v);
+  // Orchestrator git activity runs inside collect() BEFORE the audit.
+  // worktreeManager.merge() + cleanup() (dispatch-pipeline.ts) touches
+  // .git/refs, .git/logs, .git/index, .git/objects — all newer than the
+  // sentinel, none agent-attributable. Exclude the project's .git entirely.
+  for (const v of expandTmpVariants(`${root}/.git`)) excl.add(v);
   // User-level OS/app churn dirs. These are unreachable through the Tool
   // Server sandbox or Layer 2 hook, so violations under them are pure noise
   // (Chrome cookies, Spotify cache, Claude Code session logs, npm cache, etc.).
   // Real agent writes anywhere else in $HOME are still caught.
+  // `.claude` (not just `.claude/projects`) — Claude Code harness spawns new
+  // subtrees per release (e.g. `.claude/plugins/`, `.claude/caches/`), and
+  // any path under $HOME/.claude is orchestrator churn.
   try {
     const home = canonicalize(homedir());
-    for (const sub of ['Library', '.cache', '.npm', '.claude/projects']) {
+    for (const sub of ['Library', '.cache', '.npm', '.claude']) {
       for (const v of expandTmpVariants(`${home}/${sub}`)) excl.add(v);
     }
   } catch { /* homedir() failure — best-effort, never block audit */ }
+  // OS-level tmpdir churn. macOS darwin user temp dirs (com.apple.*,
+  // itunescloudd, TemporaryItems) fill up during a dispatch regardless of
+  // agent activity. Exclude the well-known prefixes; any other file under
+  // tmpdir is still flagged.
+  try {
+    const tmp = canonicalize(tmpdir());
+    for (const pat of ['com.apple.*', 'itunescloudd', 'TemporaryItems']) {
+      for (const v of expandTmpVariants(`${tmp}/${pat}`)) excl.add(v);
+    }
+  } catch { /* tmpdir() failure — best-effort */ }
   if (ownWorktree) {
     const wt = canonicalize(ownWorktree);
     for (const v of expandTmpVariants(wt)) excl.add(v);
   }
   return Array.from(excl);
+}
+
+/**
+ * Build `find` argv using `-prune` to skip excluded directories entirely
+ * rather than `-not -path` which only filters output AFTER descending. On
+ * macOS, descending into $HOME/Library/* triggers TCC "Operation not
+ * permitted" errors even though the files there are irrelevant; `-prune`
+ * sidesteps that noise.
+ *
+ * Shape when exclusions is non-empty:
+ *   <root> ( -path ex1 -o -path ex2 ... ) -prune -o -type f -newer <sentinel> -print
+ *
+ * Shape when exclusions is empty:
+ *   <root> -type f -newer <sentinel> -print
+ *
+ * `(` and `)` are separate argv entries — execFileSync takes them literally
+ * (no shell). With `-prune`, the directory path alone is enough; trailing
+ * `/*` globs are neither needed nor correct.
+ *
+ * Exported for targeted arg-shape testing.
+ */
+export function buildFindPruneArgs(
+  scanRoot: string,
+  exclusions: string[],
+  sentinel: string,
+): string[] {
+  const args: string[] = [scanRoot];
+  if (exclusions.length > 0) {
+    args.push('(');
+    for (let i = 0; i < exclusions.length; i++) {
+      if (i > 0) args.push('-o');
+      args.push('-path', exclusions[i]);
+    }
+    args.push(')', '-prune', '-o');
+  }
+  args.push('-type', 'f', '-newer', sentinel, '-print');
+  return args;
 }
 
 /**
@@ -678,7 +761,10 @@ export function auditFilesystemSinceSentinel(
     return { violations: [], skipped: 'sentinel stat failed' };
   }
 
-  const scanRoots = options.scanRoots ?? defaultScanRoots();
+  const scanRoots = options.scanRoots ?? defaultScanRoots(
+    options.writeMode ?? meta.writeMode,
+    projectRoot,
+  );
   const exclusions = buildAuditExclusions(projectRoot, meta.worktreePath);
   const findBin = options.findBinary ?? 'find';
 
@@ -688,21 +774,13 @@ export function auditFilesystemSinceSentinel(
     if (!existsSync(root)) continue;
     const canonRoot = canonicalize(root);
 
-    // Build `find <root> -newer <sentinel> -type f ( -not -path "<excl>/*" )...`
-    // We pipe each excluded dir as -not -path patterns. `find` treats
-    // -path as a glob match against the full path.
-    const args: string[] = [canonRoot, '-type', 'f', '-newer', sentinel];
-
     // Always exclude the sentinel dir itself (stamping it bumps its own
     // mtime and would otherwise self-match if tmpdir == .gossip path).
     // buildAuditExclusions already emits /tmp + /private/tmp twins for its
     // inputs; do the same for the sentinel dir so both forms are covered.
     const sentinelDir = canonicalize(join(projectRoot, '.gossip', SENTINEL_DIR));
     const allExcl = [...exclusions, ...expandTmpVariants(sentinelDir)];
-    for (const e of allExcl) {
-      args.push('-not', '-path', e);
-      args.push('-not', '-path', `${e}/*`);
-    }
+    const args = buildFindPruneArgs(canonRoot, allExcl, sentinel);
 
     try {
       // Use execFileSync (no shell) so exclusions are passed as literal args.
@@ -817,7 +895,9 @@ export function runLayer3Audit(
       return { blockError, warnPrefix };
     }
     try {
-      const l3 = auditFilesystemSinceSentinel(projectRoot, meta);
+      const l3 = auditFilesystemSinceSentinel(projectRoot, meta, {
+        writeMode: meta.writeMode,
+      });
       if (l3.violations && l3.violations.length > 0) {
         const list = l3.violations.slice(0, 20).join(', ');
         if (enforcement === 'block') {
