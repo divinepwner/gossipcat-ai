@@ -308,10 +308,16 @@ describe('isSupportedXrefFile', () => {
     expect(isSupportedXrefFile('a.mjs')).toBe(true);
     expect(isSupportedXrefFile('a.cjs')).toBe(true);
   });
-  it('rejects everything else', () => {
-    expect(isSupportedXrefFile('a.py')).toBe(false);
+  it('accepts py/pyi/go/rs', () => {
+    expect(isSupportedXrefFile('a.py')).toBe(true);
+    expect(isSupportedXrefFile('a.pyi')).toBe(true);
+    expect(isSupportedXrefFile('a.go')).toBe(true);
+    expect(isSupportedXrefFile('a.rs')).toBe(true);
+  });
+  it('rejects unsupported extensions', () => {
     expect(isSupportedXrefFile('a.md')).toBe(false);
     expect(isSupportedXrefFile('Makefile')).toBe(false);
+    expect(isSupportedXrefFile('a.c')).toBe(false);
   });
 });
 

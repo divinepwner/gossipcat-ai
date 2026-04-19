@@ -1,19 +1,31 @@
 /**
  * Xref module — symbol/call cross-reference for the consensus verifier.
  *
- * Public façade. Compose the pieces into a single `buildXrefIndexFromFiles`
- * helper for the common path: read files from disk, extract, build index.
+ * Public façade. Dispatches file-level extraction to the right language
+ * extractor based on file extension, then aggregates into a single
+ * `XrefIndex`.
+ *
+ * Supported languages: TypeScript/JavaScript, Python, Go, Rust. Adding a
+ * new language is two steps: implement `Extractor` in a new file under
+ * this directory, add its extensions to `EXTRACTOR_BY_EXT` below.
  *
  * Spec: docs/specs/2026-04-19-ast-xref-and-context-compaction.md §Phase 1.
  */
 
 import { readFileSync } from 'fs';
 import { extractFromSource } from './ts-extractor';
+import { extractFromPython } from './python-extractor';
+import { extractFromGo } from './go-extractor';
+import { extractFromRust } from './rust-extractor';
 import { buildXrefIndex } from './query';
 import type { XrefIndex } from './query';
+import type { Extractor, Language } from './types';
 
-export type { FunctionDef, CallSite, ExtractResult } from './ts-extractor';
+export type { FunctionDef, CallSite, ExtractResult, Language, Extractor } from './types';
 export { extractFromSource, stripCommentsAndStrings } from './ts-extractor';
+export { extractFromPython, stripPythonCommentsAndStrings } from './python-extractor';
+export { extractFromGo, stripGoCommentsAndStrings } from './go-extractor';
+export { extractFromRust, stripRustCommentsAndStrings } from './rust-extractor';
 export { buildXrefIndex } from './query';
 export type { XrefIndex, IndexInput } from './query';
 export {
@@ -23,11 +35,52 @@ export {
   runXrefTool,
 } from './tools';
 
-/** File extensions handled by the TS/JS extractor. */
-const SUPPORTED_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
+/**
+ * File-extension → extractor dispatch. Keys are lowercase, include the
+ * leading dot. Add new languages here after their extractor lands.
+ */
+const EXTRACTOR_BY_EXT: Record<string, Extractor> = {
+  '.ts': extractFromSource,
+  '.tsx': extractFromSource,
+  '.js': extractFromSource,
+  '.jsx': extractFromSource,
+  '.mjs': extractFromSource,
+  '.cjs': extractFromSource,
+  '.py': extractFromPython,
+  '.pyi': extractFromPython,
+  '.go': extractFromGo,
+  '.rs': extractFromRust,
+};
+
+const LANG_BY_EXT: Record<string, Language> = {
+  '.ts': 'typescript', '.tsx': 'typescript',
+  '.js': 'typescript', '.jsx': 'typescript',
+  '.mjs': 'typescript', '.cjs': 'typescript',
+  '.py': 'python', '.pyi': 'python',
+  '.go': 'go',
+  '.rs': 'rust',
+};
+
+/** Pick the extractor for a file path, or undefined if unsupported. */
+export function extractorFor(path: string): Extractor | undefined {
+  const lower = path.toLowerCase();
+  for (const ext of Object.keys(EXTRACTOR_BY_EXT)) {
+    if (lower.endsWith(ext)) return EXTRACTOR_BY_EXT[ext];
+  }
+  return undefined;
+}
+
+/** Pick the language label for a file path, or undefined if unsupported. */
+export function languageOf(path: string): Language | undefined {
+  const lower = path.toLowerCase();
+  for (const ext of Object.keys(LANG_BY_EXT)) {
+    if (lower.endsWith(ext)) return LANG_BY_EXT[ext];
+  }
+  return undefined;
+}
 
 export function isSupportedXrefFile(path: string): boolean {
-  return SUPPORTED_EXTS.some(ext => path.toLowerCase().endsWith(ext));
+  return extractorFor(path) !== undefined;
 }
 
 /**
@@ -45,7 +98,8 @@ export function buildXrefIndexFromFiles(files: string[]): {
   const errors: Array<{ file: string; error: string }> = [];
 
   for (const file of files) {
-    if (!isSupportedXrefFile(file)) continue;
+    const extract = extractorFor(file);
+    if (!extract) continue;
     let source: string;
     try {
       source = readFileSync(file, 'utf-8');
@@ -54,7 +108,7 @@ export function buildXrefIndexFromFiles(files: string[]): {
       continue;
     }
     try {
-      const r = extractFromSource(file, source);
+      const r = extract(file, source);
       allDefs.push(...r.defs);
       allCalls.push(...r.calls);
     } catch (e) {

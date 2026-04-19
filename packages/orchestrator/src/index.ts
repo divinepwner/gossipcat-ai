@@ -40,15 +40,23 @@ export type { CacheableToolDefinition } from './prompt-cache';
 export {
   extractFromSource,
   stripCommentsAndStrings,
+  extractFromPython,
+  stripPythonCommentsAndStrings,
+  extractFromGo,
+  stripGoCommentsAndStrings,
+  extractFromRust,
+  stripRustCommentsAndStrings,
   buildXrefIndex,
   buildXrefIndexFromFiles,
   isSupportedXrefFile,
+  extractorFor,
+  languageOf,
   XREF_TOOLS,
   XREF_TOOL_NAMES,
   isXrefTool,
   runXrefTool,
 } from './xref';
-export type { FunctionDef, CallSite, ExtractResult, XrefIndex, IndexInput } from './xref';
+export type { FunctionDef, CallSite, ExtractResult, XrefIndex, IndexInput, Language, Extractor } from './xref';
 export { AgentMemoryReader } from './agent-memory';
 export { MemoryWriter } from './memory-writer';
 export type { SessionArtifacts } from './memory-writer';

@@ -1,5 +1,6 @@
 /**
- * Lightweight TypeScript / JavaScript symbol extractor.
+ * TypeScript / JavaScript symbol extractor — conforms to the shared
+ * `Extractor` contract in `./types.ts`.
  *
  * Scope (Phase 1 MVP):
  *   - Function/method/arrow definitions with line ranges
@@ -12,48 +13,15 @@
  * cross-check, not as ground truth — the same posture the rest of the
  * consensus pipeline already takes for citations.
  *
- * Why not the TypeScript compiler API: pulling `typescript` as a runtime
- * dependency would add ~60 MB to the bundled MCP server and force a
- * production install for what is, at MVP scope, a reachability + call-graph
- * lookup. The compiler API (or tree-sitter) is the right substrate for the
- * follow-up that adds Python/Go/Rust and dynamic-call resolution. This
- * module's public shape is stable across that swap.
- *
  * See docs/specs/2026-04-19-ast-xref-and-context-compaction.md §Phase 1.
  */
 
+import type { CallSite, ExtractResult, FunctionDef } from './types';
+
+const LANG = 'typescript' as const;
+
 /** A function/method/arrow definition discovered in source. */
-export interface FunctionDef {
-  /** Bare symbol name. For methods, the unqualified method name. */
-  name: string;
-  /** Absolute file path. */
-  file: string;
-  /** 1-based line where the definition opens. */
-  startLine: number;
-  /** 1-based line where the definition's closing brace lives. Best-effort. */
-  endLine: number;
-  /** Single-line declaration text — no body, trimmed. */
-  signature: string;
-  kind: 'function' | 'method' | 'arrow';
-  /** For methods: the enclosing class name when statically determinable. */
-  className?: string;
-}
-
-/** A call site discovered in source. */
-export interface CallSite {
-  /** Best-effort enclosing function/method name; "<top>" when at module scope. */
-  callerName: string;
-  callerFile: string;
-  /** 1-based line. */
-  callerLine: number;
-  /** Bare callee name. For `obj.foo()` the value is `foo`. */
-  calleeName: string;
-}
-
-export interface ExtractResult {
-  defs: FunctionDef[];
-  calls: CallSite[];
-}
+export type { FunctionDef, CallSite, ExtractResult } from './types';
 
 // Word-boundary anchored so m.index points at the keyword/name itself.
 // Earlier `(?:^|\s)` variants consumed the preceding whitespace, which made
@@ -199,6 +167,7 @@ export function extractFromSource(file: string, source: string): ExtractResult {
         name: m[1], file, startLine, endLine,
         signature: signatureLineFromOriginal(source, startLine),
         kind: 'function',
+        language: LANG,
       });
     }
   }
@@ -216,6 +185,7 @@ export function extractFromSource(file: string, source: string): ExtractResult {
         name: m[1], file, startLine, endLine,
         signature: signatureLineFromOriginal(source, startLine),
         kind: 'arrow',
+        language: LANG,
       });
     }
   }
@@ -238,6 +208,7 @@ export function extractFromSource(file: string, source: string): ExtractResult {
         signature: signatureLineFromOriginal(source, startLine),
         kind: 'method',
         className: cls.name,
+        language: LANG,
       });
     }
   }
@@ -276,6 +247,7 @@ export function extractFromSource(file: string, source: string): ExtractResult {
         callerFile: file,
         callerLine: line,
         calleeName: name,
+        language: LANG,
       });
     }
   }
@@ -294,6 +266,7 @@ export function extractFromSource(file: string, source: string): ExtractResult {
         callerFile: file,
         callerLine: line,
         calleeName: name,
+        language: LANG,
       });
     }
   }
