@@ -11,9 +11,16 @@
 import { randomUUID } from 'crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
-import { ToolDefinition, LLMMessage } from '@gossip/types';
+import { ToolDefinition, LLMMessage, TextContent } from '@gossip/types';
 import { LLMResponse } from './types';
 import { log as _log } from './log';
+
+/**
+ * Tool definition with an optional Anthropic cache marker. Duplicated here
+ * (instead of importing from prompt-cache.ts) to keep the provider layer
+ * free of orchestrator-internal dependencies; the shape is the superset.
+ */
+type MaybeCacheableTool = ToolDefinition & { cacheControl?: 'ephemeral' };
 
 // ─── 503 Retry Helper ───────────────────────────────────────────────────────
 
@@ -221,13 +228,23 @@ export class AnthropicProvider implements ILLMProvider {
       max_tokens: options?.maxTokens ?? 4096,
       messages: nonSystemMsgs.map(m => this.toAnthropicMessage(m)),
     };
-    if (systemMsg) body.system = typeof systemMsg.content === 'string' ? systemMsg.content : '';
+    if (systemMsg) {
+      const converted = this.toAnthropicSystem(systemMsg.content);
+      if (typeof converted === 'string' || (Array.isArray(converted) && converted.length > 0)) {
+        body.system = converted;
+      }
+    }
     if (options?.temperature !== undefined) body.temperature = options.temperature;
     const anthropicTools: Array<Record<string, unknown>> = [];
     if (options?.tools?.length) {
-      anthropicTools.push(...options.tools.map(t => ({
-        name: t.name, description: t.description, input_schema: t.parameters,
-      })));
+      anthropicTools.push(...options.tools.map(t => {
+        const entry: Record<string, unknown> = {
+          name: t.name, description: t.description, input_schema: t.parameters,
+        };
+        const marker = (t as MaybeCacheableTool).cacheControl;
+        if (marker) entry.cache_control = { type: marker };
+        return entry;
+      }));
     }
     if (options?.webSearch) {
       anthropicTools.push({ type: 'web_search_20250305', name: 'web_search' });
@@ -255,6 +272,24 @@ export class AnthropicProvider implements ILLMProvider {
     this.quota.onSuccess();
     const data = await res.json() as Record<string, unknown>;
     return this.parseAnthropicResponse(data);
+  }
+
+  /**
+   * Translate a system message's `content` into the Anthropic system field.
+   * String content becomes a plain string (the legacy path — no caching).
+   * `ContentBlock[]` becomes an array of `{ type: 'text', text, cache_control? }`
+   * entries so a TextContent with `cacheControl: 'ephemeral'` becomes a cache
+   * breakpoint on the wire.
+   */
+  private toAnthropicSystem(content: LLMMessage['content']): unknown {
+    if (typeof content === 'string') return content;
+    return content
+      .filter((b): b is TextContent => b.type === 'text')
+      .map(b => {
+        const entry: Record<string, unknown> = { type: 'text', text: b.text };
+        if (b.cacheControl) entry.cache_control = { type: b.cacheControl };
+        return entry;
+      });
   }
 
   private toAnthropicMessage(m: LLMMessage): Record<string, unknown> {
@@ -306,7 +341,16 @@ export class AnthropicProvider implements ILLMProvider {
     return {
       text,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      usage: usage ? { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens } : undefined,
+      usage: usage ? {
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        ...(usage.cache_creation_input_tokens != null
+          ? { cacheCreationTokens: usage.cache_creation_input_tokens }
+          : {}),
+        ...(usage.cache_read_input_tokens != null
+          ? { cacheReadTokens: usage.cache_read_input_tokens }
+          : {}),
+      } : undefined,
     };
   }
 }

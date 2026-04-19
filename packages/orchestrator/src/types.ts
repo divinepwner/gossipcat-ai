@@ -120,7 +120,22 @@ export interface LLMResponse {
     name: string;
     arguments: Record<string, unknown>;
   }>;
-  usage?: { inputTokens: number; outputTokens: number };
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    /**
+     * Anthropic: tokens written to cache on this request (cache miss — first
+     * time the prefix is seen). Priced at ~1.25× base input. Undefined on
+     * providers without prompt caching.
+     */
+    cacheCreationTokens?: number;
+    /**
+     * Anthropic: tokens served from cache on this request (cache hit). Priced
+     * at ~0.1× base input — the saving. Undefined on providers without
+     * prompt caching.
+     */
+    cacheReadTokens?: number;
+  };
 }
 
 /** Frontmatter for knowledge files — warmth metadata */

@@ -35,6 +35,8 @@ export { parseAgentFindingsStrict, PARSE_FINDINGS_LIMITS } from './parse-finding
 export type { ParsedFinding, ParseFindingsResult, ParseFindingsOptions, FindingType, Severity, ParseDiagnostic } from './parse-findings';
 export { computeDedupeKey, DEDUPE_KEY_INTERNALS } from './dedupe-key';
 export type { DedupeKeyInput } from './dedupe-key';
+export { buildCacheableSystem, markToolsCacheable, CACHE_MIN_CHARS } from './prompt-cache';
+export type { CacheableToolDefinition } from './prompt-cache';
 export { AgentMemoryReader } from './agent-memory';
 export { MemoryWriter } from './memory-writer';
 export type { SessionArtifacts } from './memory-writer';

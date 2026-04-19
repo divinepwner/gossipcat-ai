@@ -34,6 +34,14 @@ export interface ImageContent {
 export interface TextContent {
   type: 'text';
   text: string;
+  /**
+   * Anthropic prompt-caching marker. When set to 'ephemeral', the block
+   * becomes a cache breakpoint — everything from the start of the message
+   * up to and including this block is eligible for cache reuse on
+   * subsequent requests with an identical prefix. Providers that do not
+   * support prompt caching ignore this field.
+   */
+  cacheControl?: 'ephemeral';
 }
 
 /** A content block — either text or image */

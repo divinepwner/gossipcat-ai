@@ -9,13 +9,14 @@ function shortConsensusId(): string {
   const hex = randomUUID().replace(/-/g, '');
   return hex.slice(0, 8) + '-' + hex.slice(8, 16);
 }
-import { LLMMessage, ToolDefinition } from '@gossip/types';
+import { LLMMessage, TextContent, ToolDefinition } from '@gossip/types';
 import { ILLMProvider } from './llm-client';
 import { AgentConfig, TaskEntry } from './types';
 import { ConsensusReport, ConsensusFinding, ConsensusNewFinding, ConsensusSignal, CrossReviewEntry } from './consensus-types';
 import { selectCrossReviewers, FindingForSelection, AgentCandidate } from './cross-reviewer-selection';
 import { parseAgentFindingsStrict, PARSE_FINDINGS_LIMITS } from './parse-findings';
 import { extractCategories } from './category-extractor';
+import { buildCacheableSystem, markToolsCacheable } from './prompt-cache';
 
 export type {
   ConsensusReport,
@@ -63,6 +64,39 @@ const VERIFIER_TOOLS: ToolDefinition[] = [
   { name: 'memory_query', description: 'Search agent memory by keyword', parameters: { type: 'object', properties: { query: { type: 'string', description: 'Keyword or phrase to search memory' } }, required: ['query'] } },
   { name: 'git_log', description: 'Show git log for a file or path', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File or directory to show history for' }, maxCount: { type: 'number', description: 'Maximum number of commits to return' } }, required: [] } },
 ];
+
+/**
+ * Pre-marked copy of VERIFIER_TOOLS that signals a cache breakpoint at the
+ * last tool. Computed once at module load — all verifier dispatches share
+ * the same reference so Anthropic's prompt cache stays warm across calls.
+ * Non-Anthropic providers ignore the marker.
+ */
+const CACHEABLE_VERIFIER_TOOLS = markToolsCacheable(VERIFIER_TOOLS);
+
+/**
+ * Static portion of the cross-review system prompt — identical across all
+ * agents, repos, and rounds. Extracted as a module constant so the Anthropic
+ * prompt cache sees byte-identical text on every verifier dispatch.
+ *
+ * The dynamic tail (reviewer's skill bundle) is appended as a separate
+ * non-cached block by `buildCacheableSystem`. Do not inline per-request
+ * content here — doing so silently breaks cache hits.
+ */
+const CROSS_REVIEW_SYSTEM_STATIC = `You are a code reviewer performing cross-review. Your job is to verify peer findings against actual code — catch errors, but also confirm good work.
+
+SOURCE FILES: Always cite original source files, not compiled/bundled build output (dist/, build/, out/). Build artifacts have different line numbers — citing them causes false verification failures.
+
+VERIFICATION RULES:
+- If a finding has an <anchor> block, use the code shown to verify the claim
+- If a finding LACKS an anchor or the anchor is insufficient, use the file_read and file_grep tools to look up the cited code yourself before marking UNVERIFIED. Only mark UNVERIFIED after you have attempted tool-based verification and still cannot confirm or refute.
+- AGREE only if you can confirm the claim is factually correct — cite your evidence
+- DISAGREE only if you have concrete evidence the finding is WRONG — the code contradicts the claim
+- UNVERIFIED only as a last resort after attempting tool-based verification — when the file doesn't exist, the tool returned an error, or the code is genuinely ambiguous
+- ⚠ warnings mean the agent's citation is unresolvable (file not found, line out of range, or blank line). Use file_read/file_grep to attempt verification before falling back to UNVERIFIED.
+- Do NOT agree with a finding just because it sounds plausible — verify it
+- Agreeing without verification is WORSE than disagreeing — a false confirmation poisons the system
+
+Return only valid JSON.`;
 
 /**
  * Resolve the category for a signal write, preferring the explicit field and
@@ -386,7 +420,7 @@ export class ConsensusEngine {
     agent: TaskEntry,
     summaries: Map<string, string>,
     rawResults?: Map<string, string>,
-  ): Promise<{ system: string; user: string }> {
+  ): Promise<{ system: string; systemCacheable: TextContent[]; user: string }> {
     const ownSummary = summaries.get(agent.agentId) ?? '';
     // For finding extraction, prefer the full raw result so IDs stay in sync with synthesize().
     // Fall back to summaries when rawResults isn't provided (legacy callers / tests).
@@ -589,23 +623,16 @@ Return ONLY a JSON array. findingId format:
       } catch { /* skill resolution is best-effort */ }
     }
 
-    const system = `You are a code reviewer performing cross-review. Your job is to verify peer findings against actual code — catch errors, but also confirm good work.
+    // `system` is the flattened string — kept for callers/tests that inspect
+    // it as a single block. `systemCacheable` is the split form used on the
+    // wire: static prefix gets the cache marker, skills tail stays dynamic.
+    const system = `${CROSS_REVIEW_SYSTEM_STATIC}${skillsBlock}`;
+    const systemCacheable = buildCacheableSystem(
+      CROSS_REVIEW_SYSTEM_STATIC,
+      skillsBlock || undefined,
+    );
 
-SOURCE FILES: Always cite original source files, not compiled/bundled build output (dist/, build/, out/). Build artifacts have different line numbers — citing them causes false verification failures.
-
-VERIFICATION RULES:
-- If a finding has an <anchor> block, use the code shown to verify the claim
-- If a finding LACKS an anchor or the anchor is insufficient, use the file_read and file_grep tools to look up the cited code yourself before marking UNVERIFIED. Only mark UNVERIFIED after you have attempted tool-based verification and still cannot confirm or refute.
-- AGREE only if you can confirm the claim is factually correct — cite your evidence
-- DISAGREE only if you have concrete evidence the finding is WRONG — the code contradicts the claim
-- UNVERIFIED only as a last resort after attempting tool-based verification — when the file doesn't exist, the tool returned an error, or the code is genuinely ambiguous
-- ⚠ warnings mean the agent's citation is unresolvable (file not found, line out of range, or blank line). Use file_read/file_grep to attempt verification before falling back to UNVERIFIED.
-- Do NOT agree with a finding just because it sounds plausible — verify it
-- Agreeing without verification is WORSE than disagreeing — a false confirmation poisons the system
-
-Return only valid JSON.${skillsBlock}`;
-
-    return { system, user };
+    return { system, systemCacheable, user };
   }
 
   /**
@@ -619,9 +646,9 @@ Return only valid JSON.${skillsBlock}`;
     rawResults?: Map<string, string>,
     consensusId?: string,
   ): Promise<CrossReviewEntry[]> {
-    const { system, user } = await this.buildCrossReviewPrompt(agent, summaries, rawResults);
+    const { systemCacheable, user } = await this.buildCrossReviewPrompt(agent, summaries, rawResults);
     const messages: LLMMessage[] = [
-      { role: 'system', content: system },
+      { role: 'system', content: systemCacheable },
       { role: 'user', content: user },
     ];
 
@@ -630,6 +657,7 @@ Return only valid JSON.${skillsBlock}`;
       const { verifierToolRunner } = this.config;
 
       let response: Awaited<ReturnType<typeof llm.generate>>;
+      let cachedVerifierUsageLogged = false;
 
       if (verifierToolRunner) {
         const runToolCalls = async (calls: any[]) => {
@@ -647,7 +675,11 @@ Return only valid JSON.${skillsBlock}`;
 
         let turn = 0;
         while (true) {
-          response = await llm.generate(messages, { temperature: 0, tools: VERIFIER_TOOLS });
+          response = await llm.generate(messages, { temperature: 0, tools: CACHEABLE_VERIFIER_TOOLS });
+          if (!cachedVerifierUsageLogged && response.usage && (response.usage.cacheReadTokens || response.usage.cacheCreationTokens)) {
+            _log('consensus', `💾 ${agent.agentId} verifier cache: read=${response.usage.cacheReadTokens ?? 0}, created=${response.usage.cacheCreationTokens ?? 0}`);
+            cachedVerifierUsageLogged = true;
+          }
           const calls = response.toolCalls ?? [];
           _log('consensus', `🔧 ${agent.agentId} verifier response: ${calls.length} tool call(s), text=${response.text?.length ?? 0}chars`);
           if (calls.length === 0) break;
