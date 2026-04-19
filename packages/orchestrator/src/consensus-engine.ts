@@ -17,6 +17,7 @@ import { selectCrossReviewers, FindingForSelection, AgentCandidate } from './cro
 import { parseAgentFindingsStrict, PARSE_FINDINGS_LIMITS } from './parse-findings';
 import { extractCategories } from './category-extractor';
 import { buildCacheableSystem, markToolsCacheable } from './prompt-cache';
+import { XREF_TOOLS, isXrefTool, runXrefTool, type XrefIndex } from './xref';
 
 export type {
   ConsensusReport,
@@ -67,8 +68,11 @@ const VERIFIER_TOOLS: ToolDefinition[] = [
 
 /**
  * Pre-marked copy of VERIFIER_TOOLS that signals a cache breakpoint at the
- * last tool. Computed once at module load — all verifier dispatches share
- * the same reference so Anthropic's prompt cache stays warm across calls.
+ * last tool. Computed once at module load — verifier dispatches without an
+ * xref index share this reference so Anthropic's prompt cache stays warm
+ * across calls. When an xref index is configured, ConsensusEngine builds
+ * an instance-scoped tool list (VERIFIER_TOOLS + XREF_TOOLS) and applies
+ * the cache marker once to the combined array — see `this.verifierTools`.
  * Non-Anthropic providers ignore the marker.
  */
 const CACHEABLE_VERIFIER_TOOLS = markToolsCacheable(VERIFIER_TOOLS);
@@ -151,6 +155,16 @@ export interface ConsensusEngineConfig {
    * Issue #126 / PR-B.
    */
   resolutionRoots?: readonly string[];
+  /**
+   * Optional cross-reference index. When set, the verifier gains three
+   * additional tools (`xref_callers_of`, `xref_calls_of`, `xref_defined_at`)
+   * so structural claims about call relationships can be checked
+   * deterministically against the index instead of through repeated
+   * file_grep calls. Index lifecycle (build/refresh) is the caller's
+   * responsibility — see `buildXrefIndexFromFiles` for the on-demand
+   * helper. Phase 1 of docs/specs/2026-04-19-ast-xref-and-context-compaction.md.
+   */
+  xrefIndex?: XrefIndex;
 }
 
 export class ConsensusEngine {
@@ -178,8 +192,20 @@ export class ConsensusEngine {
    */
   private currentRealpathRoots: Set<string> = new Set();
 
+  /**
+   * Tool list passed to the verifier LLM. Equal to CACHEABLE_VERIFIER_TOOLS
+   * when no xref index is configured; otherwise the union of VERIFIER_TOOLS
+   * and XREF_TOOLS, with the cache marker re-applied to the last tool of
+   * the combined array. Computed once in constructor — kept stable across
+   * dispatches so prompt caching stays warm.
+   */
+  protected readonly verifierTools: ReturnType<typeof markToolsCacheable>;
+
   constructor(config: ConsensusEngineConfig) {
     this.config = config;
+    this.verifierTools = config.xrefIndex
+      ? markToolsCacheable([...VERIFIER_TOOLS, ...XREF_TOOLS])
+      : CACHEABLE_VERIFIER_TOOLS;
 
     // Seed BOTH root sets from config.resolutionRoots so round-1
     // getValidRoots() — called before any updateWorktreeRoots invocation —
@@ -659,12 +685,19 @@ Return ONLY a JSON array. findingId format:
       let response: Awaited<ReturnType<typeof llm.generate>>;
       let cachedVerifierUsageLogged = false;
 
-      if (verifierToolRunner) {
+      const xrefIndex = this.config.xrefIndex;
+      if (verifierToolRunner || xrefIndex) {
         const runToolCalls = async (calls: any[]) => {
           for (const tc of calls) {
             let out: string;
             try {
-              out = await verifierToolRunner(agent.agentId, tc.name, tc.arguments as Record<string, unknown>);
+              if (xrefIndex && isXrefTool(tc.name)) {
+                out = runXrefTool(xrefIndex, tc.name, tc.arguments as Record<string, unknown>);
+              } else if (verifierToolRunner) {
+                out = await verifierToolRunner(agent.agentId, tc.name, tc.arguments as Record<string, unknown>);
+              } else {
+                out = `Error: tool ${tc.name} requested but no runner is configured`;
+              }
             } catch (e) {
               out = `Error: ${(e as Error).message}`;
             }
@@ -675,7 +708,7 @@ Return ONLY a JSON array. findingId format:
 
         let turn = 0;
         while (true) {
-          response = await llm.generate(messages, { temperature: 0, tools: CACHEABLE_VERIFIER_TOOLS });
+          response = await llm.generate(messages, { temperature: 0, tools: this.verifierTools });
           if (!cachedVerifierUsageLogged && response.usage && (response.usage.cacheReadTokens || response.usage.cacheCreationTokens)) {
             _log('consensus', `💾 ${agent.agentId} verifier cache: read=${response.usage.cacheReadTokens ?? 0}, created=${response.usage.cacheCreationTokens ?? 0}`);
             cachedVerifierUsageLogged = true;

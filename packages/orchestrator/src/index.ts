@@ -37,6 +37,18 @@ export { computeDedupeKey, DEDUPE_KEY_INTERNALS } from './dedupe-key';
 export type { DedupeKeyInput } from './dedupe-key';
 export { buildCacheableSystem, markToolsCacheable, CACHE_MIN_CHARS } from './prompt-cache';
 export type { CacheableToolDefinition } from './prompt-cache';
+export {
+  extractFromSource,
+  stripCommentsAndStrings,
+  buildXrefIndex,
+  buildXrefIndexFromFiles,
+  isSupportedXrefFile,
+  XREF_TOOLS,
+  XREF_TOOL_NAMES,
+  isXrefTool,
+  runXrefTool,
+} from './xref';
+export type { FunctionDef, CallSite, ExtractResult, XrefIndex, IndexInput } from './xref';
 export { AgentMemoryReader } from './agent-memory';
 export { MemoryWriter } from './memory-writer';
 export type { SessionArtifacts } from './memory-writer';
