@@ -48,6 +48,10 @@ export {
   stripRustCommentsAndStrings,
   buildXrefIndex,
   buildXrefIndexFromFiles,
+  buildProjectXrefIndex,
+  clearProjectXrefCache,
+  projectXrefCacheSize,
+  IGNORE_DIRS,
   isSupportedXrefFile,
   extractorFor,
   languageOf,
@@ -56,7 +60,7 @@ export {
   isXrefTool,
   runXrefTool,
 } from './xref';
-export type { FunctionDef, CallSite, ExtractResult, XrefIndex, IndexInput, Language, Extractor } from './xref';
+export type { FunctionDef, CallSite, ExtractResult, XrefIndex, IndexInput, Language, Extractor, ProjectIndexResult } from './xref';
 export { AgentMemoryReader } from './agent-memory';
 export { MemoryWriter } from './memory-writer';
 export type { SessionArtifacts } from './memory-writer';

@@ -34,6 +34,15 @@ export {
   isXrefTool,
   runXrefTool,
 } from './tools';
+export {
+  buildProjectXrefIndex,
+  clearProjectXrefCache,
+  projectXrefCacheSize,
+  MAX_FILES,
+  MAX_TOTAL_BYTES,
+  IGNORE_DIRS,
+} from './project-index';
+export type { ProjectIndexResult, BuildOptions } from './project-index';
 
 /**
  * File-extension → extractor dispatch. Keys are lowercase, include the

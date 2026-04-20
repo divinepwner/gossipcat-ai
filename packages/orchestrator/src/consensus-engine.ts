@@ -17,7 +17,7 @@ import { selectCrossReviewers, FindingForSelection, AgentCandidate } from './cro
 import { parseAgentFindingsStrict, PARSE_FINDINGS_LIMITS } from './parse-findings';
 import { extractCategories } from './category-extractor';
 import { buildCacheableSystem, markToolsCacheable } from './prompt-cache';
-import { XREF_TOOLS, isXrefTool, runXrefTool, type XrefIndex } from './xref';
+import { XREF_TOOLS, isXrefTool, runXrefTool, buildProjectXrefIndex, type XrefIndex } from './xref';
 
 export type {
   ConsensusReport,
@@ -201,9 +201,19 @@ export class ConsensusEngine {
    */
   protected readonly verifierTools: ReturnType<typeof markToolsCacheable>;
 
+  /**
+   * The xref index actually used by the verifier path. Prefers an
+   * explicit `config.xrefIndex`; otherwise auto-built from `config.projectRoot`
+   * unless `GOSSIP_DISABLE_XREF=1` is set in the env. Kept as a stable
+   * instance field so `this.verifierTools` and the tool-call router agree
+   * on availability across every dispatch.
+   */
+  protected readonly effectiveXrefIndex: XrefIndex | undefined;
+
   constructor(config: ConsensusEngineConfig) {
     this.config = config;
-    this.verifierTools = config.xrefIndex
+    this.effectiveXrefIndex = this.resolveXrefIndex(config);
+    this.verifierTools = this.effectiveXrefIndex
       ? markToolsCacheable([...VERIFIER_TOOLS, ...XREF_TOOLS])
       : CACHEABLE_VERIFIER_TOOLS;
 
@@ -241,6 +251,36 @@ export class ConsensusEngine {
   /** True when a PerformanceReader is available for orchestrator-selected cross-review (Step 3). */
   get hasPerformanceReader(): boolean {
     return this.config.performanceReader !== undefined;
+  }
+
+  /**
+   * Resolve which xref index the verifier should see. Prefers an explicitly-
+   * configured `config.xrefIndex`. Otherwise auto-builds from `projectRoot`,
+   * gated by `GOSSIP_DISABLE_XREF` (set to `1` to opt out — useful when the
+   * consumer wants to provide its own index later, or in memory-constrained
+   * environments where the 5k-file walk is unwanted).
+   *
+   * Auto-build failures (I/O errors, caps exceeded mid-walk, parser crash
+   * on a single file) degrade silently to `undefined` — the verifier loses
+   * xref tools but keeps every other tool. One log line surfaces the
+   * elapsed time + file count so we can see the wiring is active.
+   */
+  private resolveXrefIndex(config: ConsensusEngineConfig): XrefIndex | undefined {
+    if (config.xrefIndex) return config.xrefIndex;
+    if (!config.projectRoot) return undefined;
+    if (process.env.GOSSIP_DISABLE_XREF === '1') return undefined;
+    try {
+      const result = buildProjectXrefIndex(config.projectRoot);
+      _log(
+        'consensus',
+        `🔗 xref auto-wired: ${result.fileCount} files, ${result.defCount} defs, ${result.callCount} calls` +
+          ` in ${result.elapsedMs}ms${result.truncated ? ' (truncated)' : ''}`,
+      );
+      return result.index;
+    } catch (e) {
+      _log('consensus', `xref auto-build failed: ${(e as Error).message}`);
+      return undefined;
+    }
   }
 
   /**
@@ -685,7 +725,7 @@ Return ONLY a JSON array. findingId format:
       let response: Awaited<ReturnType<typeof llm.generate>>;
       let cachedVerifierUsageLogged = false;
 
-      const xrefIndex = this.config.xrefIndex;
+      const xrefIndex = this.effectiveXrefIndex;
       if (verifierToolRunner || xrefIndex) {
         const runToolCalls = async (calls: any[]) => {
           for (const tc of calls) {
